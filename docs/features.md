@@ -576,12 +576,13 @@ with its curve as the pressure jump (anywhere in the box, any number of them), a
 CalculiX (the parts as one bonded mesh) and OpenFOAM (the air's temperature on the solved flow) until it settles; without
 fans the air rises where it is warm (Boussinesq, solved again at each pass), and the parts radiate to each other and to
 the room (CalculiX's view factors). Boards conduct along and across their layers (`pcb`: layers, copper weight). The
-**Cooling assistant** takes it step by step (the box found, heat per part, fans or vents only, the run, the results with
-streamlines) and builds an example on an empty document.
+**Thermal setup** takes it step by step (the box's bodies picked in the view or the browser, heat per chip or per face,
+each fan with the face its air goes through, or vents only, the run, the results with streamlines) and builds an example
+on an empty document.
 
 **Design sweeps.** A `sweep` study runs another study again over values of the design's parameters (a grid, then
 golden-section refinement for one), each on a copy of the document, optionally screened at a coarser setting with the best
-confirmed; it reports every point and the best, and the Cooling assistant's Best vents page drives it for a vent's place.
+confirmed; it reports every point and the best. An agent or `opad-cli` sets one up (the panel has no page for it).
 
 **Printed parts.** A static or modal study's bodies can be 3D printed (FFF/FDM): the Printed part dialog (or
 `settings.print`) takes the filament, build direction, layer height, line width, walls, top and bottom layers, infill
