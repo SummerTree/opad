@@ -404,7 +404,7 @@ class Builder {
       try {
         GeomAPI_Interpolate interp(hp, ht, true, 1e-7);
         interp.Perform();
-        if (interp.IsDone()) return interp.Curve();
+        if (interp.IsDone()) return Handle(Geom_Curve)(interp.Curve());
       } catch (const Standard_Failure&) {
       }
     }
@@ -421,14 +421,14 @@ class Builder {
     try {
       GeomAPI_Interpolate interp(hp, ht, false, 1e-7);
       interp.Perform();
-      if (interp.IsDone()) return interp.Curve();
+      if (interp.IsDone()) return Handle(Geom_Curve)(interp.Curve());
     } catch (const Standard_Failure&) {
     }
     try {
       TColgp_Array1OfPnt ap(1, int(pts.size()));
       for (size_t i = 0; i < pts.size(); ++i) ap.SetValue(int(i) + 1, pts[i]);
       GeomAPI_PointsToBSpline fit(ap, 1, 8, GeomAbs_C1, 1e-4);
-      if (fit.IsDone()) return fit.Curve();
+      if (fit.IsDone()) return Handle(Geom_Curve)(fit.Curve());
     } catch (const Standard_Failure&) {
     }
     return nullptr;
@@ -488,7 +488,7 @@ class Builder {
         gp_Pnt p;
         if (!evaluate(surf, uv.X(), uv.Y(), p) || p.Distance(c->Value(t)) > 1e-3) return nullptr;
       }
-      return c;
+      return Handle(Geom_Curve)(c);
     } catch (const Standard_Failure&) {
       return nullptr;
     }
@@ -914,7 +914,7 @@ class Builder {
       try {
         GeomAPI_PointsToBSplineSurface fit;
         fit.Init(grid, Approx_ChordLength, degree, 8, continuity, tol, all_round);
-        if (fit.IsDone()) return fit.Surface();
+        if (fit.IsDone()) return Handle(Geom_Surface)(fit.Surface());
       } catch (const Standard_Failure&) {
       }
     }
