@@ -324,7 +324,7 @@ TEST(public_corpus) {
       {"pymechanical-hsec.x_t", 3, 0, 2700000.0},
       {"scorec-sphere.x_t", 1, 0, 0.469145},
       {"quickdraw-omron-assembly.x_t", 10, 0, 2251.5},
-      {"quickdraw-microswitch-dock.x_t", 1, 0, 6674.9},
+      {"quickdraw-microswitch-dock.x_t", 1, 0, 6691.8},
       {"sparkfun-display.x_t", 18, 0, 5526.8},
   };
   for (const Case& c : cases) {
@@ -519,7 +519,9 @@ TEST(one_file) {
         why += b;
       }
       const int k = int(BRepAdaptor_Surface(face).GetType());
-      std::printf("    bad face (%s):%s\n", kinds[std::min(k, 10)], why.c_str());
+      const auto src = b.face_source.find(face.TShape().get());
+      std::printf("    bad face (%s, %s):%s\n", kinds[std::min(k, 10)], src == b.face_source.end() ? "?" : src->second.c_str(), why.c_str());
+      if (const auto fn = b.face_node.find(face.TShape().get()); fn != b.face_node.end()) std::printf("      face node %u\n", fn->second);
     }
   }
 }

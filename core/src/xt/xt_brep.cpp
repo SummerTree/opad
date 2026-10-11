@@ -1012,13 +1012,20 @@ class Builder {
     const bool same_vertex = fin && other && fin->ptr("vertex") == other->ptr("vertex");
     uint32_t cptr = n->ptr("curve");
     if (!cptr && fin) {  // a tolerant edge: its fins carry (trimmed) SP-curves
+      // preferably one on an exact surface: a blend is our approximation, and a curve mapped through it inherits its error
+      auto on_blend = [&](uint32_t ci) {
+        const Node* cn = f_.get(ci);
+        if (cn && cn->type == TRIMMED_CURVE) cn = f_.get(cn->ptr("basis_curve"));
+        const Node* on = cn && cn->type == SP_CURVE ? f_.get(cn->ptr("surface")) : nullptr;
+        return on && on->type == BLENDED_EDGE;
+      };
       uint32_t fi = fin->index;
       for (int g = 0; fi && g < 64; ++g) {
         const Node* fn = f_.get(fi, FIN);
         if (!fn) break;
-        if (fn->ptr("curve")) {
-          cptr = fn->ptr("curve");
-          break;
+        if (const uint32_t ci = fn->ptr("curve")) {
+          if (!cptr || on_blend(cptr)) cptr = ci;
+          if (!on_blend(ci)) break;
         }
         fi = fn->ptr("other");
         if (fi == fin->index) break;
@@ -1389,6 +1396,7 @@ class Builder {
     st_->UpdateAssemblies();
     out.bodies = built_;
     out.face_source = std::move(face_source_);
+    out.face_node = std::move(face_node_);
     if (dropped_faces_)
       warnings.push_back(std::to_string(dropped_faces_) + (dropped_faces_ == 1 ? " face that could not be fitted to its edges was left out"
                                                                             : " faces that could not be fitted to their edges were left out"));
@@ -1441,6 +1449,7 @@ class Builder {
         const auto it = g.IsNull() ? by_surface.end() : by_surface.find(g.get());
         if (it == by_surface.end()) continue;
         face_source_[x.Current().TShape().get()] = surface_kind(it->second);
+        face_node_[x.Current().TShape().get()] = it->second;
         const Node* fn = f_.get(it->second);
         if (fn && colour_of(*fn, col)) {
           const TDF_Label sub = st_->AddSubShape(label, x.Current());
@@ -1521,6 +1530,7 @@ class Builder {
   std::vector<uint32_t> body_faces_;  // the faces of the body being built
   int unnamed_bodies_ = 0, unnamed_assemblies_ = 0, dropped_faces_ = 0;
   std::unordered_map<const void*, std::string> face_source_;
+  std::unordered_map<const void*, uint32_t> face_node_;
   std::set<uint32_t> building_;
   std::set<std::string> warned_;
   Handle(XCAFDoc_ShapeTool) st_;
