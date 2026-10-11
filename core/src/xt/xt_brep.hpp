@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "xt_parse.hpp"
@@ -16,6 +17,8 @@ struct Built {
   Handle(TDocStd_Document) doc;
   int bodies = 0;
   std::vector<std::string> warnings;
+  // For surveys: each face (by its TShape) -> the kind of Parasolid surface it was built on ("BLENDED_EDGE on blend", ...)
+  std::unordered_map<const void*, std::string> face_source;
 };
 
 // `progress(fraction)` returns false to cancel (then opad::Error "cancelled" is thrown).

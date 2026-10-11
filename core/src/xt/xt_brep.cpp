@@ -77,6 +77,7 @@
 #include <gp_Trsf.hxx>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <set>
@@ -757,12 +758,54 @@ class Builder {
     at = ps.NearestPoint();
     return true;
   }
+  // Where the ball centred at `centre` touches support k of blend `n`: on the blend's own contact curve with that support
+  // when the file has one (the intersection of a BLEND_BOUND of the blend with the support, charted exactly), else by
+  // projecting onto the support. The curves matter when a support is itself a blend: projecting onto its fitted
+  // approximation adds that fit's error to this one, and blends on blends on blends drifted by millimetres.
+  bool blend_contact(const Node& n, int k, const gp_Pnt& centre, gp_Pnt& at) {
+    const double r = std::abs(n.num("range", size_t(k), 0)) * S;
+    const Node* support = f_.get(n.ptr("surface", size_t(k)));
+    const bool on_blend = support && support->type == BLENDED_EDGE;  // elsewhere the projection is exact (and was better)
+    if (const auto it = contact_curves_.find(n.index); on_blend && it != contact_curves_.end() && r > 0) {
+      double best = 1e300;
+      gp_Pnt found;
+      for (uint32_t ci : it->second[k]) {
+        const Crv& c = curve(ci);
+        if (c.c.IsNull()) continue;
+        try {
+          GeomAPI_ProjectPointOnCurve pc(centre, c.c);
+          if (pc.NbPoints() > 0 && pc.LowerDistance() < best) best = pc.LowerDistance(), found = pc.NearestPoint();
+        } catch (const Standard_Failure&) {
+        }
+      }
+      // the ball touches its contact curve at its radius; past the curve's ends (the margin of the range) it does not
+      if (best < 1e299 && std::abs(best - r) < 0.05 * r + 1e-4) {
+        at = found;
+        return true;
+      }
+    }
+    return contact(n.ptr("surface", size_t(k)), centre, at);
+  }
+  // Each blend's contact curves with its two supports, from the intersections that name one of its BLEND_BOUNDs.
+  void index_contact_curves() {
+    for (const auto& [index, node] : f_.nodes) {
+      if (node.type != INTERSECTION) continue;
+      for (int side = 0; side < 2; ++side) {
+        const Node* bound = f_.get(node.ptr("surface", size_t(side)), BLEND_BOUND);
+        const Node* blend = bound ? f_.get(bound->ptr("blend"), BLENDED_EDGE) : nullptr;
+        if (!blend) continue;
+        const uint32_t other = node.ptr("surface", size_t(1 - side));
+        for (int k = 0; k < 2; ++k)
+          if (other && blend->ptr("surface", size_t(k)) == other) contact_curves_[blend->index][k].push_back(index);
+      }
+    }
+  }
   bool blend_point(const Node& n, double u, double v, gp_Pnt& p) {
     const Crv& spine = curve(n.ptr("spine"));
     if (spine.c.IsNull()) return false;
     const gp_Pnt c = spine.c->Value(u);
     gp_Pnt q0, q1;
-    if (!contact(n.ptr("surface", 0), c, q0) || !contact(n.ptr("surface", 1), c, q1)) return false;
+    if (!blend_contact(n, 0, c, q0) || !blend_contact(n, 1, c, q1)) return false;
     if (spine.sense < 0) std::swap(q0, q1);
     p = arc_point(c, q0, q1, v);
     return true;
@@ -806,7 +849,7 @@ class Builder {
       const double u = u0 + (u1 - u0) * i / (all_round ? nu : nu - 1);
       const gp_Pnt c = spine.c->Value(u);
       gp_Pnt q0, q1;
-      if (!contact(n.ptr("surface", 0), c, q0) || !contact(n.ptr("surface", 1), c, q1)) return nullptr;
+      if (!blend_contact(n, 0, c, q0) || !blend_contact(n, 1, c, q1)) return nullptr;
       if (spine.sense < 0) std::swap(q0, q1);
       for (int j = 0; j < nv; ++j) grid.SetValue(i + 1, j + 1, arc_point(c, q0, q1, double(j) / (nv - 1)));
     }
@@ -1266,6 +1309,7 @@ class Builder {
     XCAFApp_Application::GetApplication()->NewDocument("MDTV-XCAF", out.doc);
     st_ = XCAFDoc_DocumentTool::ShapeTool(out.doc->Main());
     ct_ = XCAFDoc_DocumentTool::ColorTool(out.doc->Main());
+    index_contact_curves();
     blend_ranges();
     for (const auto& [index, node] : f_.nodes)
       if (node.type == BODY) ++total_;
@@ -1301,6 +1345,7 @@ class Builder {
     }
     st_->UpdateAssemblies();
     out.bodies = built_;
+    out.face_source = std::move(face_source_);
     if (dropped_faces_)
       warnings.push_back(std::to_string(dropped_faces_) + (dropped_faces_ == 1 ? " face that could not be fitted to its edges was left out"
                                                                             : " faces that could not be fitted to their edges were left out"));
@@ -1340,15 +1385,21 @@ class Builder {
       TDataStd_Name::Set(label, TCollection_ExtendedString(name.c_str(), true));
       Quantity_Color col;
       if (colour_of(*n, col)) ct_->SetColor(label, col, XCAFDoc_ColorGen);
-      std::unordered_set<uint32_t> coloured;
-      for (uint32_t fi : body_faces_) {  // face colours, on the faces healing left
-        if (!coloured.insert(fi).second) continue;
-        const TopoDS_Face f = faces_[fi];
-        const Node* fn = f_.get(fi);
-        if (!fn || !colour_of(*fn, col)) continue;
-        TopoDS_Shape now = context.IsNull() ? TopoDS_Shape(f) : context->Value(f);
-        if (now.IsNull()) continue;
-        for (TopExp_Explorer x(now, TopAbs_FACE); x.More(); x.Next()) {
+      // the faces healing left, matched to the faces built by their surface: healing rebuilds a face whose edges it
+      // replaced (a new TShape, not in its record) but keeps the surface
+      std::unordered_map<const Geom_Surface*, uint32_t> by_surface;
+      for (uint32_t fi : body_faces_) {
+        TopLoc_Location loc;
+        if (const Handle(Geom_Surface) g = BRep_Tool::Surface(faces_[fi], loc); !g.IsNull()) by_surface.emplace(g.get(), fi);
+      }
+      for (TopExp_Explorer x(shape, TopAbs_FACE); x.More(); x.Next()) {
+        TopLoc_Location loc;
+        const Handle(Geom_Surface) g = BRep_Tool::Surface(TopoDS::Face(x.Current()), loc);
+        const auto it = g.IsNull() ? by_surface.end() : by_surface.find(g.get());
+        if (it == by_surface.end()) continue;
+        face_source_[x.Current().TShape().get()] = surface_kind(it->second);
+        const Node* fn = f_.get(it->second);
+        if (fn && colour_of(*fn, col)) {
           const TDF_Label sub = st_->AddSubShape(label, x.Current());
           if (!sub.IsNull()) ct_->SetColor(sub, col, XCAFDoc_ColorSurf);
         }
@@ -1375,6 +1426,22 @@ class Builder {
     }
     warn("a part of node type " + std::to_string(n->type) + " was left out");
     return label;
+  }
+
+  // The kind of surface a face is on, for surveys: its type, and for a blend what it rests on.
+  std::string surface_kind(uint32_t face) const {
+    const Node* fn = f_.get(face);
+    const Node* sn = fn ? f_.get(fn->ptr("surface")) : nullptr;
+    if (!sn) return "none";
+    std::string kind = type_name(sn->type);
+    if (sn->type == BLENDED_EDGE) {
+      for (int k = 0; k < 2; ++k) {
+        const Node* support = f_.get(sn->ptr("surface", k));
+        if (support && support->type == BLENDED_EDGE)
+          kind += std::abs(support->num("range", 0, 0)) < 1e-12 ? " on cliff" : " on blend";
+      }
+    }
+    return kind;
   }
 
   // x' = (R x + t) * scale (the reference); a scale other than 1 cannot be a placement and is dropped.
@@ -1406,9 +1473,11 @@ class Builder {
   std::unordered_map<uint32_t, std::pair<uint32_t, bool>> edge_sp_;  // edge -> the SP-curve its curve is made from, reversed
   std::unordered_map<uint32_t, TopoDS_Face> faces_;
   std::unordered_map<uint32_t, std::pair<double, double>> blend_range_;
+  std::unordered_map<uint32_t, std::array<std::vector<uint32_t>, 2>> contact_curves_;  // blend -> per support
   std::unordered_map<uint32_t, TDF_Label> labels_;
   std::vector<uint32_t> body_faces_;  // the faces of the body being built
   int unnamed_bodies_ = 0, unnamed_assemblies_ = 0, dropped_faces_ = 0;
+  std::unordered_map<const void*, std::string> face_source_;
   std::set<uint32_t> building_;
   std::set<std::string> warned_;
   Handle(XCAFDoc_ShapeTool) st_;

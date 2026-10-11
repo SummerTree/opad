@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -322,7 +323,7 @@ TEST(public_corpus) {
       {"pymechanical-hsec.x_t", 3, 0, 2700000.0},
       {"scorec-sphere.x_t", 1, 0, 0.469145},
       {"quickdraw-omron-assembly.x_t", 10, 0, 2251.5},
-      {"quickdraw-microswitch-dock.x_t", 1, 1, 6674.9},
+      {"quickdraw-microswitch-dock.x_t", 1, 0, 6674.9},
       {"sparkfun-display.x_t", 18, 0, 5526.8},
   };
   for (const Case& c : cases) {
@@ -502,6 +503,121 @@ TEST(one_file) {
       const int k = int(BRepAdaptor_Surface(face).GetType());
       std::printf("    bad face (%s):%s\n", kinds[std::min(k, 10)], why.c_str());
     }
+  }
+}
+
+// OPAD_XT_FACES=<folder>: builds every file and counts faces by the Parasolid surface they came from, and how many of
+// each OCCT finds invalid (development survey of what still goes wrong).
+TEST(face_survey) {
+  const char* dir = std::getenv("OPAD_XT_FACES");
+  if (!dir || !*dir) return;
+  std::map<std::string, std::pair<int, int>> kinds;  // kind -> (faces, invalid)
+  std::map<std::string, std::map<std::string, int>> where;  // kind -> file -> invalid
+  for (const auto& e : std::filesystem::directory_iterator(dir)) {
+    if (e.path().extension() == ".json") continue;
+    try {
+      const xt::Built b = xt::build(xt::parse(read(e.path())));
+      Handle(XCAFDoc_ShapeTool) st = XCAFDoc_DocumentTool::ShapeTool(b.doc->Main());
+      TDF_LabelSequence shapes;
+      st->GetShapes(shapes);
+      for (int i = 1; i <= shapes.Length(); ++i) {
+        if (st->IsAssembly(shapes.Value(i)) || st->IsComponent(shapes.Value(i))) continue;
+        for (TopExp_Explorer x(st->GetShape(shapes.Value(i)), TopAbs_FACE); x.More(); x.Next()) {
+          const auto it = b.face_source.find(x.Current().TShape().get());
+          const std::string kind = it == b.face_source.end() ? "?" : it->second;
+          auto& k = kinds[kind];
+          ++k.first;
+          bool bad = false;
+          try {
+            bad = !BRepCheck_Analyzer(x.Current()).IsValid();
+          } catch (const Standard_Failure&) {
+            bad = true;
+          }
+          if (bad) ++k.second, ++where[kind][e.path().filename().string().substr(0, 40)];
+        }
+      }
+    } catch (...) {
+    }
+  }
+  for (const auto& [kind, n] : kinds) {
+    std::printf("  %-34s faces %7d invalid %5d\n", kind.c_str(), n.first, n.second);
+    int shown = 0;
+    std::vector<std::pair<int, std::string>> files;
+    for (const auto& [file, count] : where[kind]) files.push_back({count, file});
+    std::sort(files.rbegin(), files.rend());
+    for (const auto& [count, file] : files)
+      if (shown++ < 3) std::printf("      %4d %s\n", count, file.c_str());
+  }
+}
+
+// OPAD_XT_STATUS=<folder>: for every invalid solid, the checker's complaints by sub-shape kind and status (what makes
+// solids invalid when their faces each pass), with the files that have most of each.
+TEST(status_survey) {
+  const char* dir = std::getenv("OPAD_XT_STATUS");
+  if (!dir || !*dir) return;
+  static const char* kinds[] = {"compound", "compsolid", "solid", "shell", "face", "wire", "edge", "vertex", "shape"};
+  std::map<std::string, int> counts, solids_with;
+  std::map<std::string, std::map<std::string, int>> where;
+  int invalid = 0;
+  for (const auto& e : std::filesystem::directory_iterator(dir)) {
+    if (e.path().extension() == ".json") continue;
+    const std::string file = e.path().filename().string().substr(0, 40);
+    try {
+      const xt::Built b = xt::build(xt::parse(read(e.path())));
+      Handle(XCAFDoc_ShapeTool) st = XCAFDoc_DocumentTool::ShapeTool(b.doc->Main());
+      TDF_LabelSequence shapes;
+      st->GetShapes(shapes);
+      for (int i = 1; i <= shapes.Length(); ++i) {
+        if (st->IsAssembly(shapes.Value(i)) || st->IsComponent(shapes.Value(i))) continue;
+        for (TopExp_Explorer x(st->GetShape(shapes.Value(i)), TopAbs_SOLID); x.More(); x.Next()) {
+          BRepCheck_Analyzer an(x.Current());
+          if (an.IsValid()) continue;
+          ++invalid;
+          std::set<std::string> seen;
+          auto note = [&](const TopoDS_Shape& sub, const TopoDS_Shape& context) {
+            Handle(BRepCheck_Result) r;
+            try {
+              r = an.Result(sub);
+            } catch (const Standard_Failure&) {
+              return;
+            }
+            if (r.IsNull()) return;
+            auto add = [&](const BRepCheck_ListOfStatus& list) {
+              for (BRepCheck_ListIteratorOfListOfStatus it(list); it.More(); it.Next()) {
+                if (it.Value() == BRepCheck_NoError) continue;
+                const std::string key = std::string(kinds[int(sub.ShapeType())]) + " " + std::to_string(int(it.Value()));
+                ++counts[key], ++where[key][file], seen.insert(key);
+              }
+            };
+            add(r->Status());
+            if (!context.IsNull()) {
+              try {
+                add(r->StatusOnShape(context));
+              } catch (const Standard_Failure&) {
+              }
+            }
+          };
+          note(x.Current(), {});
+          for (TopExp_Explorer s(x.Current(), TopAbs_SHELL); s.More(); s.Next()) note(s.Current(), x.Current());
+          for (TopExp_Explorer f(x.Current(), TopAbs_FACE); f.More(); f.Next()) {
+            note(f.Current(), {});
+            for (TopExp_Explorer w(f.Current(), TopAbs_WIRE); w.More(); w.Next()) note(w.Current(), f.Current());
+            for (TopExp_Explorer ed(f.Current(), TopAbs_EDGE); ed.More(); ed.Next()) note(ed.Current(), f.Current());
+          }
+          for (const auto& k : seen) ++solids_with[k];
+        }
+      }
+    } catch (...) {
+    }
+  }
+  std::printf("invalid solids: %d (status codes: BRepCheck_Status)\n", invalid);
+  for (const auto& [key, n] : counts) {
+    std::printf("  %-14s %6d in %3d solids;", key.c_str(), n, solids_with[key]);
+    std::vector<std::pair<int, std::string>> files;
+    for (const auto& [f, c] : where[key]) files.push_back({c, f});
+    std::sort(files.rbegin(), files.rend());
+    for (size_t k = 0; k < files.size() && k < 2; ++k) std::printf(" %s (%d)", files[k].second.c_str(), files[k].first);
+    std::printf("\n");
   }
 }
 
