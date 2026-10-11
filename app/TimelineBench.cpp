@@ -289,15 +289,14 @@ OPAD_BENCH(OPAD_BENCH_TIMELINE, timeline) {
           break;
         }
         case 14: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "Delete Boss only is committed")) return;
-          const auto& deleted = w.m_doc->scene.deleted_ops;
+          if (!waitFor(!w.m_doc->doc.find_op(state->boss), "Delete Boss only is committed")) return;
           const opad::Feature* round = w.m_doc->scene.feature(state->round);
-          require(std::count(deleted.begin(), deleted.end(), state->boss) && !std::count(deleted.begin(), deleted.end(), state->round), "Boss tombstoned, Round kept");
+          require(w.m_doc->scene.deleted_ops.empty() && w.m_doc->doc.find_op(state->round), "Boss deleted for good, Round kept");
           require(round && !round->error.empty(), "Round fails without the boss and says so");
           require(w.m_doc->undoLabel() == SmartSelect::tr("delete %1").arg("Boss") && w.m_viewport->previewBodyCount() == 0, "one undo step, the preview gone");
           Toast* toast = w.m_toasts->toasts().isEmpty() ? nullptr : w.m_toasts->toasts().back();
           require(toast && toast->text() == SmartSelect::tr("Deleted %1").arg("Boss") && toast->actionButton(), "a toast with Undo");
-          pass("Delete Boss only: the boss is tombstoned as one step, Round is marked as failing; the toast offers Undo");
+          pass("Delete Boss only: the boss is deleted as one step, Round is marked as failing; the toast offers Undo");
           toast->actionButton()->click();
           break;
         }
@@ -311,8 +310,8 @@ OPAD_BENCH(OPAD_BENCH_TIMELINE, timeline) {
           break;
         }
         case 16: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "Round, used by nothing, is deleted from its marker")) return;
-          require(!area->openMenu() && std::count(w.m_doc->scene.deleted_ops.begin(), w.m_doc->scene.deleted_ops.end(), state->round), "no question, Round tombstoned");
+          if (!waitFor(!w.m_doc->doc.find_op(state->round), "Round, used by nothing, is deleted from its marker")) return;
+          require(!area->openMenu() && w.m_doc->doc.ops.size() < state->ops, "no question, Round deleted for good");
           pass("Round, which nothing uses, is deleted from its marker without a question");
           click(state->boss);
           break;
@@ -847,10 +846,9 @@ OPAD_BENCH(OPAD_BENCH_HISTORYLIST, historylist) {
           break;
         }
         case 5: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "Del on Round's row deletes Round")) return;
-          const auto& deleted = w.m_doc->scene.deleted_ops;
-          require(std::count(deleted.begin(), deleted.end(), state->round) && look(state->round).italic, "Round tombstoned, its row in italics");
-          pass("Del on Round's row deletes it, its row in italics");
+          if (!waitFor(!w.m_doc->doc.find_op(state->round), "Del on Round's row deletes Round")) return;
+          require(!rows().contains("Round") && w.m_doc->doc.ops.size() < state->ops, "Round deleted for good, its row gone: " + rows().join(" / ").toStdString());
+          pass("Del on Round's row deletes it for good, its row gone");
           w.m_doc->undo();
           require(w.m_doc->scene.feature(state->round) && w.m_doc->doc.ops.size() == state->ops, "undone");
           w.action("timeline.historyList")->trigger();

@@ -701,5 +701,10 @@
  "inputs": "المدخلات",
  "plane": "المستوى",
  "%n recomputed result(s) follow from these changes: they are not chosen here, regenerating the design after resolving brings them in line.": "تنتج عن هذه التغييرات %n نتيجة أعيد حسابها: لا تُختار هنا، وإعادة توليد التصميم بعد الحلّ تجعلها متوافقة معها.",
- "Only recomputed results collide: Resolve takes both sides' changes, and regenerating the design afterwards brings the results in line.": "لا تتعارض إلا نتائج أعيد حسابها: يأخذ «حلّ» تغييرات الطرفين، وإعادة توليد التصميم بعده تجعل النتائج متوافقة."
+ "Only recomputed results collide: Resolve takes both sides' changes, and regenerating the design afterwards brings the results in line.": "لا تتعارض إلا نتائج أعيد حسابها: يأخذ «حلّ» تغييرات الطرفين، وإعادة توليد التصميم بعده تجعل النتائج متوافقة.",
+ "merged": "مدموج",
+ "The upstream of %1": "الفرع البعيد الذي يتبعه %1",
+ "Merged into %1": "مدموج في %1",
+ "At the same commit as %1": "عند الإيداع نفسه الذي عنده %1",
+ "Made from %1 at %2, %n commit(s) of its own": "أُنشئ من %1 عند %2، وله %n إيداع خاص به"
 }

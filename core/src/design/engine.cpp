@@ -22,6 +22,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <unordered_set>
 
 #include "opad/assets.hpp"
 #include "opad/geometry.hpp"
@@ -518,6 +519,7 @@ struct Walk {
   std::vector<std::string> regenerated;
   const std::vector<EffectiveOp>* timeline = nullptr;  // the whole history being walked
   std::optional<std::set<std::string>> history_names;
+  std::unordered_set<std::string> removed = {};  // ops walked as if gone from the log (plan_removal)
 
   bool is_new(const std::string& id) const { return new_index.count(id) > 0; }
 
@@ -898,7 +900,8 @@ struct Walk {
     for (const auto& op : new_ops) temp.push_back(Op{op["id"].get<std::string>(), op["op"].get<std::string>(), op, {}});
     std::vector<const Op*> all;
     all.reserve(doc.ops.size() + temp.size());
-    for (const auto& o : doc.ops) all.push_back(&o);
+    for (const auto& o : doc.ops)
+      if (!removed.count(o.id)) all.push_back(&o);
     for (const auto& o : temp) all.push_back(&o);
     const std::vector<EffectiveOp> ops = effective_ops(all);
     timeline = &ops;
@@ -1142,6 +1145,31 @@ Plan plan_regenerate(const Document& doc, bool force, const Cancel& cancel) {
   std::vector<json> none;
   Walk w{doc, none, force, cancel, {}, {}, {}, json::object(), {}};
   return w.run(false);
+}
+
+Removal plan_removal(const Document& doc, const std::vector<std::string>& ids, const Cancel& cancel, std::vector<json> add) {
+  Removal r;
+  r.plan.report = json::object();  // nothing to regenerate: no errors either
+  r.ids = doc.removal_closure(ids);
+  if (r.ids.empty() && add.empty()) return r;
+  Walk w{doc, add, false, cancel, {}, {}, {}, json::object(), {}};
+  w.removed.insert(r.ids.begin(), r.ids.end());
+  bool design = !add.empty();  // a log without sketches or features has nothing to regenerate
+  for (const auto& o : doc.ops)
+    if (!w.removed.count(o.id) && (o.type == "sketch" || o.type == "feature")) design = true;
+  if (design) r.plan = w.run(!add.empty());
+  return r;
+}
+
+std::vector<RemovedOp> commit_removal(Document& doc, Removal&& removal, const std::string& author) {
+  std::vector<RemovedOp> gone = doc.remove_ops(removal.ids);
+  try {
+    commit(doc, std::move(removal.plan), author);
+  } catch (...) {
+    doc.reinsert_ops(std::move(gone));
+    throw;
+  }
+  return gone;
 }
 
 json commit(Document& doc, Plan&& plan, const std::string& author) {

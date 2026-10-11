@@ -97,6 +97,10 @@ class AppDocument : public QObject {
   bool designBusy = false;
   bool annotationEditing = false;  // temporary annotation editor; agent writes wait for Save/Cancel
   opad::json commitPlan(opad::design::Plan&& plan, const QString& label);
+  // Ops deleted for good (no tombstone, design::plan_removal on a worker): they leave the log and the regeneration their
+  // removal brings is appended, as one undo step; undo puts them back where they stood, byte for byte. Returns the
+  // plan's report ({"errors": [...]}: later features that fail without them).
+  opad::json commitRemoval(opad::design::Removal&& removal, const QString& label);
   // Roll-back: the scene is replayed up to (not including) this op. Editing a feature or a sketch shows the
   // model as it was when that op was computed, which is what its references mean. Empty = the whole log.
   void setRollback(const std::string& opId);
@@ -267,6 +271,8 @@ class AppDocument : public QObject {
     QString label;
     size_t count = 0;            // ops on the log while the step sits on the undo stack
     std::vector<opad::Op> ops;   // the ops themselves while it sits on the redo stack
+    std::vector<opad::RemovedOp> removed;  // ops it deleted for good (before appending), while on the undo stack
+    std::vector<std::string> removedIds;   // the same, by id (redo deletes them again)
   };
   void disposeOld();  // the document and scene being replaced, to a worker (moved out: both are empty afterwards)
   void recordStep(const QString& label, size_t opsBefore);

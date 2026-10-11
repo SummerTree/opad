@@ -5,7 +5,7 @@
 // they show and hide (Canvas, Explode). The same action objects sit on every tab that shows them (View and Inspect are
 // in Review and Design alike), so a button is enabled, checked and keyed the same everywhere.
 //   Review (Ctrl+1)   View · Inspect · Markup · Compare · Share       look, measure, mark up, compare, share
-//   Design (Ctrl+2)   [Sketch] Solid · Assemble · Construct · Inspect · Insert · View
+//   Design (Ctrl+2)   [Sketch] Solid · Assemble · Construct · Inspect · Insert · Version · View   (Version: git, UI-62)
 //   Drafting (Ctrl+4) [Sketch] Home · Annotate · View · Output        2D files: draw, layers, measure, plot, to sketch
 // Sketch is the contextual tab a sketch opens first in Design (in Drafting for one drawn on a drawing), Finish sketch its
 // primary button at the end. A dropdown (Named views ▾, Rendering ▾, Panels ▾) is a command with a menu
@@ -47,10 +47,9 @@ void MainWindow::ribbonTable(RibbonLayout& layout) {
   const auto find = [this](const QString& id) { return action(id); };
   auto group = [&](const QString& tab, const char* name, const QString& title, const std::vector<RibbonTool>& tools) { addGroup(layout, find, tab, name, title, tools); };
   layout.addWorkspace("review", {tr("Review"), "eye", "Ctrl+1",
-                                 tr("Look, measure, mark up, compare and share. View, Inspect and Markup never change geometry; Compare's version "
-                                    "commands can bring changes in."),
+                                 tr("Look, measure, mark up, compare and share. Nothing here changes geometry."),
                                  tr("ops: annotation · measurement · section · view")});
-  layout.addWorkspace("design", {tr("Design"), "component", "Ctrl+2", tr("Model parts: sketches, features, parameters; arrange the assembly."),
+  layout.addWorkspace("design", {tr("Design"), "component", "Ctrl+2", tr("Model parts: sketches, features, parameters; arrange the assembly; keep its versions in git."),
                                  tr("ops: param · sketch · feature · edit · regen · import · reparent · appearance")});
 
   // The tabs both modelling and reviewing show, with the same commands.
@@ -58,6 +57,7 @@ void MainWindow::ribbonTable(RibbonLayout& layout) {
     group(tab, "navigate", tr("Navigate"),
           {{"view.fit", L, {"view.fitall", "view.zoomWindow", "view.previous", "view.next"}},
            {"view.home", L, {"view.setHome", "view.resetHome"}},
+           {"view.fly", S},
            {"view.iso", S, {"view.top", "view.front", "view.right", "view.bottom", "view.back", "view.left"}},
            {"view.rollleft", S, {"view.rollright", "view.twist", "view.untwist"}},
            {"view.alignPlane", S},
@@ -88,9 +88,6 @@ void MainWindow::ribbonTable(RibbonLayout& layout) {
   layout.addTab("review", "review.compare", tr("Compare"));
   group("review.compare", "compare", tr("Compare"),
         {{"vcs.compare", L, {"vcs.unsavedChanges", "vcs.compareFile"}}, {"vcs.previousChange", S}, {"vcs.nextChange", S}});
-  group("review.compare", "versions", tr("Versions"),
-        {{"vcs.panel"}, {"vcs.history", S}, {"vcs.commit", S}, {"vcs.branches", S}, {"vcs.newBranch", S}, {"file.recover", S}});
-  group("review.compare", "remote", tr("Remote"), {{"vcs.pull", S}, {"vcs.push", S}, {"vcs.fetch", S}});
   layout.addTab("review", "review.share", tr("Share"));
   group("review.share", "export", tr("Export"), {{"file.export"}, {"file.exportBom", S}, {"drawings.publish"}, {"file.screenshot"}, {"drawing2d.plot"}});
   group("review.share", "file", tr("File"), {{"file.importdoc"}, {"file.reveal", S}, {"file.copyPath", S}, {"file.documentProperties", S}});
@@ -127,6 +124,13 @@ void MainWindow::ribbonTable(RibbonLayout& layout) {
   layout.addTab("design", "design.insert", tr("Insert"));
   group("design.insert", "files", tr("Insert"), {{"file.import"}, {"assets.link"}, {"kicad.insert"}, {"canvas.insert"}});
   group("design.insert", "linked", tr("Linked files"), {{"assets.syncAll"}, {"assets.autoSync", S}, {"assets.pack", S}, {"assets.settings", S}});
+  // Version control belongs to the design (its history is the timeline's): the panel, commits, branches, the remote, and
+  // versions compared.
+  layout.addTab("design", "design.version", tr("Version"));
+  group("design.version", "versions", tr("Versions"),
+        {{"vcs.panel"}, {"vcs.commit"}, {"vcs.history", S}, {"vcs.branches", S}, {"vcs.newBranch", S}, {"file.recover", S}});
+  group("design.version", "remote", tr("Remote"), {{"vcs.pull", S}, {"vcs.push", S}, {"vcs.fetch", S}});
+  group("design.version", "compare", tr("Compare"), {{"vcs.compare", L, {"vcs.unsavedChanges", "vcs.compareFile"}}, {"vcs.resolve", S}});
   layout.addTab("design", "design.view", tr("View"));
   viewTab("design.view");
 

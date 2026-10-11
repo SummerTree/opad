@@ -382,9 +382,8 @@ OPAD_BENCH(OPAD_BENCH_SMARTSELECT, smartselect) {
           break;
         }
         case 19: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "the deletes are appended")) return;
-          const auto& deleted = w.m_doc->scene.deleted_ops;
-          require(std::count(deleted.begin(), deleted.end(), state->boss) && std::count(deleted.begin(), deleted.end(), state->round), "Boss and Round tombstoned");
+          if (!waitFor(!w.m_doc->doc.find_op(state->boss), "the boss is deleted")) return;
+          require(!w.m_doc->doc.find_op(state->round) && w.m_doc->scene.deleted_ops.empty(), "Boss and Round deleted for good");
           GProp_GProps g;
           BRepGProp::VolumeProperties(shape(), g);
           require(faceCount() == 6 && std::abs(g.Mass() - 16000) < 1e-3, "the base alone remains (" + std::to_string(faceCount()) + " faces)");
@@ -411,7 +410,7 @@ OPAD_BENCH(OPAD_BENCH_SMARTSELECT, smartselect) {
           break;
         }
         case 22: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "Round, used by nothing, is deleted without a question")) return;
+          if (!waitFor(!w.m_doc->doc.find_op(state->round), "Round, used by nothing, is deleted without a question")) return;
           require(!area->openMenu(), "no question");
           require(faceCount() == state->faces - 4, "the boss's top edges are sharp again");
           pass("Round, which nothing uses, was deleted at once");
@@ -738,7 +737,7 @@ OPAD_BENCH(OPAD_BENCH_SMARTIMPORT, smartimport) {
           break;
         case 6: {
           if (!waitFor(w.m_design->featureActive(), "Del on the hole wall starts Remove faces")) return;
-          require(w.m_doc->doc.ops.size() == state->ops && w.m_doc->scene.deleted_ops.empty(), "the import is not tombstoned");
+          require(w.m_doc->doc.ops.size() == state->ops && w.m_doc->scene.deleted_ops.empty(), "the import is not deleted");
           trace::log("bench: smartimport: Del on the hole wall started Remove faces, the import is untouched PASS");
           w.m_design->escape();
           timer->stop();

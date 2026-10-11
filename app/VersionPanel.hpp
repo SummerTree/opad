@@ -2,8 +2,8 @@
 // The Version control panel (UI-62), the content of the "version" ToolPanel: the branch and how it stands against its
 // remote, the document's state (unsaved, not committed, in conflict, committed), a merge that stopped (Abort merge, Commit
 // the merge), Pull / Push / New branch…, and two pages: History (the commits of the document, newest first: Compare,
-// Restore…, Branch from here…, Open read-only, Copy hash) and Branches (local and remote: Switch, Merge into current…,
-// Delete…). Outside a repository it offers Set up repository…, Clone repository…, Locate git… or Trust this folder…. The
+// Restore…, Branch from here…, Open read-only, Copy hash) and Branches (local and remote as a tree, each under the branch
+// it was made from, merged ones said so: Switch, Merge into current…, Delete…). Outside a repository it offers Set up repository…, Clone repository…, Locate git… or Trust this folder…. The
 // footer's primary is Commit…. VersionControl owns the lists and runs what the panel asks.
 #include <QWidget>
 

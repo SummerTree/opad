@@ -8,7 +8,7 @@
 // sizes are the chip's tooltip). ▾ (Shift+Space) lists every candidate with those actions, and for a feature Select what
 // depends on it. Ctrl+Up climbs faces -> feature or detail -> body -> component -> parent and Ctrl+Down climbs back.
 // Double-click: a face -> its feature or detail (again on a face of it: edit the feature), an edge -> the loop on the
-// face on the pointer's side of it, Alt -> its tangent chain. Del on picked faces or edges never tombstones the body's
+// face on the pointer's side of it, Alt -> its tangent chain. Del on picked faces or edges never deletes the body's
 // source (UI-04): a feature's whole face set deletes the feature (asking first when later features use it, with the
 // result previewed), anything else opens the menu. Edit > Suggest related selections and Suggestion delay (settings
 // selection/suggest, selection/suggestDelay). Everything comes from the related command (provenance and rules: nothing
@@ -148,7 +148,7 @@ class SmartSelect : public AreaController {
   void askDependents(const smart::Candidate& c, const std::vector<std::pair<std::string, std::string>>& deps, const std::vector<Viewport::PreviewPart>& parts,
                      const std::vector<std::string>& hidden);
   // One undo step; `planned`: the plan deleteFeature made for exactly these ops on the document as it is.
-  void commitDelete(const smart::Candidate& c, std::vector<std::string> ops, std::shared_ptr<opad::design::Plan> planned = {});
+  void commitDelete(const smart::Candidate& c, std::vector<std::string> ops, std::shared_ptr<opad::design::Removal> planned = {});
   void deletePicks();
   void tangentFaces();  // Alt+double-click on a face: the faces joined to it by smooth edges
   void faceUnder(bool alt, const QPoint& at);  // a double-click on a body (Bodies filter): the face at `at`, then as on it

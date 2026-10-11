@@ -700,7 +700,7 @@
  "Motion": "الحركة",
  "Reduce motion": "تقليل الحركة",
  "The view jumps instead of turning, help clips hold still and panels open at once. By default as the system's animation setting.": "يقفز العرض بدل أن يدور، وتثبت مقاطع المساعدة، وتُفتح اللوحات فورًا. افتراضيًا كإعداد الحركة في النظام.",
- "The document's history. Left and Right step through it, Home and End go to its ends, {fixed:enter} or {fixed:f2} edits a feature or a sketch, {fixed:space} suppresses a feature, {fixed:del} tombstones, {fixed:shiftDel} restores, the Menu key opens the marker's menu.": "سجل المستند. اليسار واليمين يتنقلان فيه، وHome وEnd يذهبان إلى طرفيه، و{fixed:enter} أو {fixed:f2} يحرّر ميزة أو رسمًا، و{fixed:space} يكبت ميزة، و{fixed:del} يحذف مع إبقاء السجل، و{fixed:shiftDel} يستعيد، ومفتاح القائمة يفتح قائمة العلامة.",
+ "The document's history. Left and Right step through it, Home and End go to its ends, {fixed:enter} or {fixed:f2} edits a feature or a sketch, {fixed:space} suppresses a feature, {fixed:del} deletes, {fixed:shiftDel} restores, the Menu key opens the marker's menu.": "سجل المستند. اليسار واليمين يتنقلان فيه، وHome وEnd يذهبان إلى طرفيه، و{fixed:enter} أو {fixed:f2} يحرّر ميزة أو رسمًا، و{fixed:space} يكبت ميزة، و{fixed:del} يحذف، و{fixed:shiftDel} يستعيد، ومفتاح القائمة يفتح قائمة العلامة.",
  "{fixed:space} shows or hides the selected objects, {fixed:enter} fits the view to one or edits a sketch, {fixed:f2} renames, {fixed:del} deletes, the Menu key opens the menu.": "{fixed:space} يُظهر الكائنات المحددة أو يخفيها، و{fixed:enter} يضبط العرض على أحدها أو يحرّر رسمًا، و{fixed:f2} يعيد التسمية، و{fixed:del} يحذف، ومفتاح القائمة يفتح القائمة.",
  "being edited": "قيد التحرير",
  "undone": "مُلغى",
@@ -1083,5 +1083,8 @@
  "Press {fixed:enter}: they turn and move there": "اضغط {fixed:enter}: تدور وتنتقل إلى هناك",
  "Select the sketch: it aligns by its own plane": "حدّد الرسم التخطيطي: يُحاذى بمستواه هو",
  "Pick the face or plane it goes onto": "اختر الوجه أو المستوى الذي يذهب إليه",
- "Press {fixed:enter}: the sketch moves there, and what is built on it follows": "اضغط {fixed:enter}: ينتقل الرسم إلى هناك، ويتبعه ما بُني عليه"
+ "Press {fixed:enter}: the sketch moves there, and what is built on it follows": "اضغط {fixed:enter}: ينتقل الرسم إلى هناك، ويتبعه ما بُني عليه",
+ "The camera itself moves in, up to the smallest detail": "الكاميرا نفسها تتقدم حتى أصغر التفاصيل",
+ "Fly": "طيران",
+ "{press:view.fly}": "{press:view.fly}"
 }

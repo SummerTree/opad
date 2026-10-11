@@ -278,6 +278,64 @@ TEST(parametric_extrude_and_regeneration) {
   std::filesystem::remove(path);
 }
 
+// Deleting a feature for good (no tombstone): what follows is regenerated without it, a feature that used it fails (the
+// designer's to mend), and the ops put back give the model as it was.
+TEST(removing_a_feature_regenerates_what_follows) {
+  Document doc = Document::create();
+  const std::string box = run_id(feature_cmd(doc, "box", {{"length", "40 mm"}, {"width", "30 mm"}, {"height", "20 mm"}, {"centered", false}}));
+  Scene s = resolve(doc);
+  const std::string body = s.all_bodies().front();
+  int top = -1;
+  double best = -1e9;
+  for (int i = 0; i < subshape_count(node_world_shape(doc, s, body), Ref::Kind::Face); ++i) {
+    Ref r;
+    r.body = body;
+    r.kind = Ref::Kind::Face;
+    r.index = i;
+    const json info = inspect_ref(doc, s, r);
+    if (info.contains("center") && info["center"][2].get<double>() > best) { best = info["center"][2].get<double>(); top = i; }
+  }
+  Ref top_ref;
+  top_ref.body = body;
+  top_ref.kind = Ref::Kind::Face;
+  top_ref.index = top;
+  const std::string shell = run_id(feature_cmd(doc, "shell", {{"faces", json::array({make_ref(doc, s, top_ref)})}, {"thickness", "2 mm"}}));
+  const double shelled = 40 * 30 * 20 - 36 * 26 * 18;
+  CHECK_NEAR(total_volume(doc), shelled, 1e-6);
+  const size_t ops = doc.ops.size();
+  const std::string text = doc.serialize();
+
+  // The shell goes: the box is whole again, nothing to regenerate.
+  Removal r = plan_removal(doc, {shell});
+  CHECK(r.ids == std::vector<std::string>{shell});
+  std::vector<RemovedOp> gone = commit_removal(doc, std::move(r));
+  CHECK_EQ(gone.size(), 1u);
+  CHECK_EQ(doc.ops.size(), ops - 1);
+  CHECK(!doc.find_op(shell) && resolve(doc).deleted_ops.empty());
+  CHECK_NEAR(total_volume(doc), 40 * 30 * 20, 1e-6);
+  doc.reinsert_ops(std::move(gone));
+  CHECK_EQ(doc.serialize(), text);
+  CHECK_NEAR(total_volume(doc), shelled, 1e-6);
+
+  // The box goes: the shell has no face to open and fails; the report names it.
+  r = plan_removal(doc, {box});
+  CHECK_EQ(r.plan.report.value("errors", json::array()).size(), 1u);
+  CHECK_EQ(r.plan.report["errors"][0].value("op", ""), shell);
+  gone = commit_removal(doc, std::move(r));
+  CHECK(!doc.find_op(box) && doc.find_op(shell));
+  CHECK(resolve(doc).all_bodies().empty());
+  // Undo as the app does it: the regeneration it appended first, then the box back where it stood.
+  doc.truncate_ops(ops - 1);
+  doc.reinsert_ops(std::move(gone));
+  CHECK_EQ(doc.serialize(), text);
+
+  // Everything of the design goes: nothing to regenerate, and a report all the same.
+  r = plan_removal(doc, {box, shell});
+  CHECK(r.ids.size() == 2 && r.plan.ops.empty() && r.plan.report.is_object() && r.plan.report.value("errors", json::array()).empty());
+  // New ops in the same step (a Remove after the removal) are planned strictly.
+  CHECK_THROWS(plan_removal(doc, {shell}, {}, {make_feature_op("remove", "Remove", {{"bodies", json::array({"no-such-body"})}})}));
+}
+
 TEST(modify_features_follow_history) {
   Document doc = Document::create();
   commands::run("param", {{"name", "h"}, {"expr", "20 mm"}}, &doc);

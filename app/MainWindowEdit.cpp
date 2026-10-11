@@ -161,10 +161,10 @@ void MainWindow::buildTimelineMenu(QMenu& menu, const std::string& requestedId) 
   const auto keyed = keys::menuText;  // the menu's key column: the command's key now, if it has one
   if (const opad::Op* menuOp = m_doc->doc.find_op(opId)) {
     const bool deleted = std::find(m_doc->scene.deleted_ops.begin(), m_doc->scene.deleted_ops.end(), opId) != m_doc->scene.deleted_ops.end();
-    // Tombstoning a delete op brings back what it deleted (docs/format.md), so on a delete marker that entry is offered
-    // as what it does; once undone, the delete can be applied again.
+    // Deleting a delete record brings back what it deleted, so on a delete marker that entry is offered as what it does;
+    // a record tombstoned by another (an older document) can be applied again.
     const bool deleteMarker = menuOp->type == "delete";
-    entry(deleteMarker ? "restore" : "delete", keyed(deleteMarker ? tr("Restore what it deleted") : tr("Delete (tombstone)"), "edit.delete"), "timelineDelete", [this, opId] { if (requireEditable()) deleteOp(opId); })->setEnabled(!deleted);
+    entry(deleteMarker ? "restore" : "delete", keyed(deleteMarker ? tr("Restore what it deleted") : tr("Delete"), "edit.delete"), "timelineDelete", [this, opId] { if (requireEditable()) deleteOp(opId); });
     entry(deleteMarker ? "delete" : "restore", keyed(deleteMarker ? tr("Delete it again") : tr("Restore"), "edit.restore"), "timelineRestore", [this, opId] { if (requireEditable()) restoreOp(opId); })->setEnabled(deleted);
     const bool designOp = (menuOp->type == "feature" || menuOp->type == "sketch") && !deleted;
     const opad::Feature* feat = m_doc->scene.feature(opId);
@@ -228,54 +228,46 @@ QMenu* MainWindow::historyMenu(bool undo) {
   return menu;
 }
 
+// Del on a marker deletes its op for good (no tombstone): the op, and the edits and deletes aimed at it, leave the log;
+// what later ops built on it fails or resolves as missing, marked on the timeline (the designer's to mend). A feature or
+// a sketch asks first when later features use it, with the result previewed (smart selection, UI-96). One undo step.
 void MainWindow::deleteOp(const std::string& requestedId) {
   const std::string opId=requestedId; // Rebuilding cards can destroy the signal sender during this operation.
   if (m_doc->snapshotBusy()) return m_doc->afterCapture([this, opId] { guarded([&] { deleteOp(opId); }); });  // a copy being taken
-  // Once is enough: a second tombstone (Repeat, Del again on the same marker) would need two restores.
-  if (m_doc->doc.is_deleted(opId)) throw opad::UserHint("That operation is already tombstoned.");
-  // A feature or a sketch: what depends on it is asked about first, the result previewed (smart selection, UI-96).
   const opad::Op* op = m_doc->doc.find_op(opId);
+  if (!op) throw opad::UserHint("That operation is no longer in the document.");
   const bool live = std::find(m_doc->scene.deleted_ops.begin(), m_doc->scene.deleted_ops.end(), opId) == m_doc->scene.deleted_ops.end();
-  if (op && live && (op->type == "feature" || op->type == "sketch")) {
+  if (live && (op->type == "feature" || op->type == "sketch")) {
     if (m_doc->rolledBack())  // as Del on the marker: the question reads the last state, so rolled forward first
       if (QAction* forward = action("timeline.rollForward")) forward->trigger();
     if (areaCommand("timeline.delete", opId)) return m_timeline->setCurrentOp(opId);
   }
-  // With a design history a tombstone changes what later features produce: planned on a worker.
-  if (!m_doc->scene.features.empty() || !m_doc->scene.sketches.empty()) {
-    m_design->applyOps({opad::json{{"op", "delete"}, {"target", opId}}}, tr("delete"));
-    return m_timeline->setCurrentOp(opId);
-  }
-  opad::json r = m_doc->run("delete", opad::json{{"target", opId}});
-  if (r.contains("id")) m_timeline->setCurrentOp(opId);
+  removeOps({opId}, tr("delete"));
 }
 
+// Restore on a step that took things out (TODO 11 help audit P9.2: a delete record, or the Remove step Del adds in a
+// design) deletes that step, which brings back what it removed; on an op a delete record tombstoned (an older document,
+// an agent's delete), that record goes. One undo step either way.
 void MainWindow::restoreOp(const std::string& requestedId) {
   const std::string opId=requestedId;
-  // On the step that took things out (TODO 11 help audit P9.2): a live delete step, or the Remove step Del adds in a
-  // design, is tombstoned, which brings back what it removed (one new step, so it can be undone in turn).
   const opad::Op* step = m_doc->doc.find_op(opId);
-  const bool live = step && !m_doc->doc.is_deleted(opId);
+  if (!step) throw opad::UserHint("That operation is no longer in the document.");
+  const bool live = !m_doc->doc.is_deleted(opId);
   const opad::Feature* removal = live && step->type == "feature" ? m_doc->scene.feature(opId) : nullptr;
-  if (live && (step->type == "delete" || (removal && removal->kind == "remove"))) {
-    if (removal || !m_doc->scene.features.empty() || !m_doc->scene.sketches.empty())
-      m_design->applyOps({opad::json{{"op", "delete"}, {"target", opId}}}, tr("restore"));
-    else
-      m_doc->run("delete", opad::json{{"target", opId}});
-    m_timeline->setCurrentOp(opId);
-    return;
-  }
-  // On a tombstoned step: tombstoning the delete op that targets it.
+  if (live && (step->type == "delete" || (removal && removal->kind == "remove"))) return removeOps({opId}, tr("restore"));
+  std::vector<std::string> records;
   for (const auto& op : m_doc->doc.ops)
-    if (op.type == "delete" && op.data.value("target", "") == opId && !m_doc->doc.is_deleted(op.id)) {
-      if (!m_doc->scene.features.empty() || !m_doc->scene.sketches.empty() || m_doc->doc.find_op(opId)->type == "feature" || m_doc->doc.find_op(opId)->type == "sketch")
-        m_design->applyOps({opad::json{{"op", "delete"}, {"target", op.id}}}, tr("restore"));
-      else
-        m_doc->run("delete", opad::json{{"target", op.id}});
-      m_timeline->setCurrentOp(opId);
-      return;
-    }
-  throw opad::UserHint("That operation is not tombstoned.");
+    if (op.type == "delete" && op.data.value("target", "") == opId && !m_doc->doc.is_deleted(op.id)) records.push_back(op.id);
+  if (records.empty()) throw opad::UserHint("That operation is not deleted.");
+  removeOps(records, tr("restore"));
+}
+
+void MainWindow::removeOps(const std::vector<std::string>& opIds, const QString& label, const QString& said) {
+  if (opIds.empty()) return;
+  m_design->removeOps(opIds, label, [this, said](bool ok, const QString& error) {
+    if (!ok) return guarded([&] { throw opad::Error(error.toStdString()); });
+    if (!said.isEmpty()) undoToast(said);
+  });
 }
 
 void MainWindow::deleteCurrent() {
@@ -302,10 +294,11 @@ void MainWindow::deleteNodes(const std::vector<std::string>& ids) {
   if (d.empty()) throw opad::Error("Nothing selected can be deleted.");
   const QString what = ids.size() == 1 ? m_doc->nodeName(ids.front()) : tr("%1 objects").arg(ids.size());
   const QString text = d.remove.empty() ? tr("Deleted %1").arg(what) : tr("Removed %1: a Remove step on the timeline keeps its history").arg(what);
-  m_design->applyOps(smart::deletionOps(d, m_doc->scene), tr("delete"), [this, text](bool ok, const QString& error) {
+  // What made them goes for good (an import, a sketch); bodies of a design history leave through a Remove step.
+  m_design->removeOps(d.tombstone, tr("delete"), [this, text](bool ok, const QString& error) {
     if (!ok) return guarded([&] { throw opad::Error(error.toStdString()); });
     undoToast(text);
-  });
+  }, smart::deletionOps({{}, d.remove}, m_doc->scene));
 }
 
 Toast* MainWindow::undoToast(const QString& text, int ms) {
@@ -318,16 +311,10 @@ Toast* MainWindow::undoToast(const QString& text, int ms) {
   }, ms);
 }
 
-// Several tombstones as one step (UI-02): one plan on a worker with a design history, else one batch.
+// Several ops deleted for good as one step (UI-02): one removal, planned on a worker with a design history.
 void MainWindow::deleteOps(const std::vector<std::string>& opIds) {
   if (opIds.size() == 1) return deleteOp(opIds.front());
-  if (opIds.empty()) return;
-  if (!m_doc->scene.features.empty() || !m_doc->scene.sketches.empty()) {  // one plan on a worker, one step
-    std::vector<opad::json> ops;
-    for (const auto& id : opIds) ops.push_back(opad::json{{"op", "delete"}, {"target", id}});
-    return m_design->applyOps(std::move(ops), tr("delete"));
-  }
-  m_doc->batch(tr("delete"), [&] { for (const auto& id : opIds) m_doc->run("delete", opad::json{{"target", id}}); });
+  removeOps(opIds, tr("delete"));
 }
 
 // Hide others (UI-02): one step, and the fewest nodes (a subtree with nothing kept is hidden as a whole), where it used to

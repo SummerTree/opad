@@ -139,7 +139,8 @@ QString isolate(const QString& text) { return text.isEmpty() ? text : QChar(0x20
 QString text(const QKeySequence& key, Style style) { return isolate(plain(key, style)); }
 QString text(const QString& id, Style style) { return text(binding(id), style); }
 
-QStringList fixedNames() { return {"esc", "enter", "ctrlEnter", "tab", "shiftTab", "shift", "alt", "ctrl", "del", "shiftDel", "backspace", "space", "f2", "shiftLeft", "shiftRight", "shiftEnd", "undo", "redo", "copy"}; }
+QStringList fixedNames() { return {"esc", "enter", "ctrlEnter", "tab", "shiftTab", "shift", "alt", "ctrl", "del", "shiftDel", "backspace", "space", "f2", "shiftLeft", "shiftRight", "shiftEnd", "undo", "redo", "copy",
+          "flyForward", "flyBack", "flyLeft", "flyRight", "flyUp", "flyDown"}; }
 
 QStringList fixedCaps(const QString& name, Style style) {
   static const QHash<QString, QKeyCombination> table{
@@ -158,7 +159,14 @@ QStringList fixedCaps(const QString& name, Style style) {
       {"shiftRight", QKeyCombination(Qt::ShiftModifier, Qt::Key_Right)},
       {"shiftEnd", QKeyCombination(Qt::ShiftModifier, Qt::Key_End)},
       {"backspace", QKeyCombination(Qt::Key_Backspace)},
-      {"space", QKeyCombination(Qt::Key_Space)}};
+      {"space", QKeyCombination(Qt::Key_Space)},
+      // Fly's (Viewport::setFlying): where they sit on a Latin keyboard; the arrows and Page Up / Down do the same.
+      {"flyForward", QKeyCombination(Qt::Key_W)},
+      {"flyBack", QKeyCombination(Qt::Key_S)},
+      {"flyLeft", QKeyCombination(Qt::Key_A)},
+      {"flyRight", QKeyCombination(Qt::Key_D)},
+      {"flyUp", QKeyCombination(Qt::Key_E)},
+      {"flyDown", QKeyCombination(Qt::Key_Q)}};
   if (const auto it = table.constFind(name); it != table.constEnd()) return chordCaps(*it, resolved(style));
   if (name == "undo") return caps(standard(QKeySequence::Undo), style);
   if (name == "redo") return caps(standard(QKeySequence::Redo), style);

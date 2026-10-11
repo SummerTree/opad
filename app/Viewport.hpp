@@ -210,6 +210,18 @@ class Viewport : public QWidget, protected AIS_ViewController {
   void startZoomWindow();  // the next left drag frames what to zoom into (a click zooms in twice there); Esc, right click cancel
   void cancelZoomWindow();
   bool zoomWindowActive() const { return m_zoomWindow; }
+  // Fly (ViewportFly.cpp): instead of orbiting around the model, the camera itself turns and moves, as a head would, to get
+  // close to miniature features. A left drag looks around from where the camera is (a click still picks); W/S or Up/Down
+  // move forward and back, A/D or Left/Right sideways, E/Q or Page Up/Page Down up and down, Shift four times faster,
+  // Ctrl four times slower, the wheel steps forward and back; Esc lands. The speed follows the distance to the surface
+  // straight ahead (one ray through the view's centre), so the closer it gets the slower it goes. An orthographic view
+  // has no depth to come closer in: the camera moves the same way while a clip plane at its eye cuts away what it has
+  // passed, and the zoom follows the distance to what it was looking at, as perspective would show it. Not in a sketch
+  // or 2D mode (false then).
+  bool setFlying(bool on);
+  bool flying() const { return m_fly != nullptr; }
+  QString flyHint() const;  // what the keys do, for the status bar
+  bool benchFly(const QString& prefix);  // OPAD_BENCH_FLY (ViewportFlyBench.cpp)
   bool previousView();  // the view the camera rested at before this one (ViewNav.hpp); false: none
   bool nextView();
   // The document's Home: the camera of its last live view op with "home" (ViewNavigation's Set current view as Home),
@@ -700,6 +712,7 @@ class Viewport : public QWidget, protected AIS_ViewController {
   void ownCursorChanged(bool shown);  // the system pointer went blank (the editor draws its cursor) or came back
   void looksApplied();  // a setLookLayer (or a scene change under one) has reached every displayed body
   void zoomWindowChanged(bool active);
+  void flyingChanged(bool on);
   void previewPeekChanged(bool on);  // Ctrl shows the bodies a preview stands in for (on), or the preview again
   void fitRequested();  // a double click of the middle button: the window fits everything (its Fit all)
   void cubeMenuRequested(const QPoint& globalPos);  // a right click on the view cube
@@ -1286,4 +1299,20 @@ class Viewport : public QWidget, protected AIS_ViewController {
   gp_Dir naturalUp() const;
   bool applyHomeCamera();  // the camera to the document's Home (homeCamera); false: none to go to
   bool zoomWindowKey(QObject* object, QEvent* e);  // Esc leaves the zoom window before anything else sees it
+  // Fly (ViewportFly.cpp): its state while on (shared: complete only there).
+  struct Fly;
+  std::shared_ptr<Fly> m_fly;
+  bool flyEvent(QEvent* e);  // its keys (from the shortcut override on) and Esc; true: taken
+  bool flyPress(QMouseEvent* e);  // a left press looks around once it drags; a click is handed on as a press
+  bool flyMove(QMouseEvent* e);
+  bool flyRelease(QMouseEvent* e);
+  bool flyWheel(QWheelEvent* e);
+  void flyTick();  // the held keys move the camera, per frame time
+  void flyStep(const gp_Vec& delta);  // the camera moved by this (orthographic: the zoom and the clip plane follow)
+  void flyLook(double dx, double dy);  // turned about the eye by a drag of so many pixels
+  double flyDistance();  // to the surface straight ahead (perspective: measured again every 120 ms)
+  void flyOrthoStart(bool redraw = true);  // the eye moved back out of the model (the picture is the same), the zoom tied to the distance
+  gp_Dir flyHead() const;  // the head's up: looking left and right turns about it (world Z; the screen's when looking down)
+  void flyFrame();  // a frame: a camera another command moved (fit, the cube) is taken up as it is
+  void focusOutEvent(QFocusEvent* e) override;  // held keys are let go
 };

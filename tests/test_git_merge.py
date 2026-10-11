@@ -341,6 +341,10 @@ with tempfile.TemporaryDirectory(prefix="opad-merge-") as folder:
                            "document header changed; manual review required"),
         "history rewritten": (base, version(text=lambda t: t.replace('"Base note"', '"Changed note"', 1)), theirs,
                               "history was rewritten; manual review required"),
+        # An op deleted for good on one side (no tombstone): left out of the merge; changed on the other side, refused.
+        "op deleted on one side": (base, version(comment, text=lambda t: t.replace(base_lines[4] + "\n", "", 1)), theirs, None),
+        "op deleted against edit": (base, version(text=lambda t: t.replace(base_lines[4] + "\n", "", 1)), theirs_edit,
+                                    f"operation {note} was deleted on one side and changed on the other; manual review required"),
         "same op written otherwise": (base, version(comment, text=lambda t: t.replace('"Base note"', ' "Base note" ', 1)), theirs, None),
         "body store pruned": (base, ours, version(param, text=lambda t: t[:t.index("#bodies\n") + 8]), "body store was pruned; manual review required"),
         "base ops reordered": (base, version(text=lambda t: swap(t, 3, 4)), theirs, "operation history was reordered"),

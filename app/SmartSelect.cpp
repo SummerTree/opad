@@ -1090,7 +1090,7 @@ void SmartSelect::deleteFeature(const smart::Candidate& c) {
   const unsigned token = ++m_deleteToken;
   withSnapshot(Use::Delete, [this, c, token, revision, generation](std::shared_ptr<const opad::Document> document) {
     if (token != m_deleteToken) return;
-    auto plan = std::make_shared<opad::design::Plan>();
+    auto plan = std::make_shared<opad::design::Removal>();
     auto parts = std::make_shared<std::vector<Viewport::PreviewPart>>();
     auto hidden = std::make_shared<std::vector<std::string>>();
     auto faces = std::make_shared<std::vector<opad::Ref>>();
@@ -1098,9 +1098,9 @@ void SmartSelect::deleteFeature(const smart::Candidate& c) {
     const bool findFaces = c.feature() && c.refs.empty();  // from its marker: what it made, for Remove its faces instead
     services().jobs()->async(tr("Checking what deleting %1 changes").arg(QString::fromStdString(c.name)), [document, op = c.op, plan, parts, hidden, faces, deps, findFaces](Progress p) {
       const opad::design::Cancel cancel = [p] { return p.cancelled(); };
-      *plan = opad::design::plan_ops(*document, {{{"op", "delete"}, {"target", op}}}, false, cancel);
+      *plan = opad::design::plan_removal(*document, {op}, cancel);  // deleted for good, no tombstone
       const opad::Scene before = opad::resolve(*document);
-      *deps = smart::dependents(plan->report, before, {op});
+      *deps = smart::dependents(plan->plan.report, before, {op});
       if (deps->empty()) return;  // nothing to ask about: this plan is committed
       if (findFaces) {
         const auto made = smart::madeBy(*document, cancel);
@@ -1110,7 +1110,7 @@ void SmartSelect::deleteFeature(const smart::Candidate& c) {
       // every body that changes there meshed for the preview; the ones that go are hidden.
       opad::Document after = *document;
       after.shape_cache = opad::make_shape_cache();
-      opad::design::commit(after, opad::design::Plan(*plan));
+      opad::design::commit_removal(after, opad::design::Removal(*plan));
       const opad::Scene now = opad::resolve(after);
       for (const auto& id : before.all_bodies()) {
         if (cancel()) return;
@@ -1234,10 +1234,8 @@ void SmartSelect::askDependents(const smart::Candidate& c, const std::vector<std
   menu->popup(m_chip && m_chip->isVisible() ? m_chip->mapToGlobal(QPoint(0, m_chip->height() + 2)) : QCursor::pos());
 }
 
-void SmartSelect::commitDelete(const smart::Candidate& c, std::vector<std::string> ops, std::shared_ptr<opad::design::Plan> planned) {
+void SmartSelect::commitDelete(const smart::Candidate& c, std::vector<std::string> ops, std::shared_ptr<opad::design::Removal> planned) {
   services().viewport()->clearPreviewBodies();
-  std::vector<opad::json> list;
-  for (const auto& op : ops) list.push_back({{"op", "delete"}, {"target", op}});
   const QString name = QString::fromStdString(c.name);
   const size_t n = ops.size();
   auto done = [this, name, n](bool ok, const QString& error) {
@@ -1245,8 +1243,8 @@ void SmartSelect::commitDelete(const smart::Candidate& c, std::vector<std::strin
     trace::log(QString("smart select: deleted %1 (%2 op(s))").arg(name).arg(n));
     services().undoToast(n == 1 ? tr("Deleted %1").arg(name) : tr("Deleted %1 and %2 feature(s) using it").arg(name).arg(n - 1));
   };
-  if (planned) return services().design()->commitPlanned(std::move(planned), tr("delete %1").arg(name), done);
-  services().design()->applyOps(list, tr("delete %1").arg(name), done);
+  if (planned) return services().design()->commitRemoval(std::move(planned), tr("delete %1").arg(name), done);
+  services().design()->removeOps(std::move(ops), tr("delete %1").arg(name), done);
 }
 
 // ---------------------------------------------------------------- words and icons
