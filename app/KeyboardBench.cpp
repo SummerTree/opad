@@ -14,7 +14,7 @@
 // OPAD_BENCH_KEYBOARD=<prefix> (a box and the sketch "Plate"): in the browser, Space hides and shows the body row, then
 // the sketch row; Enter fits the view to the body; F2 starts renaming it (Esc leaves the name); Del asks the window to
 // delete it; the Menu key and Shift+F10 open its menu. On the timeline, Space suppresses the box and brings it back, Del
-// tombstones it and Shift+Del restores it, Enter edits it, the Menu key opens its menu. A screen reader finds the markers
+// deletes it for good and Undo brings it back, Enter edits it, the Menu key opens its menu. A screen reader finds the markers
 // as list items named as the tooltips name them, the current one selected, Press selecting what a marker touches; and the
 // view cube's six faces as buttons named as the views (Top view ...), three facing an iso camera, Press on Front turning
 // the view to the front.
@@ -59,7 +59,7 @@ OPAD_BENCH(OPAD_BENCH_KEYBOARD, keyboard) {
   auto commands = std::make_shared<QStringList>();
   QObject::connect(w.m_browser, &BrowserPanel::fitRequested, &w, [fits](const std::vector<std::string>&) { ++*fits; });
   QObject::connect(w.m_browser, &BrowserPanel::commandRequested, &w, [commands](const QString& id) { *commands << id; });
-  auto deleted = [&w](const std::string& id) { return std::find(w.m_doc->scene.deleted_ops.begin(), w.m_doc->scene.deleted_ops.end(), id) != w.m_doc->scene.deleted_ops.end(); };
+  auto deleted = [&w](const std::string& id) { return w.m_doc->doc.find_op(id) == nullptr; };  // deleted for good, no tombstone
   auto suppressed = [&w, feature] { const opad::Feature* f = w.m_doc->scene.feature(feature); return f && f->suppressed; };
 
   // ---- the browser
@@ -151,15 +151,15 @@ OPAD_BENCH(OPAD_BENCH_KEYBOARD, keyboard) {
         }
   }, [=] { return deleted(feature) || question(); });
   add(100, [=, &w] {
-    check(deleted(feature), "Del tombstones the marker's op");
+    check(deleted(feature), "Del deletes the marker's op for good");
     const size_t ops = w.m_doc->doc.ops.size();
     bool refused = false;
     try { w.deleteOp(feature); } catch (const opad::UserHint&) { refused = true; }
-    check(refused && w.m_doc->doc.ops.size() == ops, "a marker already tombstoned is not tombstoned again (Repeat, a second Del)");
-    key(w.m_timeline, Qt::Key_Delete, Qt::ShiftModifier);
+    check(refused && w.m_doc->doc.ops.size() == ops, "a deleted op is not deleted again (Repeat, a second Del)");
+    w.m_doc->undo();
   }, [=] { return idle() && deleted(feature); });
   add(100, [=, &w] {
-    check(!deleted(feature), "Shift+Del restores it");
+    check(!deleted(feature), "Undo brings it back");
     w.m_timeline->setCurrentOp(feature);
     key(w.m_timeline, Qt::Key_Return);
   }, [=] { return idle() && !deleted(feature); });

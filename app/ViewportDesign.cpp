@@ -715,6 +715,7 @@ void Viewport::removeOverlay(const Handle(AIS_InteractiveObject)& obj) {
 // ---------------------------------------------------------------- sketch input
 void Viewport::beginSketchInput(SketchInput* input, const opad::Frame& frame, const std::string& hiddenSketch) {
   resetHoverFade();
+  setFlying(false);  // a sketch is drawn on its plane
   m_sketchInput = input;
   m_sketchFrame = frame;
   const auto normal=frame.normal();
@@ -842,6 +843,7 @@ bool Viewport::event(QEvent* e) {
     return true;
   }
   if (e->type() == QEvent::NativeGesture && handleNativeGesture(static_cast<QNativeGestureEvent*>(e))) return true;
+  if (flyEvent(e)) return true;  // flying: W A S D Q E, the arrows and Page Up / Down move the camera, Esc lands
   // An overlay made while the pointer is blank over the view (a toast, a value box) keeps the arrow, as the others do.
   if (e->type() == QEvent::ChildPolished && m_ownCursorShown)
     if (auto* child = qobject_cast<QWidget*>(static_cast<QChildEvent*>(e)->child()); child && !child->isWindow() && !child->testAttribute(Qt::WA_SetCursor))

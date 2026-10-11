@@ -98,10 +98,12 @@ void apply_restore(Document& current, Document& version, const RestorePlan& plan
 // The git merge driver (UI-60) over whole files, rule for rule tools/opad_merge.py (the reference; tests/test_git_merge.py
 // runs both). Each file is read as records: '#opad 1|2', a header line, '#ops', ops (JSON objects with a string id, one
 // or more lines, no blank or '#' lines between them), '#bodies', '#body <key> <lines> <meta>' entries whose text must
-// hash to the key. Lines end at LF (CRLF and CR read as LF). Refused, with the driver's message: a changed header; a base
-// op missing, changed or moved in either version; a base body missing; one id with two contents; new ops of both sides
-// that change the same (target, field) (op_effects; "*" meets every field); theirs' order not kept. Merged: ours as
-// written (each id and key once), then theirs' new ops and bodies in their order; the format the highest of the three.
+// hash to the key. Lines end at LF (CRLF and CR read as LF). A base op one version no longer has was deleted there for
+// good (Document::remove_ops): it is left out of the merge. Refused, with the driver's message: a changed header; a base
+// op changed or moved in either version; a base body missing; one id with two contents; a new op of one side that changes
+// a base op the other deleted; new ops of both sides that change the same (target, field) (op_effects; "*" meets every
+// field); theirs' order not kept. Merged: ours as written (each id and key once, the deleted ones out), then theirs' new
+// ops and bodies in their order; the format the highest of the three.
 struct FileMerge {
   std::string error;                     // why a person has to merge it; empty when merged
   std::vector<MergeConflict> conflicts;  // the concurrent changes behind such an error (every pair, not only the first)

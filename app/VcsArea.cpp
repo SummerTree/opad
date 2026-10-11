@@ -1,9 +1,10 @@
 // Version control as an area of the window (AreaController.hpp): the open file kept in step with the disk (DiskSync,
 // UI-56) and its repository (GitWatch, UI-61 / UI-136): the status chip beside the path, File > Clone repository…;
-// Compare (CompareMode, UI-58): Review > Compare, the Version and Inspect menus (the last commit or save, another file),
-// the git chip's Compare with the last commit, the Recovery offer's Compare…; Show unsaved changes (UI-59), also the
-// unsaved-changes question's Review changes…; the Version control panel and its commands (VersionControl, UI-62): the
-// Version menu, Review > Compare, Alt+4, the chip's menu;
+// Compare (CompareMode, UI-58): Review > Compare and Design > Version, the Version and Inspect menus (the last commit or
+// save, another file), the git chip's Compare with the last commit, the Recovery offer's Compare…; Show unsaved changes
+// (UI-59), also the unsaved-changes question's Review changes…; the Version control panel and its commands
+// (VersionControl, UI-62), the design's (started from Review they switch to Design): the Version menu, Design > Version,
+// Alt+4, the chip's menu;
 // who added each op in which commit (OpProvenance, UI-64): the timeline's tooltips, and Show in version history on a
 // marker or an object (the History page narrowed to the commits that touched it).
 #include <QAction>

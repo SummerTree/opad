@@ -15,6 +15,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <functional>
 
 #include "AppDocument.hpp"
 #include "AreaController.hpp"
@@ -238,6 +239,8 @@ VersionPanel::VersionPanel(VersionControl* vc, QWidget* parent) : QWidget(parent
   bp->setSpacing(6);
   m_branches = makeTree(branchPage, "versionBranches", 3);
   m_branches->setAccessibleName(tr("Branches"));
+  m_branches->setRootIsDecorated(true);  // a tree: each branch under the one it was made from
+  m_branches->setIndentation(14);
   m_branches->header()->setSectionResizeMode(0, QHeaderView::Stretch);
   m_branches->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
   m_branches->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -541,48 +544,56 @@ void VersionPanel::showLists() {
     more->setData(0, Qt::UserRole, -1);
   }
   if (current) m_history->setCurrentItem(current);
+  // Branches as a tree: each under the one it was made from (git::linkBranches), the trunk and branches of no known
+  // origin at the top; a branch whose tip another holds says it is merged there.
   const auto& branches = m_vc->branches();
   const QString keepRef = m_branches->currentItem() ? m_branches->currentItem()->data(1, Qt::UserRole).toString() : QString();
   m_branches->clear();
   QTreeWidgetItem* currentBranch = nullptr;
-  bool remoteHeader = false;
-  auto header = [this, &t](const QString& text) {
-    auto* h = new QTreeWidgetItem(m_branches);
-    h->setText(0, text);
-    h->setFlags(Qt::ItemIsEnabled);
-    h->setForeground(0, t.fg3);
-    QFont f = h->font(0);
-    f.setPointSizeF(f.pointSizeF() * 0.9);
-    f.setBold(true);
-    h->setFont(0, f);
-  };
-  header(tr("Branches here"));
-  for (size_t i = 0; i < branches.size(); ++i) {
+  std::vector<QTreeWidgetItem*> made(branches.size(), nullptr);
+  std::function<QTreeWidgetItem*(size_t)> row = [&](size_t i) -> QTreeWidgetItem* {
+    if (made[i]) return made[i];
     const git::Branch& br = branches[i];
-    if (br.remote && !std::exchange(remoteHeader, true)) header(tr("On remotes"));
-    auto* item = new QTreeWidgetItem(m_branches);
-    item->setText(0, (br.head ? QStringLiteral("● ") : QStringLiteral("    ")) + br.name);
+    const int up = br.parent >= 0 && size_t(br.parent) < branches.size() ? br.parent : -1;
+    auto* item = up >= 0 ? new QTreeWidgetItem(row(size_t(up))) : new QTreeWidgetItem(m_branches);
+    made[i] = item;
+    item->setText(0, (br.head ? QStringLiteral("● ") : QString()) + br.name);
     if (br.head) {
       QFont f = item->font(0);
       f.setBold(true);
       item->setFont(0, f);
     }
+    const bool upstream = up >= 0 && branches[size_t(up)].upstream == br.name;  // its parent's upstream: the parent's ↑↓ says it
+    const bool merged = up >= 0 && br.own == 0 && br.oid != branches[size_t(up)].oid && !upstream;
     QString track;
     if (br.gone) track = tr("upstream gone");
     else if (br.ahead || br.behind) track = (br.ahead ? tr("↑%1").arg(br.ahead) : QString()) + (br.ahead && br.behind ? " " : "") + (br.behind ? tr("↓%1").arg(br.behind) : QString());
+    else if (merged) track = tr("merged");
     item->setText(1, track);
     item->setForeground(1, br.gone ? t.amber : t.fg2);
     item->setText(2, ago(br.date));
     item->setForeground(2, t.fg3);
     if (br.remote) item->setForeground(0, t.fg2);
+    QString origin;
+    if (up >= 0) {
+      const QString from = branches[size_t(up)].name;
+      origin = upstream ? tr("The upstream of %1").arg(from)
+               : merged ? tr("Merged into %1").arg(from)
+               : br.own == 0 ? tr("At the same commit as %1").arg(from)
+                             : tr("Made from %1 at %2, %n commit(s) of its own", nullptr, br.own).arg(from, br.fork.left(7));
+    }
     item->setToolTip(0, tr("%1\n%2\nLast commit: %3").arg(br.name, br.upstream.isEmpty() ? (br.remote ? tr("a branch of the remote") : tr("follows no remote branch"))
                                                                                          : tr("follows %1").arg(br.upstream),
-                                                         br.subject));
+                                                         br.subject) +
+                            (origin.isEmpty() ? QString() : "\n" + origin));
     item->setData(0, Qt::UserRole, int(i));
     item->setData(0, Qt::UserRole + 1, true);
     item->setData(1, Qt::UserRole, br.ref);
     if (br.ref == keepRef) currentBranch = item;
-  }
+    return item;
+  };
+  for (size_t i = 0; i < branches.size(); ++i) row(i);
+  m_branches->expandAll();
   if (currentBranch) m_branches->setCurrentItem(currentBranch);
   updateButtons();
 }

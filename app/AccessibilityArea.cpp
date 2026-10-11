@@ -334,7 +334,7 @@ class AccessibilityArea : public AreaController {
     connect(keys::notifier(), &keys::Notifier::changed, view, describe);
     if (auto* timeline = services().window()->findChild<TimelineWidget*>()) {
       timeline->setAccessibleName(tr("Timeline"));
-      timeline->setAccessibleDescription(help::expand(tr("The document's history. Left and Right step through it, Home and End go to its ends, {fixed:enter} or {fixed:f2} edits a feature or a sketch, {fixed:space} suppresses a feature, {fixed:del} tombstones, {fixed:shiftDel} restores, the Menu key opens the marker's menu.")));
+      timeline->setAccessibleDescription(help::expand(tr("The document's history. Left and Right step through it, Home and End go to its ends, {fixed:enter} or {fixed:f2} edits a feature or a sketch, {fixed:space} suppresses a feature, {fixed:del} deletes, {fixed:shiftDel} restores, the Menu key opens the marker's menu.")));
     }
     if (services().browser()) {
       services().browser()->tree()->setAccessibleName(tr("Browser"));

@@ -79,7 +79,7 @@ class TimelineWidget : public QWidget {
   void markerHovered(const std::string& opId);      // the pointer came onto a marker; empty: off every marker
   void rollbackRequested(const std::string& opId);  // the playhead was dropped before this op; empty: at the end
   void suppressRequested(const std::string& opId);  // Space on a feature
-  void deleteRequested(const std::string& opId, bool restore);  // Del (tombstone), Shift+Del (restore)
+  void deleteRequested(const std::string& opId, bool restore);  // Del (deleted for good), Shift+Del (restore)
 
  public slots:
   void rebuild();

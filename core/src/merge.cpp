@@ -660,19 +660,36 @@ FileMerge merge_files(std::string base, std::string ours, std::string theirs, bo
     Verified verified;
     const Version vb = read_version(base, verified), vo = read_version(*o, verified), vt = read_version(*t, verified);
     if (!py_equal(vb.header, vo.header) || !py_equal(vb.header, vt.header)) throw Error("document header changed; manual review required");
+    std::unordered_set<std::string> removed;  // base ops a side deleted for good (no tombstone): gone from the merge
     for (const Version* v : {&vo, &vt}) {
-      for (const auto& r : vb.ops)
-        if (const auto it = v->at.find(r.id); it == v->at.end() || !same(r, v->ops[it->second]))
-          throw Error("history was rewritten; manual review required");
+      for (const auto& r : vb.ops) {
+        const auto it = v->at.find(r.id);
+        if (it == v->at.end()) removed.insert(r.id);
+        else if (!same(r, v->ops[it->second])) throw Error("history was rewritten; manual review required");
+      }
       for (const auto& key : vb.keys)
         if (!v->keys.count(key)) throw Error("body store was pruned; manual review required");
-      size_t next = 0;  // operation order is what regeneration and tombstones depend on
+      std::vector<std::string_view> kept;  // operation order is what regeneration and tombstones depend on
+      for (const auto& r : vb.ops)
+        if (v->at.count(r.id)) kept.push_back(r.id);
+      size_t next = 0;
       for (const auto& r : v->ops)
-        if (vb.at.count(r.id) && vb.ops[next++].id != r.id) throw Error("operation history was reordered");
+        if (vb.at.count(r.id) && kept[next++] != r.id) throw Error("operation history was reordered");
     }
     for (const auto& r : vo.ops)
       if (const auto it = vt.at.find(r.id); it != vt.at.end() && !vb.at.count(r.id) && !same(r, vt.ops[it->second]))
         throw Error("conflicting operation ID " + r.id);
+    // What one side deleted, the other changed (an edit, a delete record, a regeneration of it): for review.
+    auto deletedAgainst = [&](const Version& side, const Version& other) {
+      for (const auto& r : other.ops) {
+        if (vb.at.count(r.id) || side.at.count(r.id)) continue;  // new on the other side only
+        for (const auto& [target, field] : op_effects(r.data))
+          if (vb.at.count(target) && !side.at.count(target))
+            throw Error("operation " + target + " was deleted on one side and changed on the other; manual review required");
+      }
+    };
+    deletedAgainst(vo, vt);
+    deletedAgainst(vt, vo);
     // What the new ops of one side only change, against the other's.
     std::map<std::string, std::vector<std::pair<std::string, const Record*>>> changed;  // target -> field, theirs' op
     for (const auto& r : vt.ops)
@@ -727,15 +744,19 @@ FileMerge merge_files(std::string base, std::string ours, std::string theirs, bo
         synthesized.push_back(std::make_shared<const std::string>(std::move(record)));
     std::vector<const Record*> merged;
     merged.reserve(vo.ops.size() + vt.ops.size());
-    for (const auto& r : vo.ops) merged.push_back(&r);
+    for (const auto& r : vo.ops)
+      if (!removed.count(r.id)) merged.push_back(&r);
+    std::vector<const Record*> theirs;  // theirs' ops the merge keeps, in their order
     for (const auto& r : vt.ops) {
+      if (removed.count(r.id)) continue;
+      theirs.push_back(&r);
       const auto it = vo.at.find(r.id);
       if (it == vo.at.end()) merged.push_back(&r);
       else if (!same(vo.ops[it->second], r)) throw Error("conflicting operation ID " + r.id);
     }
     size_t next = 0;
     for (const Record* r : merged)
-      if (vt.at.count(r->id) && vt.ops[next++].id != r->id) throw Error("branch operation order conflicts; manual review required");
+      if (vt.at.count(r->id) && theirs[next++]->id != r->id) throw Error("branch operation order conflicts; manual review required");
     static constexpr std::string_view format[] = {"#opad 1\n", "#opad 2\n"};
     m.pieces.push_back(format[std::max({vb.format, vo.format, vt.format}) - 1]);
     m.pieces.push_back(vo.head);

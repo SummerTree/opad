@@ -292,6 +292,7 @@ void Viewport::alignGridPlane() {
 }
 
 void Viewport::setTwoDimensional(bool on) {
+  if (on) setFlying(false);  // 2D mode keeps its plane: no looking around
   const bool entering = on && m_threeDimensionalCamera.IsNull();
   m_twoDimensional = on;
   if (!m_initialised) return;

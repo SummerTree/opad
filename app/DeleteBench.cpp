@@ -11,14 +11,15 @@
 // OPAD_BENCH_DELETE=<prefix> (TODO 11 UI-04, Del routing; cases delete-design and delete-import in
 // tools/bench_cases/smart.py). Del takes out what the selection covers and nothing more, as one step with an Undo toast
 // instead of a question.
-//   A designed box: one picked face does not tombstone the box, it opens smart selection's menu; all six faces are the
-//   box feature: Del deletes it (nothing uses it), Undo from the toast; the body picked whole goes to a Remove feature,
+//   A designed box: one picked face does not delete the box, it opens smart selection's menu; all six faces are the
+//   box feature: Del deletes it for good (nothing uses it), Undo from the toast; the body picked whole goes to a Remove feature,
 //   the box feature stays, Undo from the toast. A sketch with a peg extruded from it: the sketch picked in the browser and
 //   deleted asks about the peg with the result previewed (UI-96, as from its marker); cancelled, nothing changes.
 //   An import of two bodies, no history: one body goes to a Remove feature (the other stays, the import is not
-//   tombstoned); both are the whole import: it is tombstoned; Undo from the toast each time.
+//   deleted); both are the whole import: it is deleted for good; Undo from the toast each time.
 //   Restore (edit.restore) on the step that took things out (TODO 11 help audit P9.2), as its guide shows: on the box's
-//   Remove step and on the import's delete step it brings them back as one new step, and Undo takes that back.
+//   Remove step and on a delete record of the import (an agent's) it deletes that step, which brings them back, and Undo
+//   takes that back.
 //   A big model (the Engine, case delete-engine): one body goes to a Remove feature and comes back with Undo, with no
 //   event-loop gap over 250 ms.
 OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
@@ -30,7 +31,8 @@ OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
     QString name;  // the first body's, read while it is there
     QElapsedTimer clock, tick;
     qint64 gap = 0;
-    size_t tombstones = 0;
+    std::string sourceName;  // the box feature's
+    size_t tombstones = 0;   // delete records in the document as loaded (an older one may hold some)
     std::string step;  // the Remove or delete step Restore is tried on
   };
   auto state = std::make_shared<State>();
@@ -79,6 +81,7 @@ OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
           state->source = w.m_doc->node(state->bodies.front())->source_op;
           state->name = w.m_doc->nodeName(state->bodies.front());
           state->ops = w.m_doc->doc.ops.size();
+          if (const opad::Op* made = w.m_doc->doc.find_op(state->source)) state->sourceName = made->data.value("name", "");
           state->tombstones = w.m_doc->scene.deleted_ops.size();
           if (state->bodies.size() > 2) {  // a big import (with a sketch or not): one body out and back, timed
             state->phase = 30;
@@ -104,9 +107,9 @@ OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
         case 2: {
           QMenu* menu = area->openMenu();
           if (!waitFor(menu && menu->isVisible(), "Del on a face opens smart selection's menu")) return;
-          require(w.m_doc->doc.ops.size() == state->ops && w.m_doc->scene.deleted_ops.empty(), "Del on a face tombstones nothing");
+          require(w.m_doc->doc.ops.size() == state->ops && w.m_doc->scene.deleted_ops.empty(), "Del on a face deletes nothing");
           menu->grab().save(prefix + ".face.png");
-          pass("Del on one face of the box opened smart selection's menu and tombstoned nothing");
+          pass("Del on one face of the box opened smart selection's menu and deleted nothing");
           menu->close();
           // All six: the box feature's whole face set.
           std::vector<opad::Ref> all;
@@ -117,9 +120,9 @@ OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
           break;
         }
         case 3: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "Del on the box's six faces deletes the box feature")) return;
-          require(w.m_doc->scene.all_bodies().empty() && w.m_doc->scene.deleted_ops.size() == 1, "the box feature is tombstoned");
-          undoFromToast(SmartSelect::tr("Deleted %1").arg(QString::fromStdString(w.m_doc->doc.find_op(w.m_doc->scene.deleted_ops.front())->data.value("name", ""))));
+          if (!waitFor(!w.m_doc->doc.find_op(state->source), "Del on the box's six faces deletes the box feature")) return;
+          require(w.m_doc->scene.all_bodies().empty() && w.m_doc->scene.deleted_ops.empty() && w.m_doc->doc.ops.size() < state->ops, "the box feature is deleted for good");
+          undoFromToast(SmartSelect::tr("Deleted %1").arg(QString::fromStdString(state->sourceName)));
           break;
         }
         case 4:
@@ -154,9 +157,9 @@ OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
           w.action("edit.restore")->trigger();
           break;
         case 9:
-          if (!waitFor(w.m_doc->doc.is_deleted(state->step) && w.m_doc->scene.all_bodies() == state->bodies, "Restore on the Remove step brings the body back")) return;
-          require(w.m_doc->doc.ops.size() == state->ops + 2, "the restore is one new step");
-          pass("Restore on the Remove step (its marker selected) brought the body back as one new step");
+          if (!waitFor(!w.m_doc->doc.find_op(state->step) && w.m_doc->scene.all_bodies() == state->bodies, "Restore on the Remove step brings the body back")) return;
+          require(w.m_doc->doc.ops.size() == state->ops, "the restore deletes the Remove step");
+          pass("Restore on the Remove step (its marker selected) deleted it and brought the body back as one step");
           w.action("edit.undo")->trigger();
           break;
         case 10:
@@ -226,31 +229,25 @@ OPAD_BENCH(OPAD_BENCH_DELETE, deleterouting) {
           w.action("edit.delete")->trigger();
           break;
         case 23: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops, "Del on both bodies tombstones the import")) return;
-          const auto& deleted = w.m_doc->scene.deleted_ops;
-          require(deleted == std::vector<std::string>{state->source} && w.m_doc->scene.features.empty() && w.m_doc->scene.all_bodies().empty(), "the import is tombstoned, nothing else");
+          if (!waitFor(w.m_doc->doc.ops.size() < state->ops, "Del on both bodies deletes the import")) return;
+          require(!w.m_doc->doc.find_op(state->source) && w.m_doc->scene.deleted_ops.empty() && w.m_doc->scene.features.empty() && w.m_doc->scene.all_bodies().empty(),
+                  "the import is deleted for good, nothing else");
           undoFromToast(QObject::tr("Deleted %1").arg(QObject::tr("%1 objects").arg(2)));
           break;
         }
         case 24:
           if (!waitFor(w.m_doc->doc.ops.size() == state->ops && w.m_doc->scene.all_bodies().size() == 2, "Undo brings the import back")) return;
-          pass("Del on every body of the import tombstoned the import; Undo from the toast");
-          pickBodies(state->bodies);
-          w.action("edit.delete")->trigger();
-          break;
-        case 25: {
-          if (!waitFor(w.m_doc->doc.ops.size() > state->ops && w.m_doc->scene.all_bodies().empty(), "Del on both bodies again")) return;
-          const opad::Op& last = w.m_doc->doc.ops.back();
-          require(last.type == "delete" && last.data.value("target", "") == state->source, "a delete step on the import");
-          state->step = last.id;
+          pass("Del on every body of the import deleted the import; Undo from the toast");
+          // A delete record of the import, as an agent or an older document leaves one.
+          state->step = w.m_doc->run("delete", opad::json{{"target", state->source}}).value("id", "");
+          require(!state->step.empty() && w.m_doc->doc.is_deleted(state->source) && w.m_doc->scene.all_bodies().empty(), "a delete record on the import");
           w.m_timeline->setCurrentOp(state->step);
           w.action("edit.restore")->trigger();
           break;
-        }
-        case 26:
-          if (!waitFor(w.m_doc->doc.is_deleted(state->step) && w.m_doc->scene.all_bodies().size() == 2, "Restore on the delete step brings the import back")) return;
-          require(w.m_doc->doc.ops.size() == state->ops + 2 && !w.m_doc->doc.is_deleted(state->source), "the restore is one new step, the import live again");
-          pass("Restore on the delete step (its marker selected) brought the import back as one new step");
+        case 25:
+          if (!waitFor(!w.m_doc->doc.find_op(state->step) && w.m_doc->scene.all_bodies().size() == 2, "Restore on the delete record brings the import back")) return;
+          require(w.m_doc->doc.ops.size() == state->ops && !w.m_doc->doc.is_deleted(state->source), "the record deleted, the import live again");
+          pass("Restore on the delete record (its marker selected) deleted it and brought the import back");
           timer->stop();
           QCoreApplication::exit(0);
           return;

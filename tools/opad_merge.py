@@ -3,6 +3,8 @@
 Usage: python tools/opad_merge.py BASE OURS THEIRS
 Only OURS is written, and only after a complete successful merge. Conflicts
 return nonzero, preserving the user's version for normal Git resolution.
+An op of the base that one side no longer has was deleted there for good: the
+merge leaves it out, unless the other side changed it (then it is a conflict).
 This is the reference for the C++ driver that OPAD ships (core/src/merge.cpp,
 `opad-cli merge-driver %O %A %B %P` or `opad --merge-driver %O %A %B %P`);
 tests/test_git_merge.py checks that both merge and refuse alike.
@@ -164,20 +166,31 @@ def merge(base_path, ours_path, theirs_path):
     base, ours, theirs = [read(path) for path in (base_path, ours_path, theirs_path)]
     if base[1] != ours[1] or base[1] != theirs[1]:
         raise ValueError("document header changed; manual review required")
+    removed = set()  # base ops a side deleted for good (no tombstone): gone from the merge
     for version in (ours, theirs):
         for key, value in base[2].items():
-            if key not in version[2] or value[0] != version[2][key][0]:
+            if key not in version[2]:
+                removed.add(key)
+            elif value[0] != version[2][key][0]:
                 raise ValueError("history was rewritten; manual review required")
         if not base[3].keys() <= version[3].keys():
             raise ValueError("body store was pruned; manual review required")
         # Preserving operation order is essential for regeneration and tombstones.
-        if [key for key in version[2] if key in base[2]] != list(base[2]):
+        if [key for key in version[2] if key in base[2]] != [key for key in base[2] if key in version[2]]:
             raise ValueError("operation history was reordered")
     left = {key: value for key, value in ours[2].items() if key not in base[2]}
     right = {key: value for key, value in theirs[2].items() if key not in base[2]}
     for key in left.keys() & right.keys():
         if left[key][0] != right[key][0]:
             raise ValueError(f"conflicting operation ID {key}")
+    # What one side deleted, the other changed (an edit, a delete record, a regeneration of it): for review.
+    for side, new in ((ours, right), (theirs, left)):
+        for key, value in new.items():
+            if key in side[2]:
+                continue  # new on both sides
+            for target in sorted({target for target, _ in effects(value[0])}):
+                if target in base[2] and target not in side[2]:
+                    raise ValueError(f"operation {target} was deleted on one side and changed on the other; manual review required")
     left_effects = [(target, field, value[0]) for key, value in left.items() if key not in right for target, field in effects(value[0])]
     right_effects = [(target, field, value[0]) for key, value in right.items() if key not in left for target, field in effects(value[0])]
     # Parts lists whose item numbers were settled on both sides merge number by number (merge_numbers).
@@ -202,12 +215,14 @@ def merge(base_path, ours_path, theirs_path):
         op = {"op": "edit", "id": str(uuid.UUID(hex=digest[:32], version=4)), "ts": max(str(op.get("ts", "")) for op in edits),
               "by": "merge", "target": target, "set": {"numbers": numbers}}
         synthesized.append((op["id"], (op, json.dumps(op, ensure_ascii=False, separators=(",", ":")))))
-    ops = dict(ours[2])
+    ops = {key: value for key, value in ours[2].items() if key not in removed}
     for key, value in theirs[2].items():
+        if key in removed:
+            continue
         if key in ops and ops[key][0] != value[0]:
             raise ValueError(f"conflicting operation ID {key}")
         ops.setdefault(key, value)
-    if [key for key in ops if key in theirs[2]] != list(theirs[2]):
+    if [key for key in ops if key in theirs[2]] != [key for key in theirs[2] if key not in removed]:
         raise ValueError("branch operation order conflicts; manual review required")
     for key, value in synthesized:
         ops.setdefault(key, value)

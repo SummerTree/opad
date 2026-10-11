@@ -74,6 +74,15 @@ class DesignController : public QObject {
   // A plan made on a worker over a copy of the document as it is now (the caller compared the revision) committed as
   // applyOps commits its own, without planning again.
   void commitPlanned(std::shared_ptr<opad::design::Plan> plan, const QString& label, std::function<void(bool, const QString&)> done = {});
+  // Deletes ops for good (no tombstone): `ids` and the edits and deletes aimed at them leave the log, what that changes
+  // downstream is regenerated on a worker (a log with sketches or features), one undo step. Later features that used them
+  // fail and are marked on the timeline: the designer's to mend.
+  // A removal planned on a worker over a copy of the document as it is now (the caller compared the revision), committed
+  // as removeOps commits its own.
+  void commitRemoval(std::shared_ptr<opad::design::Removal> removal, const QString& label, std::function<void(bool, const QString&)> done = {});
+  // `add`: new ops planned in the same step after the removal (a Remove step for bodies of the history).
+  void removeOps(std::vector<std::string> ids, const QString& label, std::function<void(bool, const QString&)> done = {},
+                 std::vector<opad::json> add = {});
 
   bool featureActive() const { return m_form->spec() != nullptr && m_featureOn; }
   bool pickingPlane() const { return m_pickPlane; }

@@ -296,9 +296,30 @@ The timeline keeps operation markers at a readable size for long histories. Scro
 mouse wheel, trackpad or horizontal scrollbar; Left/Right steps through operations and
 Home/End jumps to the first/last marker. Selecting an operation scrolls it into view.
 
+Deleting a step (Del on its marker or its History row, the marker's Delete, Del on a sketch or on every body of an
+import) takes its op out of the log for good, together with the edits and delete records aimed at it; no tombstone is
+left. What later steps built on it is regenerated without it, and a step that used it fails and is marked on the
+timeline: mending that is the designer's. Undo puts the op back where it stood, byte for byte. Restore on a Remove step or
+on a delete record (one an agent or an older document left) deletes that step, which brings back what it took out. A
+deleted op that was already saved is gone from the next save. The merge driver takes such a deletion like any other
+change: an op of the common version one branch no longer has stays out of the merge, unless the other branch changed it
+(an edit, a delete record, a regeneration of it), which stops the merge for review. Resolving a note keeps it in the
+history as before.
+
+**Fly** (View > Navigate, Shift+W) moves the camera itself instead of orbiting around the model, to reach miniature
+features: drag to look around from where the camera is (a click still picks), W/S or the up and down arrows go forward
+and back, A/D or left and right sideways, E/Q or Page Up/Page Down up and down, the wheel steps forward, Shift is four
+times faster and Ctrl four times slower, Esc (or Land on its card) lands. The speed follows the distance to the surface
+straight ahead, so every approach slows down by itself, whatever the size of the model; small parts stay shown while
+flying. An orthographic view has no depth to come closer in: there the camera moves the same way while a clip plane at
+its eye cuts away what it has passed, and the zoom follows the distance to what it looks at, as perspective would show
+it; landing takes the clip plane away. Fly is off in a sketch and in 2D mode.
+
 Workspace shortcuts are Ctrl+1 Review, Ctrl+2 Design, Ctrl+3 Drawings and Ctrl+4 Drafting (Command on macOS); standard
 views are Shift with the arrow keys and Page Up / Page Down, Shift+H the isometric view. Review looks, measures, marks up, compares and shares (View, Inspect, Markup, Compare,
-Share); Design models (Solid, Assemble, Construct, Inspect, Insert, View), and a sketch adds its Sketch tab in front of
+Share); Design models and keeps its versions (Solid, Assemble, Construct, Inspect, Insert, Version, View; Version has
+the Version control panel, Commit…, History, Branches, Pull / Push / Fetch and Compare, and a git command started from
+Review switches to Design), and a sketch adds its Sketch tab in front of
 them until it is finished; a viewed DXF, DWG or SVG file comes into Drafting (Draw on drawing: a sketch on the drawing's
 plane with the Sketch tab first in Drafting; Drawing to sketch, layers, measuring, plot), and coming there by itself is
 not remembered for the next start. A Design command started from Review (E for Extrude, Fillet on edges picked there)

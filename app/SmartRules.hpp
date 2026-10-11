@@ -44,12 +44,12 @@ int headline(const std::vector<Candidate>& c, const std::vector<opad::Ref>& pick
 // when every body it made is selected (one that made none, a New component: every component it made); what an import
 // picked in part made is removed instead.
 struct Deletion {
-  std::vector<std::string> tombstone;  // op ids (imports, sketches)
+  std::vector<std::string> tombstone;  // op ids deleted for good (imports, sketches; MainWindow::deleteNodes)
   std::vector<std::string> remove;     // body and component ids for one Remove feature
   bool empty() const { return tombstone.empty() && remove.empty(); }
 };
 Deletion routeDelete(const opad::Scene& scene, const std::vector<std::string>& ids);
-std::vector<opad::json> deletionOps(const Deletion& d, const opad::Scene& scene);  // for applyOps: tombstones, then the Remove
+std::vector<opad::json> deletionOps(const Deletion& d, const opad::Scene& scene);  // as ops: delete records, then the Remove
 
 // The later features a plan of deleting `deleted` leaves failing that work now: {op, name}, in history order.
 std::vector<std::pair<std::string, std::string>> dependents(const opad::json& report, const opad::Scene& scene, const std::vector<std::string>& deleted);

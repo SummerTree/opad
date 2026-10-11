@@ -56,6 +56,12 @@ def open_box(root, document):
                     cut([0, 0, 5], 50, 30, 30), cut([0, 0, 2], 16, 8, 3), cut([0, 17.5, 10], 20, 7, 8))
 
 
+def block_with_pin(root, document):
+    """A 60 mm block with a 0.5 mm pin on its top: a miniature feature to fly to."""
+    return document("block-with-pin", ("feature", "--kind", "box", "--inputs", '{"length":"60 mm","width":"60 mm","height":"60 mm"}'),
+                    ("feature", "--kind", "cylinder", "--inputs", '{"plane":{"origin":[0,0,60],"normal":[0,0,1]},"diameter":"0.5 mm","height":"0.5 mm","operation":"new"}'))
+
+
 def colour_boxes(root, document):
     """Three 20 x 20 x 10 mm boxes along X: grey, and two blues close to the dark and the light theme's selection colour."""
     return document("colour-boxes", ("feature", "--kind", "box", "--inputs", '{"length":"20 mm","width":"20 mm","height":"10 mm"}'),
@@ -249,6 +255,11 @@ CASES = [
     # saved, kept off the named views, in 2D only along its plane, reset in one step), the turn buttons twisting in 2D.
     # <prefix>.zoom-band.png.
     ("navigate", colour_boxes, {"OPAD_BENCH_NAVIGATE": "{prefix}"}),
+    # Fly (Viewport::setFlying): in perspective W goes straight ahead and slows down as the surface ahead comes closer, a
+    # drag turns the head about the eye (left and right about its up, up and down never over the top), the wheel steps
+    # forward, Esc lands; in orthographic the picture stays, a clip plane at the eye cuts away what is passed and coming
+    # closer zooms in (going back out), landing takes the plane away; refused in 2D mode; Fly (view.fly) with its card.
+    ("fly", block_with_pin, {"OPAD_BENCH_FLY": "{prefix}"}),
     # A wheel or a trackpad (ScrollInput.hpp; on Ubuntu every wheel panned). Nothing chosen: Windows and Linux (xcb, wayland)
     # assume a mouse wheel, macOS Automatic; a touchpad's fraction of a notch zooms and the first scroll asks once
     # ("Using a trackpad?" card; OPAD_BENCH_SCROLLASK lets a bench ask): Trackpad pans on it is saved and the next fraction

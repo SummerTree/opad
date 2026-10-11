@@ -58,6 +58,13 @@ struct BodyEntry {
 };
 static_assert(std::is_nothrow_move_constructible_v<BodyEntry> && std::is_nothrow_move_assignable_v<BodyEntry>);
 
+// An op taken out of the log for good (Document::remove_ops) and where it stood, so it can be put back (undo).
+struct RemovedOp {
+  size_t index = 0;  // its place in the log before anything was removed
+  Op op;             // persisted text intact
+  bool persisted = false;  // it was in the file read or last saved
+};
+
 struct ShapeCache;  // opaque; defined in geometry.cpp
 std::shared_ptr<ShapeCache> make_shape_cache();
 
@@ -119,6 +126,15 @@ class Document {
   // them back. A restored op serialises byte-identically, so undo + redo + save leaves the file unchanged.
   std::vector<Op> truncate_ops(size_t count);
   void restore_ops(std::vector<Op> removed);
+
+  // Deleting ops for good, no tombstone: `ids` and every edit or delete aimed at a removed op (transitively) leave the
+  // log. Nothing else is touched: what a later op says about them (a feature's input, a regen's result, a reference)
+  // resolves as missing, which is the designer's to mend. Returns them first to last with their places; unknown ids are
+  // skipped. reinsert_ops puts such a list back where it was (byte-identical on save).
+  std::vector<RemovedOp> remove_ops(const std::vector<std::string>& ids);
+  void reinsert_ops(std::vector<RemovedOp> removed);
+  // What remove_ops(ids) would take out, in log order (no change).
+  std::vector<std::string> removal_closure(const std::vector<std::string>& ids) const;
 
   const Op* find_op(const std::string& id) const;
   bool is_deleted(const std::string& op_id) const;

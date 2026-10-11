@@ -664,6 +664,26 @@ opad::json AppDocument::commitPlan(opad::design::Plan&& plan, const QString& lab
   return report;
 }
 
+opad::json AppDocument::commitRemoval(opad::design::Removal&& removal, const QString& label) {
+  if (m_capturing) throw opad::Error("Document snapshot is in progress; try again shortly.");
+  if (browse) throw opad::Error("Viewer mode: save the file as an OPAD document to edit it.");
+  if (readOnly) throw opad::Error("This document is open read-only: save a copy to edit it.");
+  opad::json report = removal.plan.report.is_null() ? opad::json::object() : removal.plan.report;
+  std::vector<std::string> ids = removal.ids;
+  const size_t before = doc.ops.size();
+  std::vector<opad::RemovedOp> gone = opad::design::commit_removal(doc, std::move(removal), QSettings().value("user/name").toString().trimmed().toStdString());
+  const size_t appended = doc.ops.size() + gone.size() - before;
+  if (gone.empty() && appended == 0) return report;
+  ids.clear();
+  for (const auto& r : gone) ids.push_back(r.op.id);
+  m_undo.push_back(Step{label, appended, {}, std::move(gone), std::move(ids)});
+  m_redo.clear();
+  while (static_cast<int>(m_undo.size()) > m_undoLimit) m_undo.erase(m_undo.begin());
+  emit undoChanged();
+  refresh();  // a roll-back to a deleted op ends there
+  return report;
+}
+
 void AppDocument::dropRollback() {  // another document: no roll-back of the user's or an editor's
   m_rollback.clear();
   m_userRollback = false;
@@ -784,7 +804,7 @@ void AppDocument::recordStep(const QString& label, size_t opsBefore) {
     m_resume.clear();
     emit message(tr("Rolled forward to the end of the timeline: new steps are added there."));
   }
-  m_undo.push_back(Step{label, doc.ops.size() - opsBefore, {}});
+  m_undo.push_back(Step{label, doc.ops.size() - opsBefore, {}, {}, {}});
   m_redo.clear();
   while (static_cast<int>(m_undo.size()) > m_undoLimit) m_undo.erase(m_undo.begin());
   emit undoChanged();
@@ -799,7 +819,9 @@ void AppDocument::undo(int steps) {
     Step s = std::move(m_undo.back());
     m_undo.pop_back();
     s.ops = doc.truncate_ops(doc.ops.size() - std::min(s.count, doc.ops.size()));
-    local = local && touches(s.ops, 0, nodes);
+    local = local && s.removed.empty() && touches(s.ops, 0, nodes);
+    if (!s.removed.empty()) doc.reinsert_ops(std::move(s.removed));  // the deleted ops back where they stood
+    s.removed.clear();
     m_redo.push_back(std::move(s));
   }
   if (local) m_next = {false, std::move(nodes)};
@@ -815,7 +837,8 @@ void AppDocument::redo(int steps) {
   for (; steps > 0 && !m_redo.empty(); --steps) {
     Step s = std::move(m_redo.back());
     m_redo.pop_back();
-    local = local && touches(s.ops, 0, nodes);
+    local = local && s.removedIds.empty() && touches(s.ops, 0, nodes);
+    if (!s.removedIds.empty()) s.removed = doc.remove_ops(s.removedIds);
     s.count = s.ops.size();
     doc.restore_ops(std::move(s.ops));
     s.ops.clear();
@@ -995,9 +1018,10 @@ opad::MergePlan AppDocument::mergeDisk(DiskRead&& read, const QString& label) {
   size_t covered = 0, at = m_undo.size();
   while (at > 0 && covered < mine) covered += m_undo[--at].count;
   opad::apply_merge(doc, *read.doc, plan, read.bodies);
-  if (plan.shared || covered > mine) m_undo.clear();
+  const bool removals = std::any_of(m_undo.begin(), m_undo.end(), [](const Step& s) { return !s.removedIds.empty(); });  // they stood among ops it moved
+  if (plan.shared || covered > mine || removals) m_undo.clear();
   else if (covered == mine && !plan.appended) m_undo.erase(m_undo.begin(), m_undo.begin() + static_cast<std::ptrdiff_t>(at));
-  else if (covered == mine && plan.incoming) m_undo.insert(m_undo.begin() + static_cast<std::ptrdiff_t>(at), Step{label, plan.incoming, {}});
+  else if (covered == mine && plan.incoming) m_undo.insert(m_undo.begin() + static_cast<std::ptrdiff_t>(at), Step{label, plan.incoming, {}, {}, {}});
   while (static_cast<int>(m_undo.size()) > m_undoLimit) m_undo.erase(m_undo.begin());
   m_redo.clear();
   m_savedIds.clear();  // the file's state: everything but the unsaved ops, now last

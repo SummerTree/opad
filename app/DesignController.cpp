@@ -342,6 +342,78 @@ void DesignController::commitPlanned(std::shared_ptr<Plan> plan, const QString& 
   });
 }
 
+void DesignController::removeOps(std::vector<std::string> ids, const QString& label, std::function<void(bool, const QString&)> done,
+                                 std::vector<opad::json> add) {
+  if (!m_doc->hasDocument || m_doc->browse) return;
+  auto report = [this, done](bool ok, const QString& error) {
+    if (done) done(ok, error);
+    else if (!ok) emit failed(error);
+    emit stateChanged();
+  };
+  if (m_doc->snapshotBusy()) return m_doc->afterCapture([this, ids = std::move(ids), label, done, add = std::move(add)] { removeOps(ids, label, done, add); });
+  if (m_doc->designBusy) return report(false, tr("The design is still being recomputed; try again in a moment."));
+  auto commit = [this, label, report](opad::design::Removal&& removal) {
+    try {
+      const opad::json rep = m_doc->commitRemoval(std::move(removal), label);
+      const size_t errors = rep.value("errors", opad::json::array()).size();
+      if (errors > 0) emit notice(tr("%1 later feature(s) could not be recomputed; they are marked on the timeline.").arg(errors));
+      report(true, {});
+    } catch (const std::exception& e) {
+      report(false, QString::fromUtf8(e.what()));
+    }
+  };
+  if (add.empty() && m_doc->scene.features.empty() && m_doc->scene.sketches.empty()) {  // nothing to regenerate: at once
+    opad::design::Removal removal;
+    removal.ids = m_doc->doc.removal_closure(ids);
+    return commit(std::move(removal));
+  }
+  m_doc->designBusy = true;
+  const auto generation = m_doc->generation;
+  auto removal = std::make_shared<opad::design::Removal>();
+  auto doc = std::make_shared<opad::Document>(m_doc->doc);
+  auto list = std::make_shared<std::vector<opad::json>>(std::move(add));
+  m_jobs->async(tr("Updating the design"), [doc, ids = std::move(ids), list, removal](Progress p) {
+    Reading reading;
+    try {
+      *removal = opad::design::plan_removal(*doc, ids, [p] { return p.cancelled(); }, std::move(*list));
+    } catch (const opad::LockedError& e) {
+      throw opad::Error(AppDocument::lockedMessage(e).toStdString());
+    }
+  }, [this, removal, report, commit, generation](bool ok, const QString& error) {
+    whenNobodyReads(this, [this, removal, report, commit, ok, error, generation] {
+      if (generation != m_doc->generation) return;
+      m_doc->designBusy = false;
+      if (!ok) return report(false, error);
+      commit(std::move(*removal));
+    });
+  });
+}
+
+void DesignController::commitRemoval(std::shared_ptr<opad::design::Removal> removal, const QString& label, std::function<void(bool, const QString&)> done) {
+  if (!m_doc->hasDocument || m_doc->browse) return;
+  if (m_doc->snapshotBusy()) return m_doc->afterCapture([this, removal, label, done] { commitRemoval(removal, label, done); });
+  auto report = [this, done](bool ok, const QString& error) {
+    if (done) done(ok, error);
+    else if (!ok) emit failed(error);
+    emit stateChanged();
+  };
+  if (m_doc->designBusy) return report(false, tr("The design is still being recomputed; try again in a moment."));
+  m_doc->designBusy = true;
+  const auto generation = m_doc->generation;
+  whenNobodyReads(this, [this, removal, label, report, generation] {
+    if (generation != m_doc->generation) return;
+    m_doc->designBusy = false;
+    try {
+      const opad::json rep = m_doc->commitRemoval(std::move(*removal), label);
+      const size_t errors = rep.value("errors", opad::json::array()).size();
+      if (errors > 0) emit status(tr("%1 later feature(s) could not be recomputed; they are marked on the timeline.").arg(errors));
+      report(true, {});
+    } catch (const std::exception& e) {
+      report(false, QString::fromUtf8(e.what()));
+    }
+  });
+}
+
 void DesignController::regenerate(bool force) {
   if (!m_doc->hasDocument || m_doc->browse || m_doc->designBusy) return;
   m_doc->designBusy = true;

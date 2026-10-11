@@ -1,11 +1,13 @@
-// Navigation staples as commands (UI-47): zoom window (Z), previous and next view (F5, Shift+F5), the document's Home set
-// to the current view and back, the view twist, the CAD 2D mouse preset, a middle double click fitting everything, the view cube's menu.
+// Navigation staples as commands (UI-47): zoom window (Z), previous and next view (F5, Shift+F5), Fly (Shift+W: the
+// camera turns and moves itself to reach miniature features, Viewport::setFlying), the document's Home set to the current
+// view and back, the view twist, the CAD 2D mouse preset, a middle double click fitting everything, the view cube's menu.
 // The view side is Viewport (ViewportNavigation.cpp); this area places the commands in the View menus and ribbon tabs.
 #include <QActionGroup>
 #include <QInputDialog>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
+#include <QPointer>
 #include <QSettings>
 
 #include "AppDocument.hpp"
@@ -15,6 +17,7 @@
 #include "DesignController.hpp"
 #include "Icons.hpp"
 #include "Ribbon.hpp"
+#include "Toast.hpp"
 #include "Units.hpp"
 #include "Viewport.hpp"
 
@@ -24,7 +27,8 @@ OPAD_ICON_TABLE(viewnav,
                 {"viewForward", R"(<path d="M15 6l6 6-6 6"/><path d="M21 12H10a6 6 0 0 0-6 6"/>)"},
                 {"twist", R"(<path d="M12 8l4 4-4 4-4-4z"/><path d="M4.5 12a7.5 7.5 0 0 1 13.3-4.7"/><path d="M19 3v5h-5"/>)"},
                 {"hiddenLine", R"(<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/>)"},
-                {"hiddenEdges", R"(<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/><path d="M4 16l8-4 8 4M12 4v8" stroke-dasharray="2 2"/>)"});
+                {"hiddenEdges", R"(<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/><path d="M4 16l8-4 8 4M12 4v8" stroke-dasharray="2 2"/>)"},
+                {"fly", R"(<path d="M2 12c3-4.5 6.5-6.5 10-6.5S19 7.5 22 12c-3 4.5-6.5 6.5-10 6.5S5 16.5 2 12z"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v2M12 20v2"/>)"});
 
 namespace {
 // The presets by their setting value (ui/nav): the named ones MainWindow makes, and the generic CAD 2D one.
@@ -54,6 +58,17 @@ class ViewNavigation : public AreaController {
       if (m_zoom->isChecked()) v->startZoomWindow();
       else v->cancelZoomWindow();
     }, true);
+    CommandInfo fly{"view.fly", tr("Fly"), "fly", QKeySequence("Shift+W")};
+    fly.checkable = true;
+    fly.keywords = {"walk", "walk through", "fly through", "first person", "look around", "head", "miniature", "small features", "inside"};
+    fly.enabledWhen = [](const CommandContext& c) { return c.document && !c.sketching; };
+    m_fly = services().addCommand(fly, [this] {
+      Viewport* v = services().viewport();
+      if (v->setFlying(m_fly->isChecked())) return;
+      QSignalBlocker block(m_fly);
+      m_fly->setChecked(false);
+      services().showMessage(tr("Fly works in 3D: finish the sketch or leave 2D mode first."), 6000);
+    });
     add("view.previous", tr("Previous view"), "viewBack", QKeySequence("F5"), [this] { services().viewport()->previousView(); });
     add("view.next", tr("Next view"), "viewForward", QKeySequence("Shift+F5"), [this] { services().viewport()->nextView(); });
     add("view.setHome", tr("Set current view as Home"), "home", QKeySequence(), [this] { setHome(); }, false, true);
@@ -81,7 +96,7 @@ class ViewNavigation : public AreaController {
       QAction* before = at == actions.end() || at + 1 == actions.end() ? nullptr : *(at + 1);
       for (const QString& add : ids) view->insertAction(before, services().action(add));
     };
-    after("view.home", {"view.zoomWindow", "view.previous", "view.next", "view.setHome", "view.resetHome"});
+    after("view.home", {"view.zoomWindow", "view.fly", "view.previous", "view.next", "view.setHome", "view.resetHome"});
     after("view.rollright", {"view.twist", "view.untwist"});
     if (auto* nav = view->findChild<QMenu*>("navigation")) {
       nav->addAction(m_cad2d);
@@ -104,6 +119,13 @@ class ViewNavigation : public AreaController {
       QSignalBlocker block(m_zoom);
       m_zoom->setChecked(on);
     });
+    connect(v, &Viewport::flyingChanged, this, [this, v](bool on) {
+      QSignalBlocker block(m_fly);
+      m_fly->setChecked(on);
+      // What the keys do stays in a card while it flies (the status bar is the hover's).
+      if (m_flyCard) m_flyCard->dismiss();
+      m_flyCard = on ? services().toast(v->flyHint(), tr("Land"), [this] { services().viewport()->setFlying(false); }, 0) : nullptr;
+    });
     connect(v, &Viewport::fitRequested, this, [this] { services().action("view.fitall")->trigger(); });
     connect(v, &Viewport::cubeMenuRequested, this, [this](const QPoint& at) { cubeMenu(at); });
     // Another preset chosen: CAD 2D is no longer ticked (MainWindow's own loop ticks only the one chosen).
@@ -113,6 +135,8 @@ class ViewNavigation : public AreaController {
 
  private:
   QAction* m_zoom = nullptr;
+  QAction* m_fly = nullptr;
+  QPointer<Toast> m_flyCard;
   QAction* m_cad2d = nullptr;
   QAction* m_animate = nullptr;
   QAction* m_adaptive = nullptr;

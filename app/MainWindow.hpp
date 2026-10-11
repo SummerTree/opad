@@ -240,7 +240,9 @@ class MainWindow : public QMainWindow {
   void rebuildViewsMenu();
   void selectOpTargets(const std::string& opId);
   void deleteOp(const std::string& opId);
-  void deleteOps(const std::vector<std::string>& opIds);  // several tombstones as one step (UI-02)
+  void deleteOps(const std::vector<std::string>& opIds);  // several ops deleted for good as one step (UI-02)
+  // Ops deleted for good (DesignController::removeOps), one undo step; `said`: a toast with Undo once done.
+  void removeOps(const std::vector<std::string>& opIds, const QString& label, const QString& said = {});
   void hideOthers(const std::vector<std::string>& keep);  // one step hiding the fewest nodes (Scene::others_to_hide)
   void restoreOp(const std::string& opId);
   void deleteCurrent();

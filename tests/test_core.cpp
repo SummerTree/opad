@@ -351,6 +351,51 @@ TEST(tombstones_and_gc) {
   CHECK_EQ(d.ops.size(), 5u);  // history untouched
 }
 
+// Deleting ops for good (no tombstone): the op and what is aimed at it leave the log; reinsert puts them back where they
+// stood, byte for byte, saved or not.
+TEST(remove_ops_takes_ops_out_and_reinserts_them) {
+  Document d = Document::create();
+  std::string key = d.add_body(kFakeBrep, json::object());
+  std::string b1 = new_uuid(), b2 = new_uuid();
+  json imp;
+  imp["op"] = "import";
+  imp["nodes"] = json::array({body_node(key, "B1", b1), body_node(key, "B2", b2)});
+  const std::string import_id = d.append(imp).id;
+  const std::string rename_id = d.append(json{{"op", "rename"}, {"target", b1}, {"name", "X"}}).id;
+  Document saved = Document::parse(d.serialize());  // the first two are in the file now
+  const std::string del_id = saved.append(json{{"op", "delete"}, {"target", rename_id}}).id;
+  const std::string undel_id = saved.append(json{{"op", "delete"}, {"target", del_id}}).id;
+  const std::string colour_id = saved.append(json{{"op", "appearance"}, {"target", b2}, {"color", {1.0, 0.0, 0.0}}}).id;
+  const std::string text = saved.serialize();
+  CHECK_EQ(resolve(saved).node(b1)->name, "X");
+
+  // The rename, its tombstone and the tombstone of that: one chain, in log order; the colour stays.
+  CHECK(saved.removal_closure({rename_id}) == (std::vector<std::string>{rename_id, del_id, undel_id}));
+  CHECK(saved.removal_closure({"no-such-op"}).empty());
+  std::vector<RemovedOp> gone = saved.remove_ops({rename_id});
+  CHECK_EQ(gone.size(), 3u);
+  CHECK_EQ(gone[0].index, 1u);
+  CHECK(gone[0].persisted && !gone[1].persisted);
+  CHECK_EQ(saved.ops.size(), 2u);
+  CHECK(!saved.find_op(rename_id) && !saved.find_op(del_id) && saved.find_op(colour_id));
+  Scene s = resolve(saved);
+  CHECK_EQ(s.node(b1)->name, "B1");
+  CHECK(s.deleted_ops.empty() && s.unresolved.empty());
+  saved.reinsert_ops(std::move(gone));
+  CHECK_EQ(saved.serialize(), text);  // undo: as it was
+  CHECK_EQ(resolve(saved).node(b1)->name, "X");
+
+  // The import itself: its bodies go with it; what aimed at its nodes resolves as missing (the designer's to mend).
+  gone = saved.remove_ops({import_id});
+  CHECK_EQ(gone.size(), 1u);
+  CHECK(resolve(saved).nodes.empty());
+  saved.gc();
+  CHECK_EQ(saved.body_count(), 0u);
+  saved.reinsert_ops(std::move(gone));
+  CHECK_EQ(saved.ops.front().id, import_id);
+  CHECK(saved.remove_ops({}).empty());
+}
+
 // The document's Home (UI-47) is a view op with an optional "home": true; an older build reads it as a view named Home.
 TEST(home_view_is_a_view_op_with_an_optional_key) {
   Document d = Document::create();
