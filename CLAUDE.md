@@ -121,8 +121,14 @@ SP-curves go through `Approx_CurveOnSurface` (affine map of params, `occt_pcurve
 ShapeFix projects 1000-pole sampled curves (77 s on one file); rolling-ball blends are fitted grids (ring spines: whole
 spine, periodic fit); faces healing blows up (blend edges projected off the patch) are dropped by `drop_runaway_faces`.
 Tests: `ctest -R xt` (cube written from the base schema as text + binary; `tests/corpus/fetch.py` files when present).
-Dev surveys (env-gated in test_xt): `OPAD_XT_CORPUS`, `OPAD_XT_BUILD=<dir>`, `OPAD_XT_ONE=<file>` (+ `OPAD_XT_NODES`).
-Known gaps: blends on blends at corners (a few mm off), so ~6% of solids in a 200-file public survey are invalid.
+Dev surveys (env-gated in test_xt): `OPAD_XT_CORPUS`, `OPAD_XT_BUILD=<dir>`, `OPAD_XT_ONE=<file>` (+ `OPAD_XT_NODES`;
+bad faces with their source kind and FACE node), `OPAD_XT_FACES=<dir>` (bad faces by surface kind), `OPAD_XT_STATUS=<dir>`
+(BRepCheck statuses of invalid solids). Most invalid solids fail at shell/wire level, not per face. Fixes that paid off:
+blends on blends touch them on their charted contact curves (BLEND_BOUND intersections; not for exact supports: worse),
+a tolerant edge takes a fin curve on an exact surface over one on a blend, spun circles -> spheres/ring tori, closed
+clamped B-surfaces -> periodic (else a tube face splits into slivers), healed faces matched to built ones by surface
+(healing gives rebuilt faces new TShapes; colours were lost). Tried and worse: extending blend arcs past the contacts,
+padding the spine range beyond 2%. State: 33 of 1036 solids invalid in the 196-file public survey, mostly blend faces.
 
 ## Floating tool panels (no right dock)
 
