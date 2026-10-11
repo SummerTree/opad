@@ -590,8 +590,15 @@ class Builder {
         case SPUN_SURF: {
           const Crv& profile = curve(n->ptr("profile"));
           if (!profile.c.IsNull() && n->vec("base", a) && n->vec("axis", b)) {
-            out.s = new Geom_SurfaceOfRevolution(profile.c, gp_Ax1(P(a), D(b)));
-            out.flip = true;  // OCCT turns about the axis in u and runs the profile in v: Parasolid the other way round
+            // a circle in a plane through the axis spins into a sphere or a ring torus: OCCT handles those (their poles,
+            // their seams) far better than a revolution of a periodic profile; the normal is then measured
+            out.s = spun_analytic(n->ptr("profile"), gp_Ax1(P(a), D(b)));
+            if (!out.s.IsNull()) {
+              out.flip = !same_normal(i, *n, out.s);
+            } else {
+              out.s = new Geom_SurfaceOfRevolution(profile.c, gp_Ax1(P(a), D(b)));
+              out.flip = true;  // OCCT turns about the axis in u and runs the profile in v: Parasolid the other way round
+            }
           }
           break;
         }
@@ -632,6 +639,30 @@ class Builder {
     gp_Vec du, dv;
     s->D1(U, V, q, du, dv);
     return ps.Dot(du.Crossed(dv)) >= 0;
+  }
+
+  // The sphere or ring torus a spun circle makes, when its plane holds the axis; null otherwise.
+  Handle(Geom_Surface) spun_analytic(uint32_t profile, const gp_Ax1& axis) {
+    const Node* pn = f_.get(profile);
+    if (pn && pn->type == TRIMMED_CURVE) pn = f_.get(pn->ptr("basis_curve"));
+    if (!pn || pn->type != CIRCLE) return nullptr;
+    V3 a, b;
+    if (!pn->vec("centre", a) || !pn->vec("normal", b)) return nullptr;
+    const gp_Pnt c = P(a);
+    const gp_Dir normal = D(b), along = axis.Direction();
+    const double r = pn->num("radius") * S;
+    if (!(r > 0) || std::abs(normal.Dot(along)) > 1e-9) return nullptr;  // the circle's plane must hold the axis' direction
+    if (std::abs(gp_Vec(axis.Location(), c).Dot(gp_Vec(normal))) > 1e-6) return nullptr;  // ... and the axis itself
+    const gp_Vec rel(axis.Location(), c);
+    const gp_Pnt foot = axis.Location().Translated(gp_Vec(along) * rel.Dot(gp_Vec(along)));
+    const gp_Vec out(foot, c);
+    const double R = out.Magnitude();
+    if (R < 1e-6) {  // centred on the axis: a sphere
+      const gp_Dir x = std::abs(along.X()) < 0.9 ? along.Crossed(gp::DX()) : along.Crossed(gp::DY());
+      return new Geom_SphericalSurface(gp_Ax3(foot, along, x), r);
+    }
+    if (R > r + 1e-6) return new Geom_ToroidalSurface(gp_Ax3(foot, along, gp_Dir(out)), R, r);
+    return nullptr;  // a spindle or horn torus stays a revolution
   }
 
   // A point of a surface at Parasolid's parameters (u, v) (SP-curves live there).
@@ -681,13 +712,20 @@ class Builder {
         return true;
       case OFFSET_SURF:
       case B_SURFACE:
-      case SWEPT_SURF:
-      case SPUN_SURF: {
+      case SWEPT_SURF: {
         const Surf& s = surface(i);
         if (s.s.IsNull()) return false;
         double su = u, sv = v;
         if (!occt_params(*n, su, sv)) return false;
         p = s.s->Value(su, sv);
+        return true;
+      }
+      case SPUN_SURF: {  // the profile at u turned about the axis by v
+        const Crv& profile = curve(n->ptr("profile"));
+        if (profile.c.IsNull() || !n->vec("base", a) || !n->vec("axis", b)) return false;
+        gp_Trsf turn;
+        turn.SetRotation(gp_Ax1(P(a), D(b)), v);
+        p = profile.c->Value(curve_param(n->ptr("profile"), u)).Transformed(turn);
         return true;
       }
       case BLENDED_EDGE:
@@ -721,6 +759,9 @@ class Builder {
         u = curve_param(n.ptr("section"), u), v *= S;
         return true;
       case SPUN_SURF: {
+        if (const auto it = surfaces_.find(n.index);
+            it != surfaces_.end() && !it->second.s.IsNull() && !it->second.s->IsKind(STANDARD_TYPE(Geom_SurfaceOfRevolution)))
+          return false;  // made a sphere or a torus: not an affine map of Parasolid's parameters
         const double profile = curve_param(n.ptr("profile"), u);
         u = v, v = profile;
         return true;
@@ -999,9 +1040,11 @@ class Builder {
       c.c = new Geom_Line(a, gp_Dir(gp_Vec(a, b)));
       c.sense = 1;
       const Node* cn = f_.get(cptr);
-      const auto layout = cn ? f_.layouts.find(cn->type) : f_.layouts.end();
-      warn("an edge's curve (" + (layout != f_.layouts.end() ? layout->second.name : std::string("none")) +
-           ") could not be built and was replaced by a straight line");
+      std::string kind = cn ? type_name(cn->type) : "none";
+      const Node* sp = cn && cn->type == TRIMMED_CURVE ? f_.get(cn->ptr("basis_curve")) : cn;
+      if (sp && sp->type == SP_CURVE)
+        if (const Node* on = f_.get(sp->ptr("surface"))) kind += " on " + type_name(on->type);
+      warn("an edge's curve (" + kind + ") could not be built and was replaced by a straight line");
     }
     Handle(Geom_Curve) g = c.sense < 0 ? c.c->Reversed() : c.c;
     const bool periodic = g->IsPeriodic();

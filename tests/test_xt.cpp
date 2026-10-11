@@ -1,5 +1,6 @@
 // Parasolid transmit files (.x_t, .x_b): the record parser (core/src/xt).
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_Surface.hxx>
@@ -500,6 +501,23 @@ TEST(one_file) {
         }
       }
       why += " off:" + std::to_string(worst);
+      for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {  // each loop: edges, seams, degenerate, closed
+        int edges = 0, seams = 0, degenerate = 0;
+        for (TopExp_Explorer ed(w.Current(), TopAbs_EDGE); ed.More(); ed.Next()) {
+          ++edges;
+          if (BRep_Tool::IsClosed(TopoDS::Edge(ed.Current()), face)) ++seams;
+          if (BRep_Tool::Degenerated(TopoDS::Edge(ed.Current()))) ++degenerate;
+        }
+        why += " wire[" + std::to_string(edges) + "e " + std::to_string(seams) + "s " + std::to_string(degenerate) + "d" +
+               (BRep_Tool::IsClosed(w.Current()) ? " closed]" : " open]");
+      }
+      {
+        double u0, u1, v0, v1;
+        BRepTools::UVBounds(face, u0, u1, v0, v1);
+        char b[120];
+        std::snprintf(b, sizeof b, " uv %.4g..%.4g x %.4g..%.4g", u0, u1, v0, v1);
+        why += b;
+      }
       const int k = int(BRepAdaptor_Surface(face).GetType());
       std::printf("    bad face (%s):%s\n", kinds[std::min(k, 10)], why.c_str());
     }
