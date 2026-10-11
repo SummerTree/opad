@@ -173,7 +173,9 @@ void MainWindow::setWorkspace(const QString& id) {
 }
 
 bool MainWindow::switchesToDesign(const QString& id) const {
-  if (!id.startsWith("design.") || m_workspaceId == "design" || !m_workspaceIds.contains("design")) return false;
+  // Version control is the design's too (Design > Version): started from Review, the panel and git commands go there.
+  const bool vcs = id.startsWith("vcs.") && m_workspaceId == "review";
+  if ((!id.startsWith("design.") && !vcs) || m_workspaceId == "design" || !m_workspaceIds.contains("design")) return false;
   if (id == "design.colour" || id == "design.opacity" || id == "design.lock") return false;  // how it looks: a view setting where it is
   const CommandInfo* c = m_commands.find(id);
   return c && c->workspaces.contains("design") && !c->workspaces.contains(m_workspaceId);

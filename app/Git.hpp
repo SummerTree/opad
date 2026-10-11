@@ -174,10 +174,25 @@ struct Branch {
   QString oid, upstream, subject, date;
   int ahead = 0, behind = 0;
   bool head = false, remote = false, gone = false;  // gone: its upstream was deleted
+  // The branches as a tree (linkBranches): the branch it was made from (an index into the same list; -1: a root), the
+  // commit where it left that one, and its own commits since (first-parent steps from its tip to there; 0 with another
+  // tip: merged into it, or not moved since).
+  int parent = -1;
+  QString fork;
+  int own = 0;
 };
 extern const char* const kBranchFormat;  // git for-each-ref --format=<this>: what parseBranches reads
 std::vector<Branch> parseBranches(const QByteArray& out);
 std::vector<Branch> branches(const Context& c);  // local ones, then remote-tracking ones (no remote HEAD), each by name
+// Links each branch to the one it was made from, as the commit graph tells: walking back from its tip along first parents,
+// the first commit another branch holds is where it left that branch (the nearest one; a tie goes to the trunk: main,
+// master, trunk or develop, else the current branch, then to a local branch, then to the one with the longer history,
+// then by name). Never a cycle: of two branches at one commit the one preferred so is the parent. `graph` is what
+// `git rev-list --parents` prints ("<commit> <parent>..." per line); commits it does not reach (a cut-off history) end a
+// walk there. Sets parent, fork and own on `branches`.
+void linkBranches(std::vector<Branch>& branches, const QByteArray& graph);
+// The graph of the newest `limit` commits of every branch, then linkBranches. Runs git: workers only.
+void branchTree(const Context& c, std::vector<Branch>& branches, int limit = 20000);
 QStringList remotes(const Context& c);
 // A file at a revision (git cat-file blob <rev>:<path>, `path` relative to the repository's top). Throws when it has none.
 QByteArray show(const Context& c, const QString& rev, const QString& path);

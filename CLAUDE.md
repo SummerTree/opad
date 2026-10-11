@@ -140,7 +140,9 @@ One document, one timeline; a workspace only swaps the ribbon's tab set (`Ribbon
 chip + 372 px list left of the tabs). Review (Ctrl+1) and Design (Ctrl+2; setting `ui/workspace`); Document is not
 built. Design is the modelling workspace (next section); a third, *contextual* workspace "Sketch" (`Workspace::contextual`,
 not in the chip's list, never saved to `ui/workspace`) is entered and left with sketch mode by `updateDesignState`.
-Panels moved to Alt+1/2/3. `QMainWindow::separator:vertical` is the *upright* bar (named after its shape).
+Panels moved to Alt+1/2/3. Version control is Design's: Design > Version (panel, commit, branches, remote, compare); a
+`vcs.*` command started from Review switches to Design (`switchesToDesign`). The Branches page is a tree
+(`git::linkBranches` over `git rev-list --parents --branches --remotes`: each branch under the one it forked from). `QMainWindow::separator:vertical` is the *upright* bar (named after its shape).
 
 UI check without driving the desktop (the user works on it, see memory): `OPAD_BENCH_UISHOT=<png>` with
 `--bench-select` saves `MainWindow::grab()` (widgets only, the native viewport is blank); `OPAD_BENCH_WORKSPACE=1`
@@ -298,6 +300,17 @@ contextual Sketch, Explode and Canvas tabs. Unknown op types load as opaque reco
 Parallel work: tracks ran in git worktrees under .claude/worktrees (configure there with `-DOPAD_DWG=OFF`; the libredwg
 submodule is not checked out); `git rerere` is enabled for the merges. Keep text files LF (a stray CR makes git treat a
 file as binary and every merge of it conflicts).
+
+## Fly (`app/ViewportFly.cpp`, command `view.fly` in ViewNavigation)
+
+The camera turns and moves itself (left drag looks around the eye, W/S A/D E/Q or arrows / PgUp PgDn, wheel steps, Esc
+lands); speed = 0.8 x the distance to the surface ahead per second (one `navigationPoint` ray at the view centre, every
+120 ms), so approaches slow down by themselves. Orthographic: the eye is backed out of the model at start (same
+picture), a `Graphic3d_ClipPlane` at the eye cuts what is passed, scale = zoom x focus distance. A camera moved by
+another command is taken up in `flyFrame` (from handleViewRedraw). Small parts are not hidden while flying. Off in
+sketch / 2D mode. Bench `fly` (OPAD_BENCH_FLY, ViewportFlyBench.cpp). Fixed key names `flyForward`... for help texts.
+Trap: `Graphic3d_Camera::SetCenter` returns early when the new centre is as far from the eye as the old one, so turning
+about the eye needs `SetDirectionFromEye`.
 
 ## Highlight switches and frame trace
 
@@ -459,7 +472,14 @@ while it runs: a press/release pair that drifts is a rubber band, not a click.
 Lives in `AppDocument` (app layer), not the format. Each `run()` that appends ops is one step; undo pops those
 ops with `Document::truncate_ops` (their persisted `raw` text is kept), redo pushes them back with
 `restore_ops`, so undo + redo + save is byte-identical. Undoing *past* a save and then saving does remove
-lines from the file (the tombstone `delete` op is the history-preserving alternative). Clean state is not a
+lines from the file (the tombstone `delete` op is the history-preserving alternative). Deleting a step (timeline Del,
+smart delete, Del on a sketch or a whole import, Restore on a Remove step or delete record) removes ops for good:
+`Document::remove_ops` (the op + edits/deletes aimed at it) / `reinsert_ops`, `design::plan_removal` on a worker (the
+engine's `Walk::removed` skips them, then regenerates) + `commit_removal`, `AppDocument::commitRemoval` (a Step with
+`removed`/`removedIds`), entry `DesignController::removeOps`. Broken refs downstream are the designer's. The merge
+driver (merge.cpp `merge_files` and tools/opad_merge.py, rule for rule) takes a base op missing on one side as deleted
+there: left out of the merge, unless the other side's new ops target it ("was deleted on one side and changed on the
+other"). DiskSync's `plan_merge` still refuses (as undo past a save). Resolving a note still tombstones. Clean state is not a
 flag: `updateDirty()` compares op ids + body count with the snapshot `markSaved()` took at load/save, so
 undoing back to the saved state clears the asterisk. Depth: setting `edit/undoDepth` (Settings > Undo
 history…, default 50). The bench logs `bench: undo/redo:` with the dirty transitions.

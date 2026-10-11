@@ -298,6 +298,7 @@ void VersionControl::reload() {
   m_services.jobs()->quiet(tr("Reading the history"), [out, c, rel, count](Progress) {
     out->history = git::log(c, {}, rel, count);
     out->branches = git::branches(c);
+    git::branchTree(c, out->branches);  // each branch under the one it was made from
     out->remotes = git::remotes(c);
   }, [this, self = QPointer<VersionControl>(this), out, generation, count](bool ok, const QString& error) {
     if (!self) return;

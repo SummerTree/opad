@@ -107,6 +107,18 @@ Plan plan_ops(const Document& doc, std::vector<json> new_ops, bool strict = true
 Plan plan_regenerate(const Document& doc, bool force = false, const Cancel& cancel = {});
 json commit(Document& doc, Plan&& plan, const std::string& author = {});
 
+// Deleting ops for good (Document::remove_ops, no tombstone): what their removal brings downstream, planned on a worker
+// against the log without them (`ids` widened to the edits and deletes aimed at them). A later op that used them fails
+// or resolves as missing; that is the designer's to mend. commit_removal takes them out of `doc` and appends the plan
+// (one regen, if anything changed), returning what it took out for an undo; on a failure nothing is changed.
+struct Removal {
+  std::vector<std::string> ids;  // in log order
+  Plan plan;
+};
+// `add`: new ops planned after the removal in the same step (strictly, as plan_ops: an error in one of them throws).
+Removal plan_removal(const Document& doc, const std::vector<std::string>& ids, const Cancel& cancel = {}, std::vector<json> add = {});
+std::vector<RemovedOp> commit_removal(Document& doc, Removal&& removal, const std::string& author = {});
+
 // Whether two shapes are the same geometry as regeneration judges it (topology counts, vertices to 1e-6 mm, volume, area,
 // centre): a recomputed body that is keeps its stored key (a linked asset's sync too).
 bool same_shapes(const TopoDS_Shape& a, const TopoDS_Shape& b);

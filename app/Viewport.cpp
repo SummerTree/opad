@@ -950,6 +950,10 @@ void Viewport::setOrthographic(bool ortho) {
   if (!m_initialised) return;
   if (m_twoDimensional) ortho=true;
   m_view->Camera()->SetProjectionType(ortho ? Graphic3d_Camera::Projection_Orthographic : Graphic3d_Camera::Projection_Perspective);
+  if (flying()) {  // flown on in the other projection (its own way of coming closer)
+    setFlying(false);
+    setFlying(true);
+  }
   m_view->Invalidate();
   redrawScene();
 }
@@ -1459,6 +1463,7 @@ void Viewport::handleViewRedraw(const Handle(AIS_InteractiveContext)& ctx, const
     m_settleTimer.start();
   }
   degradeWhileNavigating();
+  flyFrame();  // flying: a camera another command moved is flown on from
   // Side by side: A's view is drawn after this one with its camera (the controller redraws it only when it is invalid).
   const bool full = m_side && m_view->IsInvalidated() && !m_sideView->IsInvalidated();
   m_frameDrawn = m_frameDrawn || view->IsInvalidated() || view->IsInvalidatedImmediate() || toAskNextFrame();  // as the controller decides
@@ -3036,6 +3041,7 @@ QRect Viewport::cubeRect() const {
 void Viewport::mousePressEvent(QMouseEvent* e) {
   m_navSide = false;  // A's view sets it again after handing its press over
   if (m_blocked) return;
+  if (flyPress(e)) return;  // flying: a left drag looks around
   m_viewButtons |= e->button();
   finishTrackpadScroll();
   m_nativePinching = false;
@@ -3143,6 +3149,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* e) {
   m_holdTimer.stop();
   m_viewButtons &= e->buttons() & ~e->button();
   if (m_blocked) return;
+  if (flyRelease(e)) return;  // the end of a look around; a click went through as a press and goes on here
   if (std::exchange(m_holdPress, false) && e->button() == Qt::LeftButton) {  // the held press opened the list
     e->accept();
     return;
@@ -3293,6 +3300,7 @@ bool Viewport::benchLeave() {
 }
 
 void Viewport::mouseMoveEvent(QMouseEvent* e) {
+  if (flyMove(e)) return;
   // No button held: a press the view had was released elsewhere (a menu, a dialog, an overlay's chip that took the release):
   // whatever the controller still holds goes (its rubber band followed the pointer, and the next click selected everything
   // in it).
@@ -3423,6 +3431,7 @@ void Viewport::setScrollInput(int mode) {
 void Viewport::wheelEvent(QWheelEvent* e) {
   m_navSide = false;  // A's view sets it again after handing its wheel over
   if (!m_initialised || m_blocked) return;
+  if (flyWheel(e)) return;  // flying: forward and back
   // Still to ask: another OPAD window may have been answered since this one started, so the settings are read again
   // (once: the first zooming scroll asks or finds it chosen).
   if (m_scrollAsk) readScrollInput();

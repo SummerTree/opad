@@ -21,6 +21,7 @@
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <memory>
 
 #include "AppDocument.hpp"
@@ -120,9 +121,9 @@ bool VersionControl::bench(const QString& prefix) {
   auto box = [doc](int x) {
     doc->run("feature", {{"kind", "box"}, {"inputs", {{"x", std::to_string(x) + " mm"}, {"length", "5 mm"}, {"width", "5 mm"}, {"height", "5 mm"}}}});
   };
-  auto item = [](QTreeWidget* tree, const QString& text, int column) -> QTreeWidgetItem* {
-    for (int i = 0; i < tree->topLevelItemCount(); ++i)
-      if (tree->topLevelItem(i)->text(column).contains(text)) return tree->topLevelItem(i);
+  auto item = [](QTreeWidget* tree, const QString& text, int column) -> QTreeWidgetItem* {  // the whole tree, depth first
+    for (QTreeWidgetItemIterator it(tree); *it; ++it)
+      if ((*it)->text(column).contains(text)) return *it;
     return nullptr;
   };
   auto commitDialog = [this, dialog, press](const QString& text) {  // Commit… with this message, pressed
@@ -243,6 +244,7 @@ bool VersionControl::bench(const QString& prefix) {
         for (const char* name : {"bench old.opad", "bench new.opad"}) {
           QFile f(QDir(versionsFolder()).filePath(QString::fromLatin1(name)));
           require(f.open(QIODevice::WriteOnly) && f.write("#opad 2") > 0, "a copy");
+          f.flush();  // written now, not at close (which would make it new again on Linux)
           if (QString::fromLatin1(name).contains("old")) f.setFileTime(QDateTime::currentDateTime().addDays(-3), QFileDevice::FileModificationTime);
         }
         QFile::setPermissions(QDir(versionsFolder()).filePath("bench old.opad"), QFile::ReadOwner);  // as a read-only version's copy
@@ -372,6 +374,12 @@ bool VersionControl::bench(const QString& prefix) {
         m_panel->setPage(Branches);
         QTreeWidgetItem* main = item(m_panel->branches(), "main", 0);
         require(main && m_panel->branchOf(main) && !m_panel->branchOf(main)->remote, "main in the list");
+        // The tree: feature/arm under main, which it was made from, one commit of its own; main a root.
+        QTreeWidgetItem* armRow = item(m_panel->branches(), "feature/arm", 0);
+        const git::Branch* armBranch = armRow ? m_panel->branchOf(armRow) : nullptr;
+        require(!main->parent() && armRow && armRow->parent() == main && armBranch && armBranch->own == 1 && armBranch->fork == m_panel->branchOf(main)->oid,
+                "feature/arm under main in the branch tree");
+        pass("the branch tree: feature/arm under main, one commit of its own");
         m_panel->branches()->setCurrentItem(main);
         shot(m_tool, ".branches.png");
         require(press(m_panel, "vcsSwitch"), "Switch");

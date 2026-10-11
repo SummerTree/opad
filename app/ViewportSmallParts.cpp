@@ -21,6 +21,7 @@ void Viewport::setSmallPartFilter(double mm) {
 
 void Viewport::smallPartsCameraMoved() {
   if (!(m_smallParts > 0) || !m_initialised || m_doc->loading || m_needFit) return;  // a load fitting batch by batch is no navigation
+  if (flying()) return;  // flying is for the small parts: they stay
   const auto state = m_view->Camera()->WorldViewProjState();
   if (m_smallCamera == state) return;  // a frame that did not move the camera (a hover, a selection)
   m_smallCamera = state;

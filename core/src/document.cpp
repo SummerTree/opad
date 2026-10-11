@@ -6,6 +6,7 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <unordered_set>
 
 #include "opad/drawing/sheet.hpp"
 #include "opad/assets.hpp"
@@ -353,6 +354,54 @@ void Document::restore_ops(std::vector<Op> removed) {
   for (auto& o : removed) {
     if (find_op(o.id)) throw Error("restore: duplicate op id: " + o.id);
     ops.push_back(std::move(o));
+  }
+  dirty = true;
+}
+
+std::vector<std::string> Document::removal_closure(const std::vector<std::string>& ids) const {
+  std::unordered_set<std::string> gone;
+  for (const auto& id : ids)
+    if (find_op(id)) gone.insert(id);
+  // Edits and deletes come after their targets: one pass in log order reaches the whole chain (a delete of a delete).
+  for (const auto& o : ops)
+    if ((o.type == "edit" || o.type == "delete") && !gone.count(o.id))
+      if (const auto t = o.data.find("target"); t != o.data.end() && t->is_string() && gone.count(t->get<std::string>())) gone.insert(o.id);
+  std::vector<std::string> out;
+  for (const auto& o : ops)
+    if (gone.count(o.id)) out.push_back(o.id);
+  return out;
+}
+
+std::vector<RemovedOp> Document::remove_ops(const std::vector<std::string>& ids) {
+  const std::vector<std::string> list = removal_closure(ids);
+  if (list.empty()) return {};
+  const std::unordered_set<std::string> gone(list.begin(), list.end());
+  std::vector<RemovedOp> removed;
+  std::vector<Op> kept;
+  kept.reserve(ops.size() - list.size());
+  size_t persisted = persisted_ops_;
+  for (size_t i = 0; i < ops.size(); ++i) {
+    if (!gone.count(ops[i].id)) {
+      kept.push_back(std::move(ops[i]));
+      continue;
+    }
+    if (i < persisted_ops_) --persisted;
+    removed.push_back({i, std::move(ops[i]), i < persisted_ops_});
+  }
+  ops = std::move(kept);
+  persisted_ops_ = persisted;
+  dirty = true;
+  return removed;
+}
+
+void Document::reinsert_ops(std::vector<RemovedOp> removed) {
+  std::sort(removed.begin(), removed.end(), [](const RemovedOp& a, const RemovedOp& b) { return a.index < b.index; });
+  for (const auto& r : removed)
+    if (find_op(r.op.id)) throw Error("restore: duplicate op id: " + r.op.id);
+  for (auto& r : removed) {  // ascending: each lands where it stood once the ones before it are back
+    const size_t at = std::min(r.index, ops.size());
+    if (r.persisted) ++persisted_ops_;  // saved ones are a prefix of the log, so it lands inside it
+    ops.insert(ops.begin() + static_cast<std::ptrdiff_t>(at), std::move(r.op));
   }
   dirty = true;
 }

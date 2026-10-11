@@ -48,7 +48,9 @@ void MainWindow::resolveCurrentAnnotation() {
   if (id.empty()) id = m_timeline->currentOp();
   const opad::Op* op = id.empty() ? nullptr : m_doc->doc.find_op(id);
   if (!op || (op->type != "annotation" && op->type != "measurement")) throw opad::UserHint("Select a note in the Annotations panel or on the timeline first.");
-  deleteOp(id);
+  // Resolving keeps the note in the history (a delete record), unlike Del on its marker, which deletes it for good.
+  if (!m_doc->scene.features.empty() || !m_doc->scene.sketches.empty()) return m_design->applyOps({opad::json{{"op", "delete"}, {"target", id}}}, tr("delete"));
+  m_doc->run("delete", opad::json{{"target", id}});
 }
 
 void MainWindow::restyleAnnotation(const std::string& opId, const std::string& style) {

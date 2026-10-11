@@ -156,5 +156,10 @@
  "Hover highlight: on": "تمييز ما تحت المؤشر: مفعّل",
  "Hover highlight: off": "تمييز ما تحت المؤشر: متوقف",
  "X-ray highlight: the selection and the hover show through what is in front": "التمييز عبر الأجسام: يظهر التحديد وما تحت المؤشر من خلال ما أمامهما",
- "Highlight what the pointer is over": "تمييز ما يمر فوقه المؤشر"
+ "Highlight what the pointer is over": "تمييز ما يمر فوقه المؤشر",
+ "Fly works in 3D: finish the sketch or leave 2D mode first.": "الطيران يعمل في الثلاثي الأبعاد: أنهِ الرسم التخطيطي أو اخرج من وضع ثنائي الأبعاد أولًا.",
+ "Land": "هبوط",
+ "Fly: drag to look around · %1 %2 forward, back · %3 %4 sideways · %5 %6 up, down · %7 faster, %8 slower · %9 lands": "طيران: اسحب لتنظر حولك · %1 %2 للأمام وللخلف · %3 %4 جانبيًا · %5 %6 للأعلى وللأسفل · %7 أسرع، %8 أبطأ · %9 هبوط",
+ "That operation is no longer in the document.": "لم تعد هذه العملية في المستند.",
+ "That operation is not deleted.": "هذه العملية ليست محذوفة."
 }

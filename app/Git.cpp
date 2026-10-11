@@ -28,6 +28,8 @@
 #include <QStandardPaths>
 #include <algorithm>
 #include <stdexcept>
+#include <tuple>
+#include <unordered_set>
 
 namespace git {
 namespace {
@@ -903,6 +905,104 @@ std::vector<Branch> branches(const Context& c) {
   o.timeoutMs = 30000;
   o.optionalLocks = false;
   return parseBranches(check(c, {"for-each-ref", QStringLiteral("--format=") + QString::fromLatin1(kBranchFormat), "refs/heads", "refs/remotes"}, o).out);
+}
+
+void linkBranches(std::vector<Branch>& branches, const QByteArray& graph) {
+  for (Branch& b : branches) b.parent = -1, b.fork.clear(), b.own = 0;
+  // The commits: an index per hash, their parents by index (-1: not in the graph).
+  QHash<QByteArray, int> index;
+  std::vector<QList<QByteArray>> lines;
+  for (const QByteArray& line : graph.split('\n')) {
+    QList<QByteArray> f = line.trimmed().split(' ');
+    if (f.isEmpty() || f.front().isEmpty() || index.contains(f.front())) continue;
+    index.insert(f.front(), int(lines.size()));
+    lines.push_back(std::move(f));
+  }
+  const int n = int(lines.size());
+  std::vector<std::vector<int>> parents(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i)
+    for (qsizetype k = 1; k < lines[size_t(i)].size(); ++k) parents[size_t(i)].push_back(index.value(lines[size_t(i)][k], -1));
+  const int count = int(branches.size());
+  std::vector<int> tip(size_t(count), -1);
+  for (int b = 0; b < count; ++b) tip[size_t(b)] = index.value(branches[size_t(b)].oid.toLatin1(), -1);
+  // What each branch holds (every commit reachable from its tip).
+  std::vector<std::vector<bool>> holds(static_cast<size_t>(count));
+  std::vector<int> reach(size_t(count), 0);
+  for (int b = 0; b < count; ++b) {
+    std::vector<bool>& h = holds[size_t(b)];
+    h.assign(size_t(n), false);
+    if (tip[size_t(b)] < 0) continue;
+    std::vector<int> stack{tip[size_t(b)]};
+    while (!stack.empty()) {
+      const int c = stack.back();
+      stack.pop_back();
+      if (c < 0 || h[size_t(c)]) continue;
+      h[size_t(c)] = true;
+      ++reach[size_t(b)];
+      for (int p : parents[size_t(c)]) stack.push_back(p);
+    }
+  }
+  // Which branch a tie prefers as the parent: the trunk, then the current one, then local ones, then the longer history.
+  static const QStringList trunks = {"main", "master", "trunk", "develop"};
+  auto rank = [&](int b) {
+    const Branch& br = branches[size_t(b)];
+    const QString name = br.remote ? br.name.section('/', 1) : br.name;
+    const int trunk = trunks.indexOf(name);
+    return std::make_tuple(trunk < 0 ? int(trunks.size()) : trunk, br.head ? 0 : 1, br.remote ? 1 : 0, -reach[size_t(b)], br.name);
+  };
+  // Every (branch, other) pair: how far back along the branch's first parents the other one is met, and at which commit.
+  struct Edge {
+    int branch, other, distance, commit;
+  };
+  // Three commits where others are met are plenty to fall back on when the nearest would close a cycle (and keep a
+  // repository with hundreds of remote branches quick).
+  std::vector<Edge> edges;
+  for (int b = 0; b < count; ++b) {
+    std::vector<bool> met(size_t(count), false);
+    int left = 0, levels = 0, d = 0;
+    for (int o = 0; o < count; ++o) {
+      met[size_t(o)] = o == b || tip[size_t(o)] < 0;  // one outside the graph holds nothing
+      left += met[size_t(o)] ? 0 : 1;
+    }
+    std::unordered_set<int> seen;
+    for (int c = tip[size_t(b)]; c >= 0 && left > 0 && levels < 3 && seen.insert(c).second; c = parents[size_t(c)].empty() ? -1 : parents[size_t(c)].front(), ++d) {
+      bool any = false;
+      for (int o = 0; o < count; ++o)
+        if (!met[size_t(o)] && holds[size_t(o)][size_t(c)]) {
+          met[size_t(o)] = true;
+          --left;
+          any = true;
+          edges.push_back({b, o, d, c});
+        }
+      levels += any ? 1 : 0;
+    }
+  }
+  std::sort(edges.begin(), edges.end(), [&](const Edge& x, const Edge& y) {
+    if (x.distance != y.distance) return x.distance < y.distance;
+    return rank(x.other) < rank(y.other);
+  });
+  // The trunk is a root; the nearest links first, none that closes a cycle.
+  int trunk = -1;
+  for (int b = 0; b < count; ++b)
+    if (tip[size_t(b)] >= 0 && (trunk < 0 || rank(b) < rank(trunk))) trunk = b;
+  for (const Edge& e : edges) {
+    Branch& b = branches[size_t(e.branch)];
+    if (e.branch == trunk || b.parent >= 0) continue;
+    bool cycle = false;
+    for (int a = e.other; a >= 0 && !cycle; a = branches[size_t(a)].parent) cycle = a == e.branch;
+    if (cycle) continue;
+    b.parent = e.other;
+    b.own = e.distance;
+    b.fork = QString::fromLatin1(lines[size_t(e.commit)].front());
+  }
+}
+
+void branchTree(const Context& c, std::vector<Branch>& branches, int limit) {
+  RunOptions o;
+  o.timeoutMs = 30000;
+  o.optionalLocks = false;
+  const Result r = run(c, {"rev-list", "--parents", QStringLiteral("--max-count=%1").arg(limit), "--branches", "--remotes"}, o);
+  linkBranches(branches, r.ok() ? r.out : QByteArray());  // no commits yet: every branch a root
 }
 
 QStringList remotes(const Context& c) {

@@ -9,6 +9,7 @@
 // which commit, read once per version (OpHistory.cpp). Temporary repositories only;
 // git's global and system config are left out.
 #include <QCoreApplication>
+#include <algorithm>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
@@ -659,6 +660,32 @@ TEST(history_and_branches) {
   CHECK(parsed[0].name == "main" && parsed[0].head && parsed[0].ahead == 2 && parsed[0].behind == 3 && parsed[0].upstream == "origin/main");
   CHECK(parsed[1].name == "zeta" && parsed[1].gone && !parsed[1].head);
   CHECK(parsed[2].name == "origin/main" && parsed[2].remote);
+  // The branch tree: main m1-m2-m3; feature made from m2 (f1, f2), g from f1 (g1); same at main's tip; old merged into
+  // main (at m1); origin/main behind at m2. feature and g are each other's nearest at f1: the tie goes by rank, and the
+  // other link would close a cycle, so feature falls back to main.
+  {
+    auto branch = [](const char* name, const char* oid, bool remote = false, bool head = false) {
+      git::Branch b;
+      b.name = QString::fromLatin1(name);
+      b.oid = QString::fromLatin1(oid);
+      b.remote = remote;
+      b.head = head;
+      return b;
+    };
+    std::vector<git::Branch> tree = {branch("feature", "f2"), branch("g", "g1"), branch("main", "m3", false, true), branch("old", "m1"),
+                                     branch("same", "m3"), branch("origin/main", "m2", true), branch("lost", "zz")};
+    git::linkBranches(tree, QByteArrayLiteral("f2 f1\nf1 m2\ng1 f1\nm3 m2\nm2 m1\nm1\n"));
+    auto parentOf = [&](size_t i) { return tree[i].parent < 0 ? QString() : tree[size_t(tree[i].parent)].name; };
+    CHECK(parentOf(2).isEmpty());  // main: the trunk
+    CHECK(parentOf(0) == "main" && tree[0].own == 2 && tree[0].fork == "m2");
+    CHECK(parentOf(1) == "feature" && tree[1].own == 1 && tree[1].fork == "f1");
+    CHECK(parentOf(3) == "main" && tree[3].own == 0);  // merged
+    CHECK(parentOf(4) == "main" && tree[4].own == 0);  // not moved since
+    CHECK(parentOf(5) == "main" && tree[5].own == 0);
+    CHECK(parentOf(6).isEmpty() && tree[6].fork.isEmpty());  // outside the graph read
+    git::linkBranches(tree, {});  // no commits: every branch a root
+    CHECK(std::all_of(tree.begin(), tree.end(), [](const git::Branch& b) { return b.parent < 0; }));
+  }
   for (const char* good : {"main", "feature/x", "fix-1.2", "José"}) CHECK(git::validBranchName(QString::fromUtf8(good)));
   for (const char* bad : {"", "-x", "a b", "a..b", "x.lock", "a/.b", "x/", "a~1", "a:b", "@", "HEAD", "a@{1}", "q?"}) CHECK(!git::validBranchName(QString::fromUtf8(bad)));
   CHECK_EQ(git::explain("error: Your local changes to the following files would be overwritten by checkout:"),

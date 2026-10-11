@@ -241,6 +241,29 @@ int main(int argc, char** argv) {
       CHECK(doc.undoLabels().size() == steps && doc.canRedo());  // no step, the redo kept
       QObject::disconnect(counted);
     }
+    // Ops deleted for good (no tombstone): one step that undo puts back where the ops stood and redo takes out again, with
+    // the edits aimed at them; the log ends as it began.
+    {
+      const auto all = doc.scene.all_bodies();
+      const std::string before = doc.doc.serialize();
+      const size_t ops = doc.doc.ops.size(), steps = doc.undoLabels().size();
+      const std::string imported = doc.doc.ops.back().id;  // the second import
+      const std::string rename = doc.run("rename", opad::json{{"target", all[0]}, {"name", "renamed"}}).value("id", "");
+      const std::string tombstone = doc.run("delete", opad::json{{"target", rename}}).value("id", "");
+      CHECK(!rename.empty() && !tombstone.empty() && doc.nodeName(all[0]) != "renamed");
+      opad::design::Removal removal;
+      removal.ids = doc.doc.removal_closure({rename, imported});
+      CHECK_EQ(removal.ids.size(), 3u);
+      doc.commitRemoval(std::move(removal), AppDocument::tr("delete"));
+      CHECK(doc.doc.ops.size() == ops - 1 && !doc.doc.find_op(rename) && !doc.doc.find_op(tombstone) && !doc.doc.find_op(imported));
+      CHECK(doc.scene.all_bodies().size() < all.size() && doc.undoLabels().size() == steps + 3 && doc.undoLabel() == AppDocument::tr("delete"));
+      doc.undo();
+      CHECK(doc.doc.ops.size() == ops + 2 && doc.doc.find_op(imported) && doc.doc.find_op(tombstone) && doc.scene.all_bodies().size() == all.size());
+      doc.redo();
+      CHECK(doc.doc.ops.size() == ops - 1 && !doc.doc.find_op(imported) && doc.scene.all_bodies().size() < all.size());
+      doc.undo(3);
+      CHECK(doc.doc.serialize() == before && doc.scene.all_bodies().size() == all.size());
+    }
     // What a change changed (UI-40): the appearance, name, placement or parent of the targets of the ops added, undone or
     // redone; anything else is the whole document. A view then looks at the bodies under those nodes alone.
     {

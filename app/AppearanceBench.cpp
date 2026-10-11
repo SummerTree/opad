@@ -57,7 +57,8 @@ OPAD_BENCH(OPAD_BENCH_BATCH, batch) {
   };
   // One command: `fn` adds `ops` ops in one step named `label`, with one refresh; `check` holds after it and its undo
   // brings back the visibility, lock and opacity of every node.
-  auto step = [&](const QString& what, size_t ops, const QString& label, const std::function<void()>& fn, const std::function<bool()>& check, int budget = 3000) {
+  // ops: how many the step appends at least; negative: how many it takes out at least (ops deleted for good).
+  auto step = [&](const QString& what, std::ptrdiff_t ops, const QString& label, const std::function<void()>& fn, const std::function<bool()>& check, int budget = 3000) {
     std::map<std::string, std::tuple<bool, bool, double>> looks;
     for (const auto& [id, n] : doc->scene.nodes) looks[id] = {n.visible, n.locked, n.opacity};
     const size_t before = doc->doc.ops.size(), steps = doc->undoLabels().size();
@@ -72,9 +73,10 @@ OPAD_BENCH(OPAD_BENCH_BATCH, batch) {
     const bool done = waitUntil([doc] { return !doc->designBusy; }, 120000);
     const qint64 ms = clock.elapsed();
     const bool ok = done && check();
-    require(ok && doc->doc.ops.size() >= before + ops && doc->undoLabels().size() == steps + 1 && doc->undoLabel() == label && changes == 1 && ms < budget,
+    const auto now = static_cast<std::ptrdiff_t>(doc->doc.ops.size()), was = static_cast<std::ptrdiff_t>(before);
+    require(ok && (ops >= 0 ? now >= was + ops : now <= was + ops) && doc->undoLabels().size() == steps + 1 && doc->undoLabel() == label && changes == 1 && ms < budget,
             QString("%1: %2 ops (%3 wanted), %4 step(s) \"%5\", %6 refresh(es), %7 ms")
-                .arg(what).arg(doc->doc.ops.size() - before).arg(ops).arg(doc->undoLabels().size() - steps).arg(doc->undoLabel()).arg(changes).arg(ms));
+                .arg(what).arg(now - was).arg(ops).arg(doc->undoLabels().size() - steps).arg(doc->undoLabel()).arg(changes).arg(ms));
     changes = 0;
     doc->undo();
     bool back = doc->doc.ops.size() == before && changes == 1;
@@ -116,13 +118,13 @@ OPAD_BENCH(OPAD_BENCH_BATCH, batch) {
     step(QString("the document eye on %1 roots").arg(roots.size()), roots.size(), AppDocument::tr("hide"), [&] { emit tree->eyeClicked(""); },
          [&] { return std::none_of(roots.begin(), roots.end(), [doc](const auto& id) { return doc->scene.node(id)->visible; }); });
   }
-  // Delete two operations: a batch of tombstones, or one design plan when there is a history.
+  // Delete two operations for good: one removal, planned on a worker when there is a history.
   std::vector<std::string> ops;  // features that made bodies, else new components
   for (const auto& f : doc->scene.features) if (ops.size() < 2 && !f.result.value("bodies", opad::json::array()).empty()) ops.push_back(f.id);
   for (const char* name : {"First", "Second"})
     if (ops.size() < 2) ops.push_back(doc->run("component", {{"name", name}}).value("op", ""));
   if (require(ops.size() == 2 && doc->doc.find_op(ops[0]) && doc->doc.find_op(ops[1]), "two operations to delete"))
-    step(doc->scene.features.empty() ? "Delete two operations (a batch)" : "Delete two operations (one design plan)", 2, MainWindow::tr("delete"), [&] { w.deleteOps(ops); },
-         [&] { return std::all_of(ops.begin(), ops.end(), [doc](const auto& id) { return doc->doc.is_deleted(id); }); });
+    step(doc->scene.features.empty() ? "Delete two operations (no history)" : "Delete two operations (one design plan)", -2, MainWindow::tr("delete"), [&] { w.deleteOps(ops); },
+         [&] { return std::none_of(ops.begin(), ops.end(), [doc](const auto& id) { return doc->doc.find_op(id) != nullptr; }); });
   return finish();
 }

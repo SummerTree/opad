@@ -311,9 +311,19 @@ TEST(file_merge_refuses_as_the_driver_does) {
   units.replace(units.find("\"mm\""), 4, "\"in\"");
   CHECK_EQ(refused(v.base_text, o, units), "document header changed; manual review required");
   CHECK_EQ(refused(v.base_text, o, Document::create().serialize()), "document header changed; manual review required");
+  // A base op one side deleted for good (no tombstone) stays out of the merge; changed on the other side, it is refused.
   Document fewer = Document::parse(v.base_text);
-  fewer.truncate_ops(1);
-  CHECK_EQ(refused(v.base_text, o, fewer.serialize()), "history was rewritten; manual review required");
+  const std::string importB = fewer.ops[1].id;
+  fewer.remove_ops({importB});
+  fewer.append(json{{"op", "appearance"}, {"target", v.a}, {"color", {1, 0, 0}}});
+  const FileMerge dropped = merge_files(v.base_text, o, fewer.serialize());
+  CHECK(dropped.error.empty());
+  const Document merged = Document::parse(dropped.text());
+  CHECK(!merged.find_op(importB) && merged.find_op(fewer.ops.back().id) && merged.ops.size() == Document::parse(o).ops.size());
+  Document edits = Document::parse(v.base_text);
+  edits.append(json{{"op", "delete"}, {"target", importB}});
+  CHECK_EQ(refused(v.base_text, edits.serialize(), fewer.serialize()), "operation " + importB + " was deleted on one side and changed on the other; manual review required");
+  CHECK_EQ(refused(v.base_text, fewer.serialize(), edits.serialize()), "operation " + importB + " was deleted on one side and changed on the other; manual review required");
   std::vector<std::string> keys;
   CHECK_EQ(refused(v.base_text, o, read_skipping(t, v.base, keys).serialize()), "body store was pruned; manual review required");
 }
