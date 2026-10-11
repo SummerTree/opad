@@ -80,6 +80,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <map>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -886,7 +887,7 @@ class Builder {
     const double span = it != blend_range_.end() ? it->second.second - it->second.first : 0;
     const bool all_round = ring && it != blend_range_.end() && (span < (u1 - u0) * 0.01 || span > (u1 - u0) * 0.95);
     if (it != blend_range_.end() && !all_round) {
-      const double pad = (it->second.second - it->second.first) * 0.05 + 1e-9;
+      const double pad = (it->second.second - it->second.first) * 0.02 + 1e-9;  // more reaches past the blend: worse
       double a = it->second.first - pad, b = it->second.second + pad;
       if (!spine.c->IsPeriodic()) a = std::max(a, u0), b = std::min(b, u1);
       if (b > a) u0 = a, u1 = b;
@@ -1299,7 +1300,7 @@ class Builder {
 
   // Faces healing could not trim (a blend's edges projected off its fitted patch, where the spline runs away) reach far
   // outside the body: left out, so that the body's box, fitting the view and thumbnails stay right.
-  TopoDS_Shape drop_runaway_faces(const TopoDS_Shape& s, const Bnd_Box& extent) {
+  TopoDS_Shape drop_runaway_faces(const TopoDS_Shape& s, const Bnd_Box& extent, const std::function<uint32_t(const TopoDS_Shape&)>& built_from) {
     if (extent.IsVoid()) return s;
     double x0, y0, z0, x1, y1, z1;
     extent.Get(x0, y0, z0, x1, y1, z1);
@@ -1315,7 +1316,11 @@ class Builder {
       } catch (const Standard_Failure&) {
         continue;
       }
-      if (b.IsVoid() || allowed.IsOut(b.CornerMin()) || allowed.IsOut(b.CornerMax())) drop->Remove(x.Current()), ++dropped;
+      if (b.IsVoid() || allowed.IsOut(b.CornerMin()) || allowed.IsOut(b.CornerMax())) {
+        drop->Remove(x.Current()), ++dropped;
+        const uint32_t fi = built_from(x.Current());
+        ++dropped_kinds_[fi ? surface_kind(fi) : std::string("?")];
+      }
     }
     if (!dropped) return s;
     dropped_faces_ += dropped;  // one warning with the total, at the end
@@ -1406,9 +1411,14 @@ class Builder {
     out.bodies = built_;
     out.face_source = std::move(face_source_);
     out.face_node = std::move(face_node_);
-    if (dropped_faces_)
-      warnings.push_back(std::to_string(dropped_faces_) + (dropped_faces_ == 1 ? " face that could not be fitted to its edges was left out"
-                                                                            : " faces that could not be fitted to their edges were left out"));
+    if (dropped_faces_) {
+      std::string kinds;
+      for (const auto& [kind, count] : dropped_kinds_) kinds += (kinds.empty() ? "" : ", ") + kind + " " + std::to_string(count);
+      warnings.push_back(std::to_string(dropped_faces_) +
+                         (dropped_faces_ == 1 ? " face that could not be fitted to its edges was left out ("
+                                              : " faces that could not be fitted to their edges were left out (") +
+                         kinds + ")");
+    }
     out.warnings = warnings;
     return out;
   }
@@ -1437,7 +1447,18 @@ class Builder {
         }
       }
       shape = heal(shape, context);
-      shape = drop_runaway_faces(shape, extent);
+      std::unordered_map<const Geom_Surface*, uint32_t> by_surface;  // faces healing left -> the faces built (see below)
+      for (uint32_t fi : body_faces_) {
+        TopLoc_Location loc;
+        if (const Handle(Geom_Surface) g = BRep_Tool::Surface(faces_[fi], loc); !g.IsNull()) by_surface.emplace(g.get(), fi);
+      }
+      auto built_from = [&](const TopoDS_Shape& f) -> uint32_t {
+        TopLoc_Location loc;
+        const Handle(Geom_Surface) g = BRep_Tool::Surface(TopoDS::Face(f), loc);
+        const auto it = g.IsNull() ? by_surface.end() : by_surface.find(g.get());
+        return it == by_surface.end() ? 0 : it->second;
+      };
+      shape = drop_runaway_faces(shape, extent, built_from);
       label = st_->AddShape(shape, false);
       ++built_;
       std::string name = name_of(*n);
@@ -1447,19 +1468,12 @@ class Builder {
       if (colour_of(*n, col)) ct_->SetColor(label, col, XCAFDoc_ColorGen);
       // the faces healing left, matched to the faces built by their surface: healing rebuilds a face whose edges it
       // replaced (a new TShape, not in its record) but keeps the surface
-      std::unordered_map<const Geom_Surface*, uint32_t> by_surface;
-      for (uint32_t fi : body_faces_) {
-        TopLoc_Location loc;
-        if (const Handle(Geom_Surface) g = BRep_Tool::Surface(faces_[fi], loc); !g.IsNull()) by_surface.emplace(g.get(), fi);
-      }
       for (TopExp_Explorer x(shape, TopAbs_FACE); x.More(); x.Next()) {
-        TopLoc_Location loc;
-        const Handle(Geom_Surface) g = BRep_Tool::Surface(TopoDS::Face(x.Current()), loc);
-        const auto it = g.IsNull() ? by_surface.end() : by_surface.find(g.get());
-        if (it == by_surface.end()) continue;
-        face_source_[x.Current().TShape().get()] = surface_kind(it->second);
-        face_node_[x.Current().TShape().get()] = it->second;
-        const Node* fn = f_.get(it->second);
+        const uint32_t fi = built_from(x.Current());
+        if (!fi) continue;
+        face_source_[x.Current().TShape().get()] = surface_kind(fi);
+        face_node_[x.Current().TShape().get()] = fi;
+        const Node* fn = f_.get(fi);
         if (fn && colour_of(*fn, col)) {
           const TDF_Label sub = st_->AddSubShape(label, x.Current());
           if (!sub.IsNull()) ct_->SetColor(sub, col, XCAFDoc_ColorSurf);
@@ -1538,6 +1552,7 @@ class Builder {
   std::unordered_map<uint32_t, TDF_Label> labels_;
   std::vector<uint32_t> body_faces_;  // the faces of the body being built
   int unnamed_bodies_ = 0, unnamed_assemblies_ = 0, dropped_faces_ = 0;
+  std::map<std::string, int> dropped_kinds_;
   std::unordered_map<const void*, std::string> face_source_;
   std::unordered_map<const void*, uint32_t> face_node_;
   std::set<uint32_t> building_;
