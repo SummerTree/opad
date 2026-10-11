@@ -36,7 +36,7 @@ void MainWindow::buildFileActions() {
   addAction("file.open", tr("&Open…"), "open", QKeySequence("Ctrl+O"), [this] {
     // openPath asks about unsaved changes once a file is chosen (asking here too asked twice after Discard).
     QString p = QFileDialog::getOpenFileName(this, tr("Open"), m_settings.value("ui/lastDir").toString(),
-                                             tr("Design files (%1);;OPAD document (*.opad);;CAD models (*.step *.stp *.iges *.igs *.brep *.brp);;"
+                                             tr("Design files (%1);;OPAD document (*.opad);;CAD models (*.step *.stp *.iges *.igs *.x_t *.x_b *.brep *.brp);;"
                                                 "Meshes (*.stl *.3mf *.obj *.ply *.gltf *.glb *.wrl *.vrml);;2D drawings (*.dxf *.dwg *.svg)").arg(fileFilter(true)) +
                                                 ";;" + tr("KiCad boards (*.kicad_pcb)"));
     if (!p.isEmpty()) openPath(p);

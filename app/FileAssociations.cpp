@@ -41,6 +41,7 @@ const QList<Format>& formats() {
       {".opad", QObject::tr("OPAD document")},
       {".step", QObject::tr("STEP model")},   {".stp", QObject::tr("STEP model")},
       {".iges", QObject::tr("IGES model")},   {".igs", QObject::tr("IGES model")},
+      {".x_t", QObject::tr("Parasolid model")}, {".x_b", QObject::tr("Parasolid model")},
       {".brep", QObject::tr("BREP model")},   {".brp", QObject::tr("BREP model")},
       {".stl", QObject::tr("STL mesh")},      {".3mf", QObject::tr("3MF print file")},
       {".obj", QObject::tr("OBJ mesh")},      {".ply", QObject::tr("PLY mesh")},

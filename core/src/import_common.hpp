@@ -70,6 +70,8 @@ void stamp_source(json& op, const std::filesystem::path& file, const ImportOptio
 
 // The readers behind import_file (formats.cpp).
 ImportResult import_iges(Document& doc, const std::filesystem::path& file, const ImportOptions& opt);
+// Parasolid transmit files, text or binary (xt/xt_import.cpp).
+ImportResult import_parasolid(Document& doc, const std::filesystem::path& file, const ImportOptions& opt);
 // glTF, GLB, OBJ, VRML; `kicad_vrml`: a KiCad footprint model, in 2.54 mm units and Z up (VRML is otherwise metres, Y up).
 ImportResult import_mesh_scene(Document& doc, const std::filesystem::path& file, const ImportOptions& opt, bool kicad_vrml = false);
 ImportResult import_brep_file(Document& doc, const std::filesystem::path& file, const ImportOptions& opt);

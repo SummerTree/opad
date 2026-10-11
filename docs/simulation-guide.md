@@ -21,8 +21,8 @@ them.
 | The frequencies a part rings at | Vibration modes study | Netgen mesh + CalculiX |
 | How a 3D-printed part fails: which layer, which way | Printed part + static study | as above, with printed materials |
 | How hot a part gets: heatsinks, fans, still air, warm-up | Thermal study | Netgen mesh + CalculiX, the air from correlations |
-| Where a fan's air goes, and how hot the parts get in it; a board in a vented box | Thermal study, *with the air solved*, or the Cooling assistant | OpenFOAM (snappyHexMesh, simpleFoam, buoyantBoussinesqSimpleFoam) and CalculiX |
-| Which design is best: a vent's place, a fin count, a wall thickness | Design sweep (Cooling assistant's Best vents, or an agent) | any of the above, once per value |
+| Where a fan's air goes, and how hot the parts get in it; a board in a vented box | Thermal study, *with the air solved*, or Thermal setup | OpenFOAM (snappyHexMesh, simpleFoam, buoyantBoussinesqSimpleFoam) and CalculiX |
+| Which design is best: a vent's place, a fin count, a wall thickness | Design sweep, through an agent | any of the above, once per value |
 
 Static and modal studies need CalculiX's `ccx` on the PATH (or beside OPAD, or `OPAD_CCX`); the dynamic study needs a
 build with Project Chrono; the air solved needs OpenFOAM (Ubuntu: `apt install openfoam`; or `OPAD_OPENFOAM` set to
@@ -267,18 +267,20 @@ the parts' heat leaves only by the moving air.
 *How hot a single-board computer gets in its case: with a fan blowing in, or with vents only and warm air rising.*
 Needs OpenFOAM.
 
-1. Model the box as one solid: its walls and the openings cut through them. Model the board, its chips and the
-   heatsink inside it as bodies of their own, and a block where each fan sits, as big as the fan. (On an empty
-   document the assistant's first page builds an example: a board, a 4 W chip under a finned heatsink and a 0.5 W power
-   chip in a 110 × 80 × 40 mm ABS box with a 30 mm fan and three exhaust slots.)
-2. Press **Cooling assistant** on the **Thermal** tab. Its first page shows the box it found (the smallest body that holds
-   the parts making heat) and what is inside it.
-3. **Heat**: tick each part that makes heat and type its power. Tick **Board** for the circuit board and give its copper
-   layers: copper spreads heat along a board about eighty times better than through it. A chip with no material is
-   taken as silicon.
-4. **Air**: for each fan, the block that stands for it (or the heatsink it blows on), the fan (typical fans by size, or
-   **Custom** with its datasheet's free flow and shut-off pressure) and the way it blows. Untick **Fans move the air**
-   for a box with vents only: the air then moves by rising where it is warm, so put vents low and high.
+1. Model the box with its walls and the openings cut through them, as one solid or several (a base and its lid, a frame
+   and its panels). Model the board, its chips and the heatsink inside it as bodies of their own (or the chips joined
+   into the board), and a block where each fan sits, as big as the fan (or the fan's own model). (On an empty document
+   Thermal setup builds an example: a board, a 4 W chip under a finned heatsink and a 0.5 W power chip in a
+   110 × 80 × 40 mm ABS box with a 30 mm fan and three exhaust slots.)
+2. Press **Thermal setup** on the **Thermal** tab. Its first page picks the bodies the box is made of: click bodies in the
+   view or rows in the browser to add or take them out.
+3. **Heat**: tick each chip that makes heat and type its power. A chip joined into the board: click its face in the view
+   and type that face's power. Tick **Board** for the circuit board and give its copper layers: copper spreads heat
+   along a board about eighty times better than through it. A chip with no material is taken as silicon.
+4. **Air**: for each fan, pick it in the view or the browser (its own model as a component, or a block where it sits),
+   the flat face its air goes through (**Flip** turns it round), the fan (typical fans by size, or **Custom** with its
+   datasheet's free flow and shut-off pressure typed under it) and the heatsink it blows through, with its material.
+   Untick the fans for a box with vents only: the air then moves by rising where it is warm, so put vents low and high.
 5. **Run**: the room's temperature and the quality: **Quick** to compare designs, **Normal** for the answer, **Fine** to
    check it. It takes minutes; the status bar shows how far it is and you can keep working.
 6. The page lists each part's temperature (hottest first), each fan's flow and pressure, the air through the box and
@@ -295,7 +297,7 @@ once (laminar); with vents only, the flow and the air's temperature are solved t
 (Boussinesq), the walls stepped to the cells. Warm air rising never settles fully in a steady solution: the summary's
 `air_balance` (what the parts give the air against what leaves) says how well it closed; in the tests the whole heat
 balance closes to about 15 % with vents only and to about 1 % with fans. Vents-only runs also take longer (tens of
-minutes at Normal). The assistant writes ordinary loads (case *Cooling*) and a study, which
+minutes at Normal). Thermal setup writes ordinary loads (case *Cooling*) and a study, which
 the Simulation panel and an agent can change afterwards.
 
 ## 11. Find the best place for the vents (design sweep)
@@ -305,19 +307,17 @@ the Simulation panel and an agent can change afterwards.
 1. Make what you want to vary a parameter: edit the feature that cuts the vent (double-click it in the timeline) and
    type a parameter's name, such as `vent_z`, instead of its position. **Parameters** on the Design ribbon lists them.
    (The example of use case 10 has `vent_z`, the exhaust slots' height.)
-2. Set the case up in the **Cooling assistant** and run it once.
-3. On its **Best vents** page choose the parameter, the range (**From**, **To**) and how many **Values**; **Then closer
-   in** adds runs between the best value's neighbours (golden section). **Keep cool**: the hottest part, or one part.
-4. Keep **Compare at Quick quality** ticked: every value runs on coarse cells, then the best runs again at full
-   quality.
-5. Press **Find the best**. The table fills with each value's hottest temperature and marks the best; **Use the best**
-   sets the parameter to it (one undo step). Run the case again for the best design's full result.
+2. Set the case up in **Thermal setup** and run it once.
+3. Ask an AI agent (MCP) for the sweep, for example: *"Sweep vent_z from 5 to 30 mm in five values, then closer in,
+   keeping the hottest part coolest; compare at Quick quality and confirm the best at Normal."* It makes a `sweep`
+   study over the thermal study (see the end of this section) and runs it.
+4. The agent reports each value's hottest temperature and the best, and can set the parameter to it (one undo step).
+   Run the case again for the best design's full result.
 
-**What you should see**: the hottest temperature for each value, the best marked; the Simulation panel shows the best
-design's map. A value that breaks the model (a slot cut through nothing) is listed as failed and the rest go on. Each value is a whole run: five values and
+**What you should see**: the hottest temperature for each value and the best. A value that breaks the model (a slot cut through nothing) is listed as failed and the rest go on. Each value is a whole run: five values and
 two refinements at Quick take about as long as two Normal runs. The sweep works on copies of the document.
 
-An agent sweeps any study the same way: a `sweep` study with `study`, `params` (`values`, or `from`, `to`, `steps`),
+Any study is swept the same way: a `sweep` study with `study`, `params` (`values`, or `from`, `to`, `steps`),
 `objective` (`of`, `bodies`, `goal`), `refine`, `screening` and `confirm` (see the agent guide).
 
 ## Settings the panel does not show

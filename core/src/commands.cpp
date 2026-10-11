@@ -499,8 +499,8 @@ void register_builtins() {
         return j;
       });
 
-  reg("import", "Import STEP, IGES, BREP, STL, 3MF, OBJ, PLY, glTF, VRML, DXF, DWG (converter), SVG, a KiCad board or a picture into the document",
-      {{"doc", "path"}, {"file", "path - .step/.iges/.brep/.stl/.3mf/.obj/.ply/.gltf/.glb/.wrl/.dxf/.dwg/.svg/.kicad_pcb/.png/.jpg"}, {"by", "string"}, {"parent", "uuid - component to import under"}, {"heal", "bool - default true"},
+  reg("import", "Import STEP, IGES, Parasolid (X_T, X_B), BREP, STL, 3MF, OBJ, PLY, glTF, VRML, DXF, DWG (converter), SVG, a KiCad board or a picture into the document",
+      {{"doc", "path"}, {"file", "path - .step/.iges/.x_t/.x_b/.brep/.stl/.3mf/.obj/.ply/.gltf/.glb/.wrl/.dxf/.dwg/.svg/.kicad_pcb/.png/.jpg"}, {"by", "string"}, {"parent", "uuid - component to import under"}, {"heal", "bool - default true"},
        {"placement", "[16] - drawings and boards: where the file's XY plane and origin go (row-major 4x4, mm)"}, {"plane", "object - drawings: place on this plane instead, {\"base\":\"xz\"} or {\"face\":ref}, its origin at the plane's"},
        {"center", "bool - drawings: centre the drawing on its origin (default false)"},
        {"width", "number - pictures: mm"},

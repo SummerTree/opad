@@ -110,6 +110,26 @@ Bench: `OPAD_BENCH_VIEWER=<out.opad>` (gui case "viewer"); benches that open a S
 the main window) covers the workspace, blocks the mouse and shows a spinner; actions other than file/panel ones wait.
 Benches (`--bench-select`) keep every other top-level window off screen (`BenchQuiet`) and never ask on quit.
 
+## Parasolid X_T / X_B (`core/src/xt/`, no dependency)
+
+`xt_parse.cpp` reads text and neutral/typed binary (bare binary refused) into nodes; layouts: embedded edits (V14+ keys
+`_13006`), else `schema_for(version)` = base 13006 (`xt_schema.cpp`, from the 2008 reference) minus V13/V11 differences,
+plus `xt_layouts.inc` (harvested by `tools/xt_layouts.py` from `OPAD_XT_HARVEST`). `xt_brep.cpp` builds an XCAF doc
+(metres -> mm, names/colours from SDL/TYSA attributes, assemblies, transforms row-major: checked, parts touch) fed to
+`detail::import_xcaf`. Traps met: knot arrays padded past `n_knots`; spec swaps HELIX_CU/SU_FORM, cone opens along +A;
+SP-curves go through `Approx_CurveOnSurface` (affine map of params, `occt_pcurve`) and are attached as pcurves, else
+ShapeFix projects 1000-pole sampled curves (77 s on one file); rolling-ball blends are fitted grids (ring spines: whole
+spine, periodic fit); faces healing blows up (blend edges projected off the patch) are dropped by `drop_runaway_faces`.
+Tests: `ctest -R xt` (cube written from the base schema as text + binary; `tests/corpus/fetch.py` files when present).
+Dev surveys (env-gated in test_xt): `OPAD_XT_CORPUS`, `OPAD_XT_BUILD=<dir>`, `OPAD_XT_ONE=<file>` (+ `OPAD_XT_NODES`;
+bad faces with their source kind and FACE node), `OPAD_XT_FACES=<dir>` (bad faces by surface kind), `OPAD_XT_STATUS=<dir>`
+(BRepCheck statuses of invalid solids). Most invalid solids fail at shell/wire level, not per face. Fixes that paid off:
+blends on blends touch them on their charted contact curves (BLEND_BOUND intersections; not for exact supports: worse),
+a tolerant edge takes a fin curve on an exact surface over one on a blend, spun circles -> spheres/ring tori, closed
+clamped B-surfaces -> periodic (else a tube face splits into slivers), healed faces matched to built ones by surface
+(healing gives rebuilt faces new TShapes; colours were lost). Tried and worse: extending blend arcs past the contacts,
+padding the spine range beyond 2%. State: 33 of 1036 solids invalid in the 196-file public survey, mostly blend faces.
+
 ## Floating tool panels (no right dock)
 
 Properties, Annotations and Section are `ToolPanel`s (`app/Panels.hpp`): frameless tool windows owned by the main
