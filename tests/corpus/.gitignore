@@ -3,3 +3,5 @@
 *.STEP
 *.STP
 corpus-report.json
+*.x_t
+*.x_b

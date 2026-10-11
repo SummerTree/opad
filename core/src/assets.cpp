@@ -141,6 +141,7 @@ std::string kind_of(const fs::path& file) {
   const std::string ext = lower(file.extension().string());
   if (ext == ".step" || ext == ".stp") return "step";
   if (ext == ".iges" || ext == ".igs") return "iges";
+  if (ext == ".x_t" || ext == ".x_b" || ext == ".xmt_txt" || ext == ".xmt_bin") return "parasolid";
   if (ext == ".brep" || ext == ".brp") return "brep";
   if (ext == ".dxf" || ext == ".dwg" || ext == ".svg") return "drawing";
   if (ext == ".kicad_pcb") return "kicad_pcb";

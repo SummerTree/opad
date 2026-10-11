@@ -126,7 +126,7 @@ You never need a terminal:
 
 | Kind | Open and import | Export |
 |---|---|---|
-| **3D solids and parametric models** | `.opad` (full history), STEP AP203/214/242 (assemblies, names, colours, materials), IGES, BREP | `.opad`, STEP |
+| **3D solids and parametric models** | `.opad` (full history), STEP AP203/214/242 (assemblies, names, colours, materials), IGES, Parasolid X_T/X_B (assemblies, names, colours), BREP | `.opad`, STEP |
 | **3D meshes** | STL, 3MF, OBJ, PLY, glTF/GLB, VRML | STL, OBJ, GLB |
 | **2D drawings** | DXF, DWG, SVG | DXF, DWG, SVG, PDF, PNG |
 | **Electronics** | KiCad boards (`.kicad_pcb`) | |
@@ -266,7 +266,8 @@ bolt preload, and show stress, displacement, safety factors and mode shapes as c
 #### Heat
 
 Heat sources, convection, radiation and fans on heatsinks, steady or over time; with OpenFOAM, the air flow around the
-parts is solved too. The **Cooling assistant** takes you through cooling a board in a vented box step by step.
+parts is solved too. The **Thermal setup** takes you through cooling a board in a box step by step: the box's
+bodies, the heat sources and the fans, picked in the view.
 
 ![A 30 W chip on a finned heatsink with a fan: the warm-up study run with CalculiX, then played back over 300 s as the heatsink heats up and the chart follows its temperature](docs/media/thermal.gif)
 

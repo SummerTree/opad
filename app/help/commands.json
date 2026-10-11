@@ -12,8 +12,8 @@
    "id": "file.open",
    "title": "Open",
    "summary": "Opens an OPAD document, a CAD model, a mesh or a 2D drawing.",
-   "details": "OPAD documents open for editing. STEP, IGES, STL, 3MF, OBJ, DXF, DWG, SVG and the other formats open read-only in viewer mode, which is fast; Save turns them into editable OPAD documents.",
-   "keywords": ["load", "file", "step", "stl", "dxf", "dwg", "read"]
+   "details": "OPAD documents open for editing. STEP, IGES, Parasolid, STL, 3MF, OBJ, DXF, DWG, SVG and the other formats open read-only in viewer mode, which is fast; Save turns them into editable OPAD documents.",
+   "keywords": ["load", "file", "step", "x_t", "parasolid", "stl", "dxf", "dwg", "read"]
   },
   {
    "id": "file.clone",

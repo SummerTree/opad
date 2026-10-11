@@ -549,7 +549,8 @@ std::string dwg_reader() {
 
 const std::vector<std::string>& importable_extensions() {
   static const std::vector<std::string> list = {".step", ".stp", ".iges", ".igs", ".brep", ".brp", ".stl", ".obj", ".3mf", ".ply",
-                                                ".gltf", ".glb", ".wrl", ".vrml", ".dxf", ".dwg", ".svg", ".kicad_pcb"};
+                                                ".gltf", ".glb", ".wrl", ".vrml", ".dxf", ".dwg", ".svg", ".kicad_pcb", ".x_t", ".x_b",
+                                                ".xmt_txt", ".xmt_bin"};
   return list;
 }
 
@@ -642,6 +643,7 @@ ImportResult import_file(Document& doc, const std::filesystem::path& file, const
   try {
     if(ext==".step" || ext==".stp") return import_step(doc,file,options);
     if(ext==".iges" || ext==".igs") return detail::import_iges(doc,file,options);
+    if(ext==".x_t" || ext==".x_b" || ext==".xmt_txt" || ext==".xmt_bin") return detail::import_parasolid(doc,file,options);
     if(ext==".brep" || ext==".brp") return detail::import_brep_file(doc,file,options);
     if(ext==".stl") return detail::import_stl(doc,file,options);
     if(ext==".ply") return detail::import_ply(doc,file,options);

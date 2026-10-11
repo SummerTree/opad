@@ -59,6 +59,7 @@ QString native(const QString& path) { return QDir::toNativeSeparators(path); }
 QString kindText(const std::string& kind) {
   if (kind == "step") return "STEP";
   if (kind == "iges") return "IGES";
+  if (kind == "parasolid") return "Parasolid";
   if (kind == "brep") return "BREP";
   if (kind == "kicad_pcb") return AssetsArea::tr("KiCad board");
   if (kind == "image") return AssetsArea::tr("Picture");
@@ -89,7 +90,8 @@ void afterWorker(QObject* ctx, std::shared_ptr<std::atomic<bool>> reading, std::
 bool assets::suggestLink(const QString& path) {
   const QFileInfo info(path);
   const QString suffix = info.suffix().toLower();
-  return suffix == "step" || suffix == "stp" || suffix == "iges" || suffix == "igs" || suffix == "kicad_pcb" || info.size() > kSuggestBytes;  // a drawing: when big
+  return suffix == "step" || suffix == "stp" || suffix == "iges" || suffix == "igs" || suffix == "x_t" || suffix == "x_b" ||
+         suffix == "kicad_pcb" || info.size() > kSuggestBytes;  // a drawing: when big
 }
 
 assets::Mode assets::askImport(QWidget* parent, const QString& path) {

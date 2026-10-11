@@ -110,6 +110,20 @@ Bench: `OPAD_BENCH_VIEWER=<out.opad>` (gui case "viewer"); benches that open a S
 the main window) covers the workspace, blocks the mouse and shows a spinner; actions other than file/panel ones wait.
 Benches (`--bench-select`) keep every other top-level window off screen (`BenchQuiet`) and never ask on quit.
 
+## Parasolid X_T / X_B (`core/src/xt/`, no dependency)
+
+`xt_parse.cpp` reads text and neutral/typed binary (bare binary refused) into nodes; layouts: embedded edits (V14+ keys
+`_13006`), else `schema_for(version)` = base 13006 (`xt_schema.cpp`, from the 2008 reference) minus V13/V11 differences,
+plus `xt_layouts.inc` (harvested by `tools/xt_layouts.py` from `OPAD_XT_HARVEST`). `xt_brep.cpp` builds an XCAF doc
+(metres -> mm, names/colours from SDL/TYSA attributes, assemblies, transforms row-major: checked, parts touch) fed to
+`detail::import_xcaf`. Traps met: knot arrays padded past `n_knots`; spec swaps HELIX_CU/SU_FORM, cone opens along +A;
+SP-curves go through `Approx_CurveOnSurface` (affine map of params, `occt_pcurve`) and are attached as pcurves, else
+ShapeFix projects 1000-pole sampled curves (77 s on one file); rolling-ball blends are fitted grids (ring spines: whole
+spine, periodic fit); faces healing blows up (blend edges projected off the patch) are dropped by `drop_runaway_faces`.
+Tests: `ctest -R xt` (cube written from the base schema as text + binary; `tests/corpus/fetch.py` files when present).
+Dev surveys (env-gated in test_xt): `OPAD_XT_CORPUS`, `OPAD_XT_BUILD=<dir>`, `OPAD_XT_ONE=<file>` (+ `OPAD_XT_NODES`).
+Known gaps: blends on blends at corners (a few mm off), so ~6% of solids in a 200-file public survey are invalid.
+
 ## Floating tool panels (no right dock)
 
 Properties, Annotations and Section are `ToolPanel`s (`app/Panels.hpp`): frameless tool windows owned by the main

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download public STEP files for the robustness corpus (opt-in; see README.md).
+"""Download public STEP and Parasolid files for the robustness corpus (opt-in; see README.md).
 
 Sources are (url, filename) pairs from repositories that publish sample STEP files under permissive terms.
 Files land next to this script and are git-ignored.
@@ -21,6 +21,20 @@ SOURCES = [
     ("https://raw.githubusercontent.com/stepcode/stepcode/develop/data/ap214e3/io1-cm-214.stp", "stepcode-io1-cm-214.stp"),
     ("https://raw.githubusercontent.com/stepcode/stepcode/develop/data/ap214e3/sg1-c5-214.stp", "stepcode-sg1-c5-214.stp"),
     ("https://raw.githubusercontent.com/stepcode/stepcode/develop/data/ap214e3/s1-c5-214/s1-c5-214.stp", "stepcode-s1-c5-214.stp"),
+    # Parasolid transmit files (test_xt builds those present): test assets of PyMAPDL / PyMechanical (MIT) and SCOREC
+    # core (BSD), and open-hardware parts: an assembly, a threaded dock with rolling-ball blends, a display module
+    ("https://raw.githubusercontent.com/ansys/pymapdl/32234e5cf35b9aaa4dff22da8badf782c1e5f60c/tests/test_files/CAD_formats/CubeWithHole.x_t",
+     "pymapdl-CubeWithHole.x_t"),
+    ("https://raw.githubusercontent.com/ansys/pymechanical/b90aea8746c15f62fe0929ede5465559d3e97c9f/tests/assets/hsec.x_t",
+     "pymechanical-hsec.x_t"),
+    ("https://raw.githubusercontent.com/SCOREC/core/7166244ff601fb3b3847543d725762a2e330feef/python_wrappers/input/sphere.x_t",
+     "scorec-sphere.x_t"),
+    ("https://raw.githubusercontent.com/Annex-Engineering/Quickdraw_Probe/90ffc6ad86e9b21b09139dd89395dd152c9ed2ea/CAD/Release_1/Omron_Mag_Probe_Assembly.x_t",
+     "quickdraw-omron-assembly.x_t"),
+    ("https://raw.githubusercontent.com/Annex-Engineering/Quickdraw_Probe/90ffc6ad86e9b21b09139dd89395dd152c9ed2ea/CAD/Release_1/Microswitch%20dock%20-%20short.x_t",
+     "quickdraw-microswitch-dock.x_t"),
+    ("https://raw.githubusercontent.com/sparkfun/3D_Models/53d298c3b8202cf8fce9ab61885855720c84c012/products/12923/Sparkfun_display.x_t",
+     "sparkfun-display.x_t"),
 ]
 
 

@@ -25,7 +25,7 @@ const CLSID kClsid = {0x67dd85ae, 0x5101, 0x4c3a, {0x92, 0x31, 0x39, 0xd7, 0xb7,
 HMODULE g_module = nullptr;
 std::atomic<long> g_objects{0}, g_locks{0};
 
-const wchar_t* const kExtensions[] = {L".opad", L".step", L".stp", L".iges", L".igs", L".brep", L".brp", L".stl", L".3mf",
+const wchar_t* const kExtensions[] = {L".opad", L".step", L".stp", L".iges", L".igs", L".x_t", L".x_b", L".brep", L".brp", L".stl", L".3mf",
                                       L".obj", L".ply", L".gltf", L".glb", L".wrl", L".vrml", L".dxf", L".dwg", L".svg"};
 constexpr unsigned long long kLargest = 400ull << 20;  // beyond this a thumbnail costs more than it is worth
 constexpr DWORD kPatience = 45000;                      // ms the renderer gets

@@ -437,7 +437,7 @@ EmptyState::EmptyState(QWidget* parent) : QWidget(parent) {
   title->setFont(theme::ui(20, QFont::Medium));
   title->setAlignment(Qt::AlignCenter);
   z->addWidget(title);
-  const QString extensions = QString::fromUtf8(".opad · .step · .iges · .stl · .3mf · .obj · .gltf · .dxf · .dwg · .svg");
+  const QString extensions = QString::fromUtf8(".opad · .step · .iges · .x_t · .stl · .3mf · .obj · .gltf · .dxf · .dwg · .svg");
   auto* ext = new QLabel(extensions, zone);
   ext->setObjectName("secondary");
   ext->setFont(theme::mono(12));

@@ -60,7 +60,9 @@ std::string content_hash(const std::filesystem::path& file, bool compute = true)
 // hash its store remembered (this path, size and time); a copy elsewhere is read, then stored and found from then on.
 bool hash_to_load(const std::filesystem::path& file) {
   const std::string ext = extension(file);
-  if (ext == ".step" || ext == ".stp" || ext == ".iges" || ext == ".igs" || ext == ".kicad_pcb") return true;
+  if (ext == ".step" || ext == ".stp" || ext == ".iges" || ext == ".igs" || ext == ".x_t" || ext == ".x_b" || ext == ".xmt_txt" ||
+      ext == ".xmt_bin" || ext == ".kicad_pcb")
+    return true;
   std::error_code error;
   const auto size = std::filesystem::file_size(file, error);
   return !error && size < (std::uintmax_t(16) << 20);
