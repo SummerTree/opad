@@ -301,8 +301,17 @@ class Builder {
     };
     const int uform = periodic_form(um, nu, ud), vform = periodic_form(vm, nv, vd);
     if (uform < 0 || vform < 0) return nullptr;
-    if (rational) return new Geom_BSplineSurface(poles, weights, arr(uk), arr(vk), iarr(um), iarr(vm), ud, vd, uform == 1, vform == 1);
-    return new Geom_BSplineSurface(poles, arr(uk), arr(vk), iarr(um), iarr(vm), ud, vd, uform == 1, vform == 1);
+    Handle(Geom_BSplineSurface) out =
+        rational ? new Geom_BSplineSurface(poles, weights, arr(uk), arr(vk), iarr(um), iarr(vm), ud, vd, uform == 1, vform == 1)
+                 : new Geom_BSplineSurface(poles, arr(uk), arr(vk), iarr(um), iarr(vm), ud, vd, uform == 1, vform == 1);
+    // closed but written clamped (a tube): periodic, so that healing gives a face round it its seam (else it splits the
+    // face at its two rings into slivers); the parameter range stays
+    try {
+      if (!out->IsUPeriodic() && out->IsUClosed()) out->SetUPeriodic();
+      if (!out->IsVPeriodic() && out->IsVClosed()) out->SetVPeriodic();
+    } catch (const Standard_Failure&) {
+    }
+    return out;
   }
 
   // ---- curves. The result's geometry is in mm; `sense` says which way the Parasolid curve runs along it.
