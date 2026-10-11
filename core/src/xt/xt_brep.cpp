@@ -893,7 +893,11 @@ class Builder {
       if (b > a) u0 = a, u1 = b;
     }
     if (Precision::IsInfinite(u0) || Precision::IsInfinite(u1)) return nullptr;
-    const int nu = 24, nv = 9;
+    // stations along the spine: enough for its length against the ball's radius (a long thin blend needs more than 24)
+    double length = 0;
+    for (int k = 0; k < 32; ++k) length += spine.c->Value(u0 + (u1 - u0) * k / 32).Distance(spine.c->Value(u0 + (u1 - u0) * (k + 1) / 32));
+    const double radius = std::max(std::abs(n.num("range", 0, 0)), std::abs(n.num("range", 1, 0))) * S;
+    const int nu = radius > 0 ? std::clamp(int(length / (0.5 * radius)) + 1, 24, 120) : 24, nv = 9;
     TColgp_Array2OfPnt grid(1, nu, 1, nv);
     for (int i = 0; i < nu; ++i) {
       // all round: the closing row is the first one again, which the periodic fit adds itself
