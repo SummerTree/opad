@@ -51,6 +51,8 @@ CASES = [
     ("sketch-pointer", "empty", {"OPAD_BENCH_SKETCH_POINTER": "{prefix}"}),
     # Tool panels hand the keyboard back to the view after a click on a button or the slider; Esc in a panel is its (UI-05).
     ("panel-focus", "box", {"OPAD_BENCH_PANEL_FOCUS": "1"}),
+    # The Section panel's Pick face takes one face, then the view selects as before; Exit section is its main button.
+    ("section-pick", "box", {"OPAD_BENCH_SECTION_PICK": "{prefix}"}),
     # Typed values outside the sketch: a fillet's radius, the extrude's distance and taper by the arrow (UI-122).
     ("feature-keys", "box", {"OPAD_BENCH_FEATURE_KEYS": "{prefix}"}),
     # ... the section's offset and a drawing's offset while it is placed (UI-122).

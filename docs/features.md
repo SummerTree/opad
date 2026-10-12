@@ -697,6 +697,16 @@ key that needs a passphrase must be loaded into ssh-agent or Pageant. OPAD asks 
 first commit when git has none, offers **Trust this folder** when git refuses a repository owned by another account
 (`safe.directory`), and explains git's errors in plain words.
 
+**Compare files** (Version menu, Compare > Compare with ▾) compares files that share no history, such as several exports
+of one design from another CAD system, in any format OPAD opens (OPAD, STEP, X_T/X_B, IGES, meshes...). Bodies are
+paired from the surest evidence to the loosest: the ids the files carry (Parasolid's face ids, face names a STEP or IGES
+exporter wrote when they are unique, 3MF object UUIDs: the most faces shared), the same geometry (counts, volume, area and
+principal moments; the same place = unchanged, else moved), the faces an edit left alone (any B-rep without ids: their
+kind, area and place, one translation for all), the same names, then how much they overlap; the rest are new or gone. With three files or more the panel's **Variants** table lists
+each body of the first file in every other file, and a click on a file's column shows it as B. Side by side shows up to
+four files at once (A and B above, two more files below), every pane with the same camera. `opad-cli variants
+a.x_t b.x_t [c.step...] [--table]` prints the same.
+
 `opad-cli diff` compares two versions semantically: parameters, sketch entities and dimensions, feature inputs
 before -> after, bodies added, removed, moved, renamed, restyled, reparented or with new geometry, notes resolved or
 answered, and how the histories relate. A side is a file or `git:REV[:path]`; one file alone is compared with `HEAD`.

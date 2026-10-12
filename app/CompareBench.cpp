@@ -22,6 +22,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QHeaderView>
 #include <QDialog>
 #include <QLabel>
 #include <QListWidget>
@@ -548,6 +549,167 @@ bool CompareMode::bench(const QString& prefix) {
       timer->stop();
       if (st->process && st->process->state() != QProcess::NotRunning) st->process->kill();  // only the child this bench started
       trace::log(QStringLiteral("bench: compare%1: FAIL %2").arg(cli ? " (child)" : "").arg(QString::fromUtf8(e.what())));
+      QCoreApplication::exit(2);
+    }
+  });
+  timer->start();
+  return true;
+}
+
+// OPAD_BENCH_COMPARE_FILES=<prefix> on tools/bench_cases/vcs.py's variants/v1.step, viewed, beside v2.step (its second box
+// moved), v3.step (its first box longer, the cylinder gone) and v4.step (the cylinder wider): exports of one design that
+// share no history. Compare files on the four: A v1, B v2, the bodies matched by shape (one moved, two the same), the
+// Variants table (a column per other file, what each has of A's bodies); side by side, four panes (A and B above, v3 and
+// v4 below as C and D), their cameras one, each pane its own file's bodies and none of the session's; a click on v3's
+// column showing it as B (one changed, one gone), C and D then v2 and v4; overlay again (no extra panes), Esc.
+bool CompareMode::benchFiles(const QString& prefix) {
+  using Cat = ComparePanel::Category;
+  struct State {
+    size_t step = 0;
+    int wait = 0;
+  };
+  auto st = std::make_shared<State>();
+  AppDocument* doc = m_services.document();
+  Viewport* vp = m_services.viewport();
+  auto require = [](bool ok, const QString& why) { if (!ok) throw opad::Error(why.toStdString()); };
+  auto pass = [](const QString& what) { trace::log("bench: compare files: " + what + " PASS"); };
+  auto counts = [this] {
+    QStringList n;
+    for (int c = 0; c < ComparePanel::Categories; ++c) n << QString::number(m_panel->chip(Cat(c))->count());
+    return n.join(' ');
+  };
+  // What a column of the Variants table says, row by row ("=", "moved", ...), sorted.
+  auto column = [this](int c) {
+    QStringList cells;
+    QTableWidget* t = m_panel->variants();
+    for (int r = 0; r < t->rowCount(); ++r) cells << (t->item(r, c) ? t->item(r, c)->text() : QString());
+    cells.sort();
+    return cells.join(',');
+  };
+  auto label = [this](int v) { return v >= 0 ? m_versions[size_t(v)].label : QString(); };
+  auto sameCamera = [](const opad::json& a, const opad::json& b) {
+    for (const char* key : {"eye", "center", "up"})
+      for (size_t i = 0; i < 3; ++i)
+        if (std::abs(a[key][i].get<double>() - b[key][i].get<double>()) > 1e-6 * (1 + std::abs(a[key][i].get<double>()))) return false;
+    return std::abs(a["scale"].get<double>() - b["scale"].get<double>()) <= 1e-6 * a["scale"].get<double>();
+  };
+  // Parts shown in extra pane k, and whether any of the session's bodies is.
+  auto inPane = [](const opad::json& state, size_t k) {
+    int n = 0;
+    for (const auto& p : state["parts"])
+      if (p.value("displayed", true) && p["extra"].size() > k && p["extra"][k].get<bool>()) ++n;
+    return n;
+  };
+  auto sessionInExtras = [](const opad::json& state) {
+    for (const auto& [id, b] : state["bodies"].items())
+      for (const auto& e : b["extra"])
+        if (e.get<bool>()) return true;
+    return false;
+  };
+  auto extrasMeshed = [this] {
+    for (size_t k = m_mainParts; k < m_parts.size(); ++k)
+      if (!m_parts[k].prs) return false;
+    return m_parts.size() > m_mainParts;
+  };
+  std::vector<std::function<bool()>> steps = {
+      [=, this] {
+        if (!doc->hasDocument || doc->loading || m_services.jobs()->busy()) return false;
+        require(doc->browse, "v1.step opens in viewer mode");
+        const QDir dir = QFileInfo(doc->viewing).absoluteDir();
+        require(m_services.action("vcs.compareFiles") && m_services.action("vcs.compareFiles")->isEnabled(), "Compare files… is enabled while viewing");
+        openFiles({dir.filePath("v1.step"), dir.filePath("v2.step"), dir.filePath("v3.step"), dir.filePath("v4.step")});
+        return true;
+      },
+      [=, this] {
+        if (!settled() || relation().empty() || !m_panel->variants()->isVisible()) return false;
+        require(relation() == "variants", QString::fromStdString("relation " + relation()));
+        require(label(m_a) == "v1.step" && label(m_b) == "v2.step", "A " + label(m_a) + ", B " + label(m_b));
+        require(counts() == "0 0 0 1 2", "counts " + counts() + " (a box moved, a box and the cylinder the same)");
+        pass("v1 against v2: " + counts());
+        QTableWidget* t = m_panel->variants();
+        require(t->rowCount() == 3 && t->columnCount() == 4, QStringLiteral("table %1 x %2").arg(t->rowCount()).arg(t->columnCount()));
+        require(t->horizontalHeaderItem(1)->text().contains("v2.step") && t->horizontalHeaderItem(1)->font().bold(), "v2's column marked as B");
+        require(column(1) == "=,=," + tr("moved"), "v2's column " + column(1));
+        require(column(2) == "=," + tr("changed") + "," + tr("gone"), "v3's column " + column(2));
+        require(column(3) == "=,=," + tr("changed"), "v4's column " + column(3));
+        pass("the Variants table: v2 " + column(1) + "; v3 " + column(2) + "; v4 " + column(3));
+        m_tool->grab().save(prefix + ".panel.png");
+        setSideBySide(true);
+        return true;
+      },
+      [=, this] {
+        if (!settled() || vp->sideExtras() != 2 || !extrasMeshed()) return false;
+        const opad::json state = vp->benchSideState();
+        require(state["extras"].size() == 2, "two extra panes");
+        const QString c = QString::fromStdString(state["extras"][0]["caption"].get<std::string>()), d = QString::fromStdString(state["extras"][1]["caption"].get<std::string>());
+        require(c.contains("v3.step") && d.contains("v4.step") && QString::fromStdString(state["caption"].get<std::string>()).contains("v1.step"),
+                "panes: A v1, C v3, D v4 (" + c + ", " + d + ")");
+        const auto& side = state["sideRect"];
+        const auto& main = state["rect"];
+        const auto& rc = state["extras"][0]["rect"];
+        const auto& rd = state["extras"][1]["rect"];
+        require(side[1] == main[1] && rc[1].get<int>() > side[1].get<int>() + side[3].get<int>() - 1 && rc[1] == rd[1] && rc[0] == side[0] &&
+                    rd[0].get<int>() > rc[0].get<int>(),
+                "a grid: A and B above, C and D below");
+        require(sameCamera(state["sideCamera"], state["main"]) && sameCamera(state["extras"][0]["camera"], state["main"]) &&
+                    sameCamera(state["extras"][1]["camera"], state["main"]),
+                "the four cameras are one");
+        require(inPane(state, 0) == 2 && inPane(state, 1) == 3 && !sessionInExtras(state),
+                QStringLiteral("C shows v3's two bodies, D v4's three, none of the session's (%1, %2)").arg(inPane(state, 0)).arg(inPane(state, 1)));
+        pass("side by side: four panes, one camera, each its own file");
+        vp->grabSide().save(prefix + ".A.png");
+        vp->grabExtra(0).save(prefix + ".C.png");
+        vp->grabExtra(1).save(prefix + ".D.png");
+        // the camera moved in B: every pane follows on the next frame
+        vp->fitAll();
+        const opad::json after = vp->benchSideState();
+        require(sameCamera(after["extras"][0]["camera"], after["main"]) && sameCamera(after["extras"][1]["camera"], after["main"]), "a camera move reaches C and D");
+        pass("a camera move reaches every pane");
+        emit m_panel->variants()->horizontalHeader()->sectionClicked(2);  // v3's column, as clicked
+        return true;
+      },
+      [=, this] {
+        if (label(m_b) != "v3.step" || !settled() || relation().empty() || vp->sideExtras() != 2 || !extrasMeshed()) return false;
+        require(label(m_a) == "v1.step", "A stays v1, is " + label(m_a));
+        require(counts() == "0 1 1 0 1", "counts " + counts() + " (the cylinder gone, a box longer, a box the same)");
+        QTableWidget* t = m_panel->variants();
+        require(t->isVisible() && t->horizontalHeaderItem(2)->font().bold() && !t->horizontalHeaderItem(1)->font().bold(), "v3's column marked as B");
+        const opad::json state = vp->benchSideState();
+        const QString c = QString::fromStdString(state["extras"][0]["caption"].get<std::string>()), d = QString::fromStdString(state["extras"][1]["caption"].get<std::string>());
+        require(c.contains("v2.step") && d.contains("v4.step") && inPane(state, 0) == 3, QStringLiteral("C and D are now v2 and v4 (%1, %2; %3 and %4 parts)").arg(c, d).arg(inPane(state, 0)).arg(inPane(state, 1)));
+        pass("v3's column shows v3 as B: " + counts() + "; C v2, D v4");
+        m_tool->grab().save(prefix + ".v3.panel.png");
+        setSideBySide(false);
+        require(vp->sideExtras() == 0 && !vp->sideBySide(), "overlay again: no extra panes");
+        pass("overlay again: one view");
+        m_services.action("inspect.clear")->trigger();
+        return true;
+      },
+      [=, this] {
+        if (m_active) return false;
+        require(m_files.empty() && m_variantDocs.empty(), "the files read are let go when Compare ends");
+        pass("closed");
+        return true;
+      },
+  };
+  auto* timer = new QTimer(this);
+  timer->setInterval(100);
+  connect(timer, &QTimer::timeout, this, [st, steps, timer] {
+    try {
+      if (st->step >= steps.size()) {
+        timer->stop();
+        QCoreApplication::exit(0);
+        return;
+      }
+      if (steps[st->step]()) {
+        ++st->step;
+        st->wait = 0;
+      } else if (++st->wait > 1200) {
+        throw opad::Error("timed out in step " + std::to_string(st->step));
+      }
+    } catch (const std::exception& e) {
+      timer->stop();
+      trace::log(QStringLiteral("bench: compare files: FAIL %1").arg(QString::fromUtf8(e.what())));
       QCoreApplication::exit(2);
     }
   });

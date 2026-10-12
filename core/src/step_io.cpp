@@ -8,6 +8,11 @@
 #include <Message_ProgressScope.hxx>
 #include <Quantity_Color.hxx>
 #include <STEPCAFControl_Reader.hxx>
+#include <StepRepr_RepresentationItem.hxx>
+#include <TransferBRep.hxx>
+#include <Transfer_TransientProcess.hxx>
+#include <XSControl_TransferReader.hxx>
+#include <XSControl_WorkSession.hxx>
 #include <APIHeaderSection_MakeHeader.hxx>
 #include <Interface_InterfaceModel.hxx>
 #include <StepData_StepModel.hxx>
@@ -206,6 +211,7 @@ struct Importer {
   double scale = 1.0;                  // file units -> mm, for readers that do not convert (VRML)
   std::map<const void*, TopoDS_Shape> meshes = {};  // product shape -> its plain, scaled triangulation (once per product)
   std::unordered_map<const void*, const void*> plain_source = {};  // plain_mesh face -> the reader's face it copies
+  const detail::EntityIds* ids = nullptr;  // the reader's own ids of bodies and faces (Parasolid), by TShape
   using FaceTable = std::unordered_map<const void*, Quantity_Color>;  // a face (its TShape) -> the colour the file gave it
 
   json placement(const TopLoc_Location& loc) const {
@@ -316,6 +322,28 @@ struct Importer {
     c = std::max_element(counts.begin(), counts.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first;
     return true;
   }
+  // A prototype's own ids (body meta "ids"): the body's and each face's, by face ordinal ("" unknown); null when it has none.
+  json ids_of(const TopoDS_Shape& proto) const {
+    if (!ids || ids->by_shape.empty()) return nullptr;
+    auto id = [this](const TopoDS_Shape& s) {
+      const auto it = ids->by_shape.find(s.TShape().get());
+      return it == ids->by_shape.end() ? std::string() : it->second;
+    };
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(proto, TopAbs_FACE, faces);
+    json face = json::array();
+    bool any = false;
+    for (int i = 1; i <= faces.Extent(); ++i) {
+      face.push_back(id(faces(i)));
+      any = any || !face.back().get_ref<const std::string&>().empty();
+    }
+    const std::string body = id(proto);
+    if (!any && body.empty()) return nullptr;
+    json out = {{"source", ids->source}};
+    if (!body.empty()) out["body"] = body;
+    if (any) out["faces"] = std::move(face);
+    return out;
+  }
   // A prototype's "face_colors" (body meta): its faces whose colour is not the body's own.
   json face_colors_of(const TopoDS_Shape& proto, const FaceTable* table, const Quantity_Color* body) const {
     if (!table || table->empty()) return nullptr;
@@ -364,6 +392,7 @@ struct Importer {
     if (color) meta["color"] = {color->Red(), color->Green(), color->Blue()};
     if (json own = face_colors_of(proto, faces, color); !own.is_null()) meta["face_colors"] = std::move(own);
     if (!material.empty()) meta["material"] = material;
+    if (json own = ids_of(proto); !own.is_null()) meta["ids"] = std::move(own);
     meta["units"] = "mm";
     meta["source"] = source;
     if (mesh) meta["representation"] = "mesh";
@@ -509,13 +538,79 @@ ImportResult import_step(Document& doc, const std::filesystem::path& step, const
   }
   if (prog->cancelled) throw Error("import cancelled");
   if (!ok) throw Error("STEP transfer produced no shapes: " + step.string());
-  return detail::import_xcaf(doc, xdoc, step, opt, false);
+  const detail::EntityIds ids = detail::transfer_names(reader.Reader().WS(), "step", [](const Handle(Standard_Transient)& e) {
+    const Handle(StepRepr_RepresentationItem) item = Handle(StepRepr_RepresentationItem)::DownCast(e);
+    return item.IsNull() || item->Name().IsNull() ? std::string() : std::string(item->Name()->ToCString());
+  });
+  return detail::import_xcaf(doc, xdoc, step, opt, false, 1.0, {}, ids.by_shape.empty() ? nullptr : &ids);
 }
+
+namespace detail {
+EntityIds transfer_names(const Handle(XSControl_WorkSession)& ws, const std::string& source,
+                         const std::function<std::string(const Handle(Standard_Transient)&)>& name_of) {
+  EntityIds out{source, {}};
+  try {
+    if (ws.IsNull() || ws->TransferReader().IsNull()) return out;
+    const Handle(Transfer_TransientProcess) tp = ws->TransferReader()->TransientProcess();
+    if (tp.IsNull()) return out;
+    std::vector<std::pair<const void*, std::string>> named;
+    std::unordered_map<std::string, int> uses;
+    for (Standard_Integer i = 1; i <= tp->NbMapped(); ++i) {
+      const Handle(Transfer_Binder) binder = tp->MapItem(i);
+      if (binder.IsNull()) continue;
+      const TopoDS_Shape s = TransferBRep::ShapeResult(binder);
+      if (s.IsNull() || s.ShapeType() != TopAbs_FACE) continue;
+      std::string name = name_of(tp->Mapped(i));
+      while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+      name.erase(0, std::min(name.size(), name.find_first_not_of(" \t")));
+      std::string upper = name;
+      for (char& ch : upper) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+      if (name.empty() || upper == "NONE" || upper == "$") continue;
+      named.push_back({s.TShape().get(), name});
+      ++uses[name];
+    }
+    for (const auto& [shape, name] : named)
+      if (uses[name] == 1) out.by_shape[shape] = name;
+    if (out.by_shape.size() * 2 < named.size()) out.by_shape.clear();
+  } catch (const Standard_Failure&) {
+    out.by_shape.clear();
+  }
+  return out;
+}
+}  // namespace detail
 
 namespace {
 // Healing rebuilds the faces it touches (and the ones above edges it fixed): the body's face colours follow each face to
 // the one made of it, found by the face itself or else by its surface, which the rebuilt face keeps.
+// The faces' own ids (meta "ids", Parasolid's) onto the faces healing made: by TShape, else by surface.
+void follow_face_ids(json& meta, const TopoDS_Shape& before, const TopoDS_Shape& after) {
+  if (!meta.contains("ids") || !meta["ids"].contains("faces")) return;
+  const json old = meta["ids"]["faces"];
+  TopTools_IndexedMapOfShape was, now;
+  TopExp::MapShapes(before, TopAbs_FACE, was);
+  TopExp::MapShapes(after, TopAbs_FACE, now);
+  auto surface = [](const TopoDS_Shape& f) {
+    TopLoc_Location loc;
+    return static_cast<const void*>(BRep_Tool::Surface(TopoDS::Face(f), loc).get());
+  };
+  std::unordered_map<const void*, std::string> by_face, by_surface;
+  for (int i = 1; i <= was.Extent() && size_t(i - 1) < old.size(); ++i) {
+    const std::string id = old[size_t(i - 1)].is_string() ? old[size_t(i - 1)].get<std::string>() : std::string();
+    by_face[was(i).TShape().get()] = id;
+    if (const void* s = surface(was(i))) by_surface.emplace(s, id);
+  }
+  json fresh = json::array();
+  for (int i = 1; i <= now.Extent(); ++i) {
+    std::string id;
+    if (auto f = by_face.find(now(i).TShape().get()); f != by_face.end()) id = f->second;
+    else if (auto s = by_surface.find(surface(now(i))); s != by_surface.end() && s->first) id = s->second;
+    fresh.push_back(std::move(id));
+  }
+  meta["ids"]["faces"] = std::move(fresh);
+}
+
 void follow_face_colors(json& meta, const TopoDS_Shape& before, const TopoDS_Shape& after) {
+  follow_face_ids(meta, before, after);
   if (!meta.contains("face_colors")) return;
   const FaceColors old = FaceColors::from_json(meta["face_colors"]);
   TopTools_IndexedMapOfShape was, now;
@@ -611,12 +706,13 @@ std::string persist_body(TopoDS_Shape& shape, json& meta, bool& healed) {
 }
 
 ImportResult import_xcaf(Document& doc, const Handle(TDocStd_Document)& xdoc, const std::filesystem::path& step, const ImportOptions& opt, bool mesh,
-                         double scale, const Mat4& root) {
+                         double scale, const Mat4& root, const EntityIds* ids) {
   Importer imp{doc, opt, XCAFDoc_DocumentTool::ShapeTool(xdoc->Main()), XCAFDoc_DocumentTool::ColorTool(xdoc->Main()), {},
                step.filename().string(), {}, 0};
   imp.vt = XCAFDoc_DocumentTool::VisMaterialTool(xdoc->Main());
   imp.mesh = mesh;
   imp.scale = scale;
+  imp.ids = ids;
   TDF_LabelSequence free_shapes;
   imp.st->GetFreeShapes(free_shapes);
   {

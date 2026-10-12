@@ -87,7 +87,7 @@ void MainWindow::ribbonTable(RibbonLayout& layout) {
   group("review.markup", "views", tr("Saved views"), {{"view.saveview"}, {"assembly.explodeSave", S}});
   layout.addTab("review", "review.compare", tr("Compare"));
   group("review.compare", "compare", tr("Compare"),
-        {{"vcs.compare", L, {"vcs.unsavedChanges", "vcs.compareFile"}}, {"vcs.previousChange", S}, {"vcs.nextChange", S}});
+        {{"vcs.compare", L, {"vcs.unsavedChanges", "vcs.compareFile", "vcs.compareFiles"}}, {"vcs.previousChange", S}, {"vcs.nextChange", S}});
   layout.addTab("review", "review.share", tr("Share"));
   group("review.share", "export", tr("Export"), {{"file.export"}, {"file.exportBom", S}, {"drawings.publish"}, {"file.screenshot"}, {"drawing2d.plot"}});
   group("review.share", "file", tr("File"), {{"file.importdoc"}, {"file.reveal", S}, {"file.copyPath", S}, {"file.documentProperties", S}});
@@ -130,7 +130,7 @@ void MainWindow::ribbonTable(RibbonLayout& layout) {
   group("design.version", "versions", tr("Versions"),
         {{"vcs.panel"}, {"vcs.commit"}, {"vcs.history", S}, {"vcs.branches", S}, {"vcs.newBranch", S}, {"file.recover", S}});
   group("design.version", "remote", tr("Remote"), {{"vcs.pull", S}, {"vcs.push", S}, {"vcs.fetch", S}});
-  group("design.version", "compare", tr("Compare"), {{"vcs.compare", L, {"vcs.unsavedChanges", "vcs.compareFile"}}, {"vcs.resolve", S}});
+  group("design.version", "compare", tr("Compare"), {{"vcs.compare", L, {"vcs.unsavedChanges", "vcs.compareFile", "vcs.compareFiles"}}, {"vcs.resolve", S}});
   layout.addTab("design", "design.view", tr("View"));
   viewTab("design.view");
 

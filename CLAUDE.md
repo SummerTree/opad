@@ -127,7 +127,11 @@ bad faces with their source kind and FACE node), `OPAD_XT_FACES=<dir>` (bad face
 blends on blends touch them on their charted contact curves (BLEND_BOUND intersections; not for exact supports: worse),
 a tolerant edge takes a fin curve on an exact surface over one on a blend, spun circles -> spheres/ring tori, closed
 clamped B-surfaces -> periodic (else a tube face splits into slivers), healed faces matched to built ones by surface
-(healing gives rebuilt faces new TShapes; colours were lost). Tried and worse: extending blend arcs past the contacts,
+(healing gives rebuilt faces new TShapes; colours were lost), a reversed face takes its wires reversed (a loop runs
+anticlockwise about the face's *own* normal: otherwise every loop of a reversed face was a hole, which healing turned
+round on most surfaces but on a torus or sphere answered with natural bounds = a fillet drawn as the rest of its torus,
+a "donut"; blends measure their normal against the ball's centre, `blend_normal_outward`; `public_corpus` checks no face
+gains a natural bound, `OPAD_XT_SPILL=<file>` lists faces reaching past their edges). Tried and worse: extending blend arcs past the contacts,
 padding the spine range beyond 2%. State: 33 of 1036 solids invalid in the 196-file public survey, mostly blend faces.
 
 ## Floating tool panels (no right dock)
@@ -489,6 +493,24 @@ other"). DiskSync's `plan_merge` still refuses (as undo past a save). Resolving 
 flag: `updateDirty()` compares op ids + body count with the snapshot `markSaved()` took at load/save, so
 undoing back to the saved state clears the asterisk. Depth: setting `edit/undoDepth` (Settings > Undo
 history…, default 50). The bench logs `bench: undo/redo:` with the dirty transitions.
+
+## Variants: comparing files without a shared history (`core/src/variants.cpp`, `opad/variants.hpp`)
+
+`read_variant` opens any file as a document (.opad in index mode, the rest in viewer mode). `match_bodies` pairs bodies
+tier by tier, each over what is still unpaired: node id, the file's own ids (body meta `"ids"`: Parasolid gives
+*faces* a `node_id`, not bodies; `xt_brep` collects them, `import_xcaf` writes `{"source", "faces"}` per face ordinal and
+`follow_face_ids` keeps them through healing; a pair by face ids needs Jaccard >= 0.3 and to overlap or be of a like
+size; STEP/IGES face names unique in the file through `detail::transfer_names` over the reader's TransientProcess, 3MF
+p:UUID as body id), shape (`body_print`: counts + volume/area/principal moments within 1e-5, rotation-free; `same_place` =
+unchanged), faces (no ids: per-face kind/area/centre marks, pairs vote for one translation, Jaccard >= 0.3 over the 8
+nearest alike bodies), name (path below the root, or a unique name), near (box IoU). `variant_diff` gives Compare's change list (relation
+"variants"), `variant_table` the multi-file table. CompareMode switches to it when the two documents' header uuids differ
+(`Run::variants`); `vcs.compareFiles` / `openFiles(files)` (no document: the first file opens, viewed, then they are
+compared); the Variants table (`ComparePanel::setVariants`) appears with two other files or more. Side by side with more
+files: `Viewport::setSideExtras` adds panes C and D (views on the same context, the main camera copied in `drawPane`; parts
+with `view` 'C'/'D' only there, the session's own objects masked out; 3 panes = columns A | C | B, 4 = a 2x2 grid),
+filled by `CompareMode::buildExtras` from the table's bodies (`m_variantBodies`, the files in `m_variantDocs`). `opad-cli variants`,
+`ctest -R "variants|xt"`, bench `compare-files` (OPAD_BENCH_COMPARE_FILES).
 
 ## Commits
 

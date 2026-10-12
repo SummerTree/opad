@@ -7,6 +7,7 @@
 #include <QString>
 #include <QWidget>
 #include <array>
+#include <optional>
 #include <vector>
 
 #include "Theme.hpp"
@@ -58,6 +59,11 @@ class ComparePanel : public QWidget {
   void setFailed(const QString& error);
   void setResult(const opad::json& diff, const std::array<int, Categories>& counts);
   void clear();
+  // Several files (CompareMode::openFiles): a row per body, a column per other file, what that file has of A's body
+  // (= the same, moved, changed, gone; new for a body only it has), the column of the file shown as B marked. `rows`: the
+  // table (an empty array and no columns: none, hidden), null: still reading, nullopt: the same rows, only B's column moved.
+  void setVariants(const QStringList& columns, const std::optional<opad::json>& rows, int current);
+  QTableWidget* variants() const { return m_variants; }
   // The current change, by its index in the diff's changes: its row selected and scrolled to, its table shown. No signal.
   void setCurrent(int change);
   int current() const { return m_current; }
@@ -96,6 +102,7 @@ class ComparePanel : public QWidget {
   void emphasisChanged(int value);
   void categoryToggled(int category, bool shown);
   void changeActivated(int change);  // a row clicked, or stepped to
+  void variantChosen(int column);    // a column of the Variants table: show that file as B
   void stepRequested(int delta);     // Previous / Next
   void doneRequested();
   void contentResized();
@@ -111,6 +118,10 @@ class ComparePanel : public QWidget {
   QLabel* m_status;
   QTreeWidget* m_list;
   QTableWidget* m_details;
+  QLabel* m_variantsTitle;
+  QTableWidget* m_variants;
+  QStringList m_variantColumns;
+  opad::json m_variantRows = opad::json::array();
   PanelFooter* m_footer;
   opad::json m_changes = opad::json::array();
   std::vector<int> m_order;

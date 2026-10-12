@@ -392,7 +392,8 @@ class Viewport : public QWidget, protected AIS_ViewController {
     std::array<double, 3> color{0.5, 0.5, 0.5};
     double opacity = 1;
     bool visible = true;
-    char view = 0;  // side by side: 0 in both views, 'A' only in A's (the side), 'B' only in this one
+    char view = 0;  // side by side: 0 in A's view and this one, 'A' only in A's (the side), 'B' only in this one, 'C' / 'D'
+                    // only in that extra pane (setSideExtras)
   };
   struct CompareArrow {
     opad::Vec3 from{0, 0, 0}, to{0, 0, 0};
@@ -419,6 +420,12 @@ class Viewport : public QWidget, protected AIS_ViewController {
   void setSideBySide(bool on, const QString& caption = QString());
   bool sideBySide() const { return m_side != nullptr; }
   void setSideCaption(const QString& caption);
+  // More files side by side (up to four designs in all): panes C and D, each another view of the scene with this view's
+  // camera like A's, showing only the parts whose `view` names it (none of the session's own objects). Three panes are
+  // columns A | C | this one; four a grid, A and this one above, C and D below. Empty: none. Only while side by side.
+  void setSideExtras(const QStringList& captions);
+  int sideExtras() const { return int(m_extraPanes.size()); }
+  QImage grabExtra(int pane);  // OPAD_BENCH: what pane C (0) or D (1) draws
   void setSideHidden(const std::vector<std::string>& ids);
   QWidget* sideWidget() const;
   QImage grabSide();
@@ -1221,6 +1228,16 @@ class Viewport : public QWidget, protected AIS_ViewController {
   class SideView;  // side by side (ViewportCompare.cpp)
   SideView* m_side = nullptr;
   Handle(V3d_View) m_sideView;
+  struct Pane {
+    SideView* widget = nullptr;
+    Handle(V3d_View) view;
+    char letter = 'C';
+  };
+  std::vector<Pane> m_extraPanes;  // setSideExtras: C, D
+  Handle(V3d_View) m_navExtra;     // the last press or wheel came from this extra pane
+  Handle(V3d_View) paneView(SideView* pane);  // a V3d_View in the pane's native window
+  void drawPane(SideView* pane, const Handle(V3d_View)& view, bool full);
+  void dropExtras();
   std::set<std::string> m_sideHidden;
   Graphic3d_WorldViewProjState m_sideCamera;
   QMargins m_hostMargins;  // the parent's own, given back when the side goes

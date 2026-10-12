@@ -20,6 +20,9 @@ struct Built {
   // For surveys: each face (by its TShape) -> the kind of Parasolid surface it was built on ("BLENDED_EDGE on blend", ...)
   std::unordered_map<const void*, std::string> face_source;
   std::unordered_map<const void*, uint32_t> face_node;  // ... and the index of the FACE node it came from
+  // Parasolid's persistent identifiers (node_id) of each face built, by TShape (unset ones left out; a BODY has none in a
+  // transmit file): what variants of one model exported apart may share (detail::EntityIds).
+  std::unordered_map<const void*, std::string> ids;
 };
 
 // `progress(fraction)` returns false to cancel (then opad::Error "cancelled" is thrown).

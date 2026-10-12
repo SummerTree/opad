@@ -229,7 +229,13 @@ MainWindow::MainWindow() : m_doc(new AppDocument(this)) {
   });
   connect(m_viewport, &Viewport::sectionDragged, m_section, &SectionPanel::setOrigin);  // the plane's edge handle -> slider -> planeChanged
   connect(m_section, &SectionPanel::pickRequested, this, [this] { startTool("sectionface"); });
+  connect(m_section, &SectionPanel::pickCancelled, this, [this] {  // Pick face again, or an axis, while it waits
+    if (m_tool.id == "sectionface") cancelTool();
+    m_section->endPick();
+  });
+  connect(m_section, &SectionPanel::exitRequested, this, [this] { action("inspect.section")->setChecked(false); });
   connect(m_section, &SectionPanel::enabledChanged, this, [this](bool on) {
+    if (!on && m_tool.id == "sectionface") cancelTool();  // off while Pick face waits: it waits no more
     if (action("inspect.section")->isChecked() != on) action("inspect.section")->setChecked(on);
   });
   // Its offset typed from the keyboard while its panel is open and no other tool runs (UI-122).

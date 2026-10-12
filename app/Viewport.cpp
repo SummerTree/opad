@@ -207,7 +207,7 @@ Viewport::Viewport(AppDocument* doc, QWidget* parent)
 
 Viewport::~Viewport() {
   if(m_bodyGlowJob) m_bodyGlowJob->cancel(); if(m_lookJob) m_lookJob->cancel(); *m_alive = false;
-  if (m_side) { m_sideView->Remove(); delete sideWidget(); }  // the view goes before its window
+  if (m_side) { dropExtras(); m_sideView->Remove(); delete sideWidget(); }  // the view goes before its window
 }
 
 void Viewport::setBlocked(bool on) {
@@ -3040,6 +3040,7 @@ QRect Viewport::cubeRect() const {
 
 void Viewport::mousePressEvent(QMouseEvent* e) {
   m_navSide = false;  // A's view sets it again after handing its press over
+  m_navExtra.Nullify();  // ... and a C or D pane
   if (m_blocked) return;
   if (flyPress(e)) return;  // flying: a left drag looks around
   m_viewButtons |= e->button();
@@ -3430,6 +3431,7 @@ void Viewport::setScrollInput(int mode) {
 
 void Viewport::wheelEvent(QWheelEvent* e) {
   m_navSide = false;  // A's view sets it again after handing its wheel over
+  m_navExtra.Nullify();
   if (!m_initialised || m_blocked) return;
   if (flyWheel(e)) return;  // flying: forward and back
   // Still to ask: another OPAD window may have been answered since this one started, so the settings are read again

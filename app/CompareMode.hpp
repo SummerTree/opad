@@ -14,6 +14,7 @@
 #include <QTimer>
 #include <array>
 #include <map>
+#include <QStringList>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,7 +41,13 @@ class CompareMode : public QObject {
   // Opens it on the open document: A the last commit when git tracks the file, else the file as saved; B this session.
   void open();
   void showUnsaved();  // Show unsaved changes (UI-59): the saved file (A) against this session (B)
-  void openWithFile();  // Compare with a file…: an .opad chosen in a file dialog (A) against this session (B)
+  void openWithFile();  // Compare with a file…: a file chosen in a file dialog (A, any format OPAD reads) against this session (B)
+  // Compare files… (variants, UI-58b): several files of any format OPAD reads, chosen at once. The first is A, the second
+  // B, the rest more versions to pick; with three or more the panel's Variants table shows every body against A in each.
+  // Files that share no history (exports of one model from another CAD system) are matched body by body
+  // (opad/variants.hpp): by the file's own ids, by geometry, by names, by overlap. Opens the first first when no document is.
+  void openFiles();
+  void openFiles(const QStringList& files);
   void compare(const CompareVersion& a, const CompareVersion& b);  // opens it too
   // Two versions of the document at `file`, which is opened first when it is not the open one (as File > Open does:
   // unsaved changes are asked about), e.g. the Recovery offer's Compare…: the file and a snapshot of it.
@@ -63,6 +70,7 @@ class CompareMode : public QObject {
   static void setStartup(const QString& version);
   static CompareVersion parseVersion(const QString& spec);
   bool bench(const QString& prefix);  // OPAD_BENCH_COMPARE (CompareBench.cpp)
+  bool benchFiles(const QString& prefix);  // OPAD_BENCH_COMPARE_FILES (CompareBench.cpp)
  signals:
   void activeChanged(bool active);
  private:
@@ -91,6 +99,27 @@ class CompareMode : public QObject {
   std::string summary() const;   // the core's English summary line (benches)
   Bnd_Box boxInA(const std::string& body) const;  // a changed body's world box in A (benches; void when it has none)
   void otherFile(int side);
+  CompareVersion sessionVersion() const;  // "This session", or the open file viewed ("This file · name")
+  static QString filesFilter();           // every format OPAD reads
+  // The Variants table (several files): A against each other file, a worker's opad::variant_table; again only when A or
+  // the files changed.
+  void variantTable();
+  std::map<QString, std::shared_ptr<opad::Document>> m_files;  // files read as versions, kept while Compare is open
+  std::vector<int> m_variantColumns;  // the table's columns: indices into the versions
+  QString m_tableKey;
+  // Side by side with more files: the bodies of each table column's file as A's matcher paired them (its node, key and
+  // place, and what it is of A's: unchanged, moved, modified, added), and the file, for panes C and D.
+  struct VariantBody {
+    std::string id, key;
+    opad::Mat4 world;
+    std::string change;
+  };
+  std::vector<std::vector<VariantBody>> m_variantBodies;
+  std::vector<std::shared_ptr<opad::Document>> m_variantDocs;
+  size_t m_mainParts = 0;      // m_parts past this are panes C's and D's
+  unsigned m_extraSerial = 0;  // their meshing job
+  void buildExtras();          // panes C and D: up to two files of the table other than A and B, side by side
+  QStringList m_pendingFiles;  // openFiles with nothing open: compared once the first has opened
   AreaServices& m_services;
   GitWatch* m_git;
   ComparePanel* m_panel = nullptr;

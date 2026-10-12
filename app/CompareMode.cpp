@@ -37,7 +37,9 @@
 #include "ToolPanel.hpp"
 #include "ViewportChips.hpp"
 #include "opad/diff.hpp"
+#include "opad/drawing_io.hpp"
 #include "opad/geometry.hpp"
+#include "opad/variants.hpp"
 
 using Kind = CompareVersion::Kind;
 using Category = ComparePanel::Category;
@@ -58,6 +60,7 @@ struct CompareMode::Run {
   std::map<std::string, QColor Tokens::*> marks;  // B's ops that A has not, or has otherwise
   std::map<std::string, int> sketches;            // B's added or edited sketches -> category
   std::array<int, ComparePanel::Categories> counts{};
+  bool variants = false;  // two documents that share no history: bodies matched across them (opad/variants.hpp)
 };
 
 // Compare's icons: two versions side by side, the swap of A and B, an eye struck through (a hidden kind of change).
@@ -111,12 +114,20 @@ opad::Vec3 centre(const Bnd_Box& b) {
   return {(x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2};
 }
 
-// A version's document, read on a worker: index mode, so only the bodies the view asks for are ever parsed.
-std::shared_ptr<opad::Document> readVersion(const CompareVersion& v, const std::shared_ptr<opad::Document>& session, const QString& file, git::Context git) {
+using Files = std::map<QString, std::shared_ptr<opad::Document>>;
+
+// A version's document, read on a worker: index mode, so only the bodies the view asks for are ever parsed. Another file
+// may be of any format OPAD reads (a STEP, an X_T: a variant, read as the viewer reads it), and is read once while
+// Compare stays open (`files`).
+std::shared_ptr<opad::Document> readVersion(const CompareVersion& v, const std::shared_ptr<opad::Document>& session, const QString& file, git::Context git,
+                                            const Files& files = {}) {
   switch (v.kind) {
     case Kind::Session: return session;
-    case Kind::Saved:
-    case Kind::File: return std::make_shared<opad::Document>(opad::Document::load_index(fsPath(v.ref)));
+    case Kind::Saved: return std::make_shared<opad::Document>(opad::Document::load_index(fsPath(v.ref)));
+    case Kind::File: {
+      if (const auto it = files.find(v.ref); it != files.end()) return it->second;
+      return std::make_shared<opad::Document>(opad::read_variant(fsPath(v.ref)));
+    }
     case Kind::Git: {
       if (git.program.isEmpty()) git.program = git::findProgram();
       if (git.program.isEmpty()) throw opad::Error(CompareMode::tr("git was not found.").toStdString());
@@ -180,6 +191,7 @@ CompareMode::CompareMode(AreaServices& services, GitWatch* git) : QObject(servic
     if (ok) return;
     pendingStartup.clear();
     m_pending.reset();
+    m_pendingFiles.clear();
   });
   connect(services.document(), &AppDocument::saved, this, [this] {  // the saved file is another version now
     if (!m_active) return;
@@ -232,6 +244,12 @@ void CompareMode::makePanel() {
   connect(m_panel, &ComparePanel::categoryToggled, this, [this] { m_restyle.start(); });
   connect(m_panel, &ComparePanel::changeActivated, this, &CompareMode::activate);
   connect(m_panel, &ComparePanel::stepRequested, this, &CompareMode::step);
+  connect(m_panel, &ComparePanel::variantChosen, this, [this](int column) {  // a column of the Variants table: that file as B
+    if (column < 0 || size_t(column) >= m_variantColumns.size() || m_variantColumns[size_t(column)] == m_b) return;
+    m_b = m_variantColumns[size_t(column)];
+    showVersions();
+    start();
+  });
 }
 
 void CompareMode::setStartup(const QString& version) { pendingStartup = version.startsWith("git:") ? version : QFileInfo(version).absoluteFilePath(); }
@@ -291,7 +309,7 @@ void CompareMode::setSideBySide(bool on) {
   Viewport* vp = m_services.viewport();
   vp->setSideBySide(on, tr("A · %1").arg(m_a >= 0 ? m_versions[size_t(m_a)].label : QString()));
   showVersions();
-  restyle();  // both whole, or weighted again
+  buildExtras();  // more files: their panes (C, D), or none; both whole, or weighted again
   vp->fitAll();  // the view is half as wide (or twice): the model framed again
 }
 
@@ -307,8 +325,9 @@ void CompareMode::sideHidden() {
 
 void CompareMode::open() {
   AppDocument* doc = m_services.document();
-  if (!doc->hasDocument || doc->browse || doc->loading) {
-    m_services.showMessage(tr("Compare works on OPAD documents: save the file as one first."));
+  if (doc->hasDocument && doc->browse && !doc->loading) return openWithFile();  // a file viewed: compared with another file
+  if (!doc->hasDocument || doc->loading) {
+    m_services.showMessage(tr("Open a file first, or compare files (Compare files…)."));
     return;
   }
   if (DesignController* d = m_services.design(); d && (d->sketchActive() || d->featureActive())) {
@@ -321,24 +340,66 @@ void CompareMode::open() {
   const D state = m_git && QFileInfo(m_git->repo().file) == QFileInfo(file) ? m_git->repo().doc() : D::None;
   if (!file.isEmpty() && (state == D::Clean || state == D::Modified || state == D::Conflict)) a = parseVersion("git:HEAD");
   else if (!file.isEmpty() && QFileInfo::exists(file)) a = savedVersion(file);
-  compare(a, {Kind::Session, QString(), tr("This session"), QString()});
+  compare(a, sessionVersion());
 }
 
-// Compare with ▾ > A file… (Review > Compare, the Version menu): another .opad document (a copy, a variant) against this
-// session, as the panel's Other file… does once it is open.
+// Compare with ▾ > A file… (Review > Compare, the Version menu): another file of any format (a copy, a variant, an export
+// of the same model) against this session, or against the file viewed, as the panel's Other file… does once it is open.
 void CompareMode::openWithFile() {
   AppDocument* doc = m_services.document();
-  if (!doc->hasDocument || doc->browse || doc->loading) {
-    m_services.showMessage(tr("Compare works on OPAD documents: save the file as one first."));
+  if (!doc->hasDocument || doc->loading) {
+    m_services.showMessage(tr("Open a file first, or compare files (Compare files…)."));
     return;
   }
   if (DesignController* d = m_services.design(); d && (d->sketchActive() || d->featureActive())) {
     m_services.showMessage(tr("Finish the sketch or the feature first."));
     return;
   }
-  const QString file = QFileDialog::getOpenFileName(m_services.window(), tr("Compare with"), doc->doc.path.empty() ? QString() : QFileInfo(doc->path()).absolutePath(),
-                                                    tr("OPAD documents (*.opad)"));
-  if (!file.isEmpty()) compare(parseVersion(file), {Kind::Session, QString(), tr("This session"), QString()});
+  const QString file = QFileDialog::getOpenFileName(m_services.window(), tr("Compare with"), doc->browse ? QFileInfo(doc->viewing).absolutePath() : doc->doc.path.empty() ? QString() : QFileInfo(doc->path()).absolutePath(),
+                                                    filesFilter());
+  if (!file.isEmpty()) compare(parseVersion(file), sessionVersion());
+}
+
+QString CompareMode::filesFilter() {
+  QStringList patterns{"*.opad"};
+  for (const auto& ext : opad::importable_extensions()) patterns << "*" + QString::fromStdString(ext);
+  return tr("Design files (%1)").arg(patterns.join(' '));
+}
+
+CompareVersion CompareMode::sessionVersion() const {
+  const AppDocument* doc = m_services.document();
+  if (doc->browse && !doc->viewing.isEmpty()) return {Kind::Session, QString(), tr("This file · %1").arg(QFileInfo(doc->viewing).fileName()), QDir::toNativeSeparators(doc->viewing)};
+  return {Kind::Session, QString(), tr("This session"), QString()};
+}
+
+void CompareMode::openFiles() {
+  AppDocument* doc = m_services.document();
+  const QString shown = doc->browse ? doc->viewing : doc->doc.path.empty() ? QString() : doc->path();
+  const QString folder = doc->hasDocument && !shown.isEmpty() ? QFileInfo(shown).absolutePath() : QString();
+  const QStringList files = QFileDialog::getOpenFileNames(m_services.window(), tr("Compare files"), folder, filesFilter());
+  if (!files.isEmpty()) openFiles(files);
+}
+
+void CompareMode::openFiles(const QStringList& files) {
+  if (files.size() < 2) {
+    m_services.showMessage(tr("Choose two files or more: the first is compared with each of the others."));
+    return;
+  }
+  AppDocument* doc = m_services.document();
+  if (DesignController* d = m_services.design(); d && (d->sketchActive() || d->featureActive())) {
+    m_services.showMessage(tr("Finish the sketch or the feature first."));
+    return;
+  }
+  if (!doc->hasDocument || doc->loading) {  // nothing to show them over: the first opens (viewed), then they are compared
+    m_pendingFiles = files;
+    if (!doc->loading) m_services.open(files.front());
+    return;
+  }
+  std::vector<CompareVersion> all;
+  for (const QString& f : files) all.push_back(parseVersion(f));
+  compare(all[0], all[1]);
+  for (size_t i = 2; i < all.size(); ++i) addVersion(all[i]);
+  showVersions();
 }
 
 void CompareMode::showUnsaved() {
@@ -352,7 +413,7 @@ void CompareMode::showUnsaved() {
     m_services.showMessage(tr("Finish the sketch or the feature first."));
     return;
   }
-  compare(savedVersion(file), {Kind::Session, QString(), tr("This session"), QString()});
+  compare(savedVersion(file), sessionVersion());
 }
 
 void CompareMode::compare(const CompareVersion& a, const CompareVersion& b) {
@@ -364,9 +425,9 @@ void CompareMode::compare(const CompareVersion& a, const CompareVersion& b) {
   if (list) {  // opened (again), or another document: its versions as they are now
     m_versions.clear();
     m_listed = file;
-    addVersion({Kind::Session, QString(), tr("This session"), QString()});
-    if (!file.isEmpty() && QFileInfo::exists(file)) addVersion(savedVersion(file));
-    if (!file.isEmpty() && m_git && m_git->repo().state == git::Repo::State::Ready) addVersion(parseVersion("git:HEAD"));
+    addVersion(sessionVersion());
+    if (!doc->browse && !file.isEmpty() && QFileInfo::exists(file)) addVersion(savedVersion(file));  // a file viewed is the session itself
+    if (!doc->browse && !file.isEmpty() && m_git && m_git->repo().state == git::Repo::State::Ready) addVersion(parseVersion("git:HEAD"));
   }
   addVersion(a);
   addVersion(b);
@@ -382,7 +443,7 @@ void CompareMode::compare(const CompareVersion& a, const CompareVersion& b) {
     setSideBySide(QSettings().value("compare/sideBySide", false).toBool());  // as it was left
   }
   start();
-  if (list) listVersions();
+  if (list && !doc->browse) listVersions();
 }
 
 void CompareMode::listVersions() {
@@ -420,7 +481,7 @@ void CompareMode::listVersions() {
 void CompareMode::otherFile(int side) {
   AppDocument* doc = m_services.document();
   const QString file = QFileDialog::getOpenFileName(m_services.window(), side == 0 ? tr("Compare with") : tr("Show"),
-                                                    doc->doc.path.empty() ? QString() : QFileInfo(doc->path()).absolutePath(), tr("OPAD documents (*.opad)"));
+                                                    doc->doc.path.empty() ? QString() : QFileInfo(doc->path()).absolutePath(), filesFilter());
   if (!file.isEmpty()) {
     const CompareVersion v = parseVersion(file);
     addVersion(v);
@@ -439,6 +500,15 @@ void CompareMode::close() {
   m_rerun.stop();
   m_restyle.stop();
   release(m_run);
+  for (auto& [file, d] : m_files) dispose(std::move(d));
+  m_files.clear();
+  m_variantColumns.clear();
+  m_tableKey.clear();
+  m_variantBodies.clear();
+  for (auto& d : m_variantDocs) dispose(std::move(d));
+  m_variantDocs.clear();
+  ++m_extraSerial;
+  m_mainParts = 0;
   m_parts.clear();
   m_partInfo.clear();
   m_arrows.clear();
@@ -463,6 +533,9 @@ void CompareMode::failed(const QString& error) {
   m_parts.clear();
   m_partInfo.clear();
   m_arrows.clear();
+  m_mainParts = 0;
+  ++m_extraSerial;
+  m_services.viewport()->setSideExtras({});
   m_services.viewport()->setSideHidden({});
   m_services.viewport()->clearLookLayer(LookSource::Compare);
   m_services.viewport()->setFaceTints({});
@@ -478,7 +551,7 @@ void CompareMode::start() {
     return;
   }
   AppDocument* doc = m_services.document();
-  if (!doc->hasDocument || doc->browse) return close();
+  if (!doc->hasDocument) return close();
   if (m_a < 0 || m_b < 0) {
     m_panel->setFailed(tr("Choose the version to compare with."));
     return;
@@ -515,20 +588,30 @@ void CompareMode::diff(unsigned serial, std::shared_ptr<opad::Document> session,
   git.dir = QFileInfo(file).absolutePath();
   QElapsedTimer clock;
   clock.start();
-  m_services.jobs()->async(tr("Comparing versions"), [run, session, file, git](Progress p) mutable {
+  const Files files = m_files;
+  m_services.jobs()->async(tr("Comparing versions"), [run, session, file, git, files](Progress p) mutable {
     struct Drop {  // this copy goes here, not with the thread object on the UI thread
       std::shared_ptr<opad::Document>& document;
       ~Drop() { document.reset(); }
     } drop{session};
     p.setPhase(CompareMode::tr("Reading %1").arg(run->a.label));
-    run->docA = readVersion(run->a, session, file, git);
+    run->docA = readVersion(run->a, session, file, git, files);
     p.setPhase(CompareMode::tr("Reading %1").arg(run->b.label));
-    run->docB = readVersion(run->b, session, file, git);
+    run->docB = readVersion(run->b, session, file, git, files);
     if (p.cancelled()) return;
     p.setPhase(CompareMode::tr("Comparing"));
     const opad::Scene sa = opad::resolve(*run->docA), sb = opad::resolve(*run->docB);
-    run->diff = opad::semantic_diff(*run->docA, sa, *run->docB, sb);
-    run->bodies = opad::body_changes(sa, sb);
+    // Two documents that share no history (variants exported apart, a STEP beside an X_T): bodies matched by the files'
+    // ids, geometry, names and overlap, listed as body changes; else the versions' histories compared.
+    run->variants = run->docA->header.uuid != run->docB->header.uuid;
+    if (run->variants) {
+      p.setPhase(CompareMode::tr("Matching the bodies"));
+      run->bodies = opad::match_bodies(*run->docA, sa, *run->docB, sb, [p] { return p.cancelled(); });
+      run->diff = opad::variant_diff(run->bodies, sa, sb);
+    } else {
+      run->diff = opad::semantic_diff(*run->docA, sa, *run->docB, sb);
+      run->bodies = opad::body_changes(sa, sb);
+    }
     const auto& bodies = run->bodies;
     for (size_t i = 0; i < bodies.size(); ++i) run->at[bodies[i].id] = i;
     // B over the session the view draws: the bodies it draws as B has them, and the ones it has to leave out.
@@ -608,6 +691,7 @@ void CompareMode::diff(unsigned serial, std::shared_ptr<opad::Document> session,
       if (m != &Tokens::diffAdded) m = role;
     };
     for (const auto& o : run->docB->ops) {
+      if (run->variants) break;  // another history: no op of B is A's
       const auto it = inA.find(o.id);
       if (it == inA.end()) {
         if (o.type == "edit" || o.type == "delete") mark(o.data.value("target", ""), &Tokens::diffModified);
@@ -630,6 +714,10 @@ void CompareMode::diff(unsigned serial, std::shared_ptr<opad::Document> session,
       return;
     }
     m_running = false;
+    if (ok) {  // other files read once while Compare stays open (switching between variants)
+      if (run->a.kind == Kind::File && run->docA) m_files.emplace(run->a.ref, run->docA);
+      if (run->b.kind == Kind::File && run->docB) m_files.emplace(run->b.ref, run->docB);
+    }
     if (std::exchange(m_again, false)) return start();  // asked again meanwhile: this result is already old
     if (!ok) return failed(error == "cancelled" ? tr("Compare was cancelled.") : error);
     if (trace::enabled()) trace::log(QStringLiteral("compare: %1 -> %2: %3 changes, %4 bodies in %5 ms").arg(run->a.label, run->b.label)
@@ -648,6 +736,7 @@ void CompareMode::show(std::shared_ptr<Run> run) {
   if (keep >= 0 && size_t(keep) < m_run->changeBodies.size()) m_panel->setCurrent(keep);
   if (TimelineWidget* t = m_services.timeline()) t->setMarkedOps(m_run->marks, tr("%1 in B"));
   buildParts();
+  variantTable();
 }
 
 void CompareMode::buildParts() {
@@ -706,9 +795,9 @@ void CompareMode::buildParts() {
     if (c.shown_b && !r.sessionDraws[i]) add(c, false, {categoryOf(c.kind), 0, faces ? faceTint(*faces, false, t, true) : nullptr, {}});
     if (c.kind == K::Moved && !r.boxA[i].IsVoid() && !r.boxB[i].IsVoid()) m_arrows.push_back({centre(r.boxA[i]), centre(r.boxB[i])});
   }
-  restyle();
+  m_mainParts = m_parts.size();
   sideHidden();
-  vp->setCompare(m_parts, m_arrows, theme::current().diffMoved);
+  buildExtras();  // restyles and draws them all
   if (needs->empty()) return release(m_run, false);
   // The other version's geometry, meshed on a worker; drawn once it is all there.
   m_meshing = true;
@@ -781,6 +870,103 @@ void CompareMode::buildParts() {
       part.shape = out->shapes[i];
       part.prs = out->prs[i];
       part.world = out->worlds[i];
+    }
+    restyle();
+    m_services.viewport()->setCompare(m_parts, m_arrows, theme::current().diffMoved);
+  });
+}
+
+// Side by side with three or four files: the first two of the table's files other than A and B, each in a pane of its own
+// (C, D) with every body drawn as A's matcher found it (unchanged ghosted, moved, changed and new in their colours), the
+// cameras all one. The variant documents are the files Compare already read (m_files), meshed on a worker.
+void CompareMode::buildExtras() {
+  if (!m_active || !m_run) return;
+  Viewport* vp = m_services.viewport();
+  m_parts.resize(m_mainParts);
+  m_partInfo.resize(m_mainParts);
+  const unsigned serial = ++m_extraSerial;
+  std::vector<size_t> columns;
+  if (m_sideBySide)
+    for (size_t c = 0; c < m_variantColumns.size() && columns.size() < 2; ++c)
+      if (m_variantColumns[c] != m_b && c < m_variantBodies.size() && c < m_variantDocs.size() && m_variantDocs[c]) columns.push_back(c);
+  QStringList captions;
+  struct Need {
+    size_t part;
+    std::shared_ptr<opad::Document> doc;
+    std::string key;
+    opad::Mat4 world;
+  };
+  auto needs = std::make_shared<std::vector<Need>>();
+  for (size_t e = 0; e < columns.size(); ++e) {
+    const size_t c = columns[e];
+    const QChar letter('C' + int(e));
+    captions << tr("%1 · %2").arg(letter, m_versions[size_t(m_variantColumns[c])].label);
+    for (const VariantBody& vb : m_variantBodies[c]) {
+      Viewport::ComparePart part;
+      part.id = vb.id;
+      part.world = vb.world;
+      part.view = char('C' + int(e));
+      const Category category = vb.change == "moved" ? ComparePanel::Moved : vb.change == "modified" ? ComparePanel::Modified
+                              : vb.change == "added" ? ComparePanel::Added : ComparePanel::Unchanged;
+      needs->push_back({m_parts.size(), m_variantDocs[c], vb.key, vb.world});
+      m_parts.push_back(std::move(part));
+      m_partInfo.push_back({category, false, 'S', false});
+    }
+  }
+  vp->setSideExtras(captions);
+  restyle();
+  vp->setCompare(m_parts, m_arrows, theme::current().diffMoved);
+  if (needs->empty()) return;
+  struct Out {
+    std::vector<TopoDS_Shape> shapes;
+    std::vector<std::shared_ptr<const BodyPrs>> prs;
+    std::vector<opad::Mat4> worlds;
+  };
+  auto out = std::make_shared<Out>();
+  out->shapes.resize(needs->size());
+  out->prs.resize(needs->size());
+  out->worlds.resize(needs->size());
+  m_services.jobs()->async(tr("Drawing the other files"), [needs, out](Progress p) {
+    std::map<std::pair<const opad::Document*, std::string>, size_t> meshed;  // instances share their mesh
+    for (size_t i = 0; i < needs->size(); ++i) {
+      if (p.cancelled()) return;
+      const Need& n = (*needs)[i];
+      p.setPhase(CompareMode::tr("Meshing body %1 of %2").arg(i + 1).arg(needs->size()), int(i * 100 / needs->size()));
+      out->worlds[i] = n.world;
+      const bool rigid = opad::mat_is_rigid(n.world);
+      if (const auto it = meshed.find({n.doc.get(), n.key}); rigid && it != meshed.end()) {
+        out->shapes[i] = out->shapes[it->second];
+        out->prs[i] = out->prs[it->second];
+        continue;
+      }
+      try {
+        TopoDS_Shape shape = BRepBuilderAPI_Copy(opad::body_shape(*n.doc, n.key)).Shape();
+        if (!rigid) {  // a scaled placement: baked into a copy drawn at identity
+          gp_GTrsf g;
+          for (int row = 0; row < 3; ++row)
+            for (int col = 0; col < 4; ++col) g.SetValue(row + 1, col + 1, n.world.at(row, col));
+          shape = BRepBuilderAPI_GTransform(shape, g, Standard_True).Shape();
+          out->worlds[i] = opad::Mat4();
+        }
+        Bnd_Box box;
+        BRepBndLib::Add(shape, box, Standard_False);
+        BodyPrs::meshForDisplay(shape, deflection(box));
+        out->shapes[i] = shape;
+        auto prs = BodyPrs::build(shape, box, true, nullptr);
+        prs->buildNavigation();  // the orbit pivot lands on it, in its pane
+        out->prs[i] = std::move(prs);
+        if (rigid) meshed[{n.doc.get(), n.key}] = i;
+      } catch (const std::exception&) {  // unreadable: not drawn
+      }
+    }
+  }, [this, self = QPointer<CompareMode>(this), needs, out, serial](bool ok, const QString&) {
+    if (!self || !ok || serial != m_extraSerial || !m_active) return;
+    for (size_t i = 0; i < needs->size(); ++i) {
+      const size_t k = (*needs)[i].part;
+      if (k >= m_parts.size()) continue;
+      m_parts[k].shape = out->shapes[i];
+      m_parts[k].prs = out->prs[i];
+      m_parts[k].world = out->worlds[i];
     }
     restyle();
     m_services.viewport()->setCompare(m_parts, m_arrows, theme::current().diffMoved);
@@ -907,9 +1093,10 @@ void CompareMode::documentChanged(bool replaced) {
   AppDocument* doc = m_services.document();
   if (!pendingStartup.isEmpty() && doc->hasDocument && !doc->loading) {  // opad --compare a b: b has opened
     const CompareVersion a = parseVersion(std::exchange(pendingStartup, QString()));
-    if (!doc->browse) return compare(a, {Kind::Session, QString(), tr("This session"), QString()});
-    m_services.showMessage(tr("Compare works on OPAD documents: save the file as one first."));
+    return compare(a, sessionVersion());
   }
+  if (!m_pendingFiles.isEmpty() && doc->hasDocument && !doc->loading)  // Compare files… with nothing open: the first has opened
+    return openFiles(std::exchange(m_pendingFiles, {}));
   if (m_pending && doc->hasDocument && !doc->loading) {  // compareIn: its file has opened
     const Pending p = *std::exchange(m_pending, std::nullopt);
     if (!doc->browse && !doc->doc.path.empty() && QFileInfo(doc->path()) == QFileInfo(p.file)) return compare(p.a, p.b);
@@ -918,6 +1105,101 @@ void CompareMode::documentChanged(bool replaced) {
   if (replaced || !doc->hasDocument) return close();
   showVersions();  // "unsaved changes" comes and goes
   m_rerun.start();  // B (or the session under it) changed
+}
+
+// Three files or more (Compare files…): every body of A against each other file in one table, a column per file, the one B
+// shows marked; a click on a column shows that file as B. Read and matched on a worker (opad::variant_table), again only
+// when A or the files change.
+void CompareMode::variantTable() {
+  if (!m_active || !m_run || m_a < 0) return;
+  AppDocument* doc = m_services.document();
+  // The file viewed is read again as a file (the session may hold edits; the table is of files): a column of its own unless
+  // it is also listed as a file.
+  auto path = [&](const CompareVersion& v) { return v.kind == Kind::Session ? doc->viewing : v.ref; };
+  auto listed = [&](const QString& file) {
+    return std::any_of(m_versions.begin(), m_versions.end(), [&](const CompareVersion& v) { return v.kind == Kind::File && QFileInfo(v.ref) == QFileInfo(file); });
+  };
+  const auto fileLike = [&](const CompareVersion& v) {
+    return v.kind == Kind::File || (v.kind == Kind::Session && doc->browse && !doc->viewing.isEmpty() && !listed(doc->viewing));
+  };
+  const CompareVersion a = m_versions[size_t(m_a)];
+  std::vector<int> columns;
+  for (size_t i = 0; i < m_versions.size(); ++i)
+    if (int(i) != m_a && fileLike(m_versions[i]) && QFileInfo(path(m_versions[i])) != QFileInfo(path(a))) columns.push_back(int(i));
+  if (!fileLike(a) || columns.size() < 2) {
+    m_variantColumns.clear();
+    m_tableKey.clear();
+    m_variantBodies.clear();
+    for (auto& d : m_variantDocs) dispose(std::move(d));
+    m_variantDocs.clear();
+    m_panel->setVariants({}, opad::json::array(), -1);
+    if (m_sideBySide) buildExtras();
+    return;
+  }
+  auto column = [&] { return int(std::find(columns.begin(), columns.end(), m_b) - columns.begin()); };
+  QStringList labels;
+  QString key = a.ref + "|" + QString::number(int(a.kind));
+  for (int c : columns) labels << m_versions[size_t(c)].label, key += "|" + m_versions[size_t(c)].ref;
+  if (key == m_tableKey) return m_panel->setVariants(labels, std::nullopt, column());  // the same table: B's column marked
+  m_tableKey = key;
+  m_variantColumns = columns;
+  m_variantBodies.clear();
+  for (auto& d : m_variantDocs) dispose(std::move(d));
+  m_variantDocs.clear();
+  m_panel->setVariants(labels, opad::json(), column());  // reading
+  struct Out {
+    std::vector<std::pair<QString, std::shared_ptr<opad::Document>>> read;
+    opad::json rows;
+    std::vector<std::vector<VariantBody>> bodies;  // per column: its file's bodies as paired with A's
+    std::vector<std::shared_ptr<opad::Document>> docs;
+  };
+  auto out = std::make_shared<Out>();
+  std::vector<QString> paths{path(a)};
+  for (int c : columns) paths.push_back(path(m_versions[size_t(c)]));
+  const Files files = m_files;
+  m_services.jobs()->async(tr("Comparing the variants"), [paths, files, out](Progress p) {
+    std::vector<std::shared_ptr<opad::Document>> docs;
+    std::vector<opad::Scene> scenes;
+    for (size_t i = 0; i < paths.size(); ++i) {
+      if (p.cancelled()) return;
+      p.setPhase(CompareMode::tr("Reading %1").arg(QFileInfo(paths[i]).fileName()), int(i * 50 / paths.size()));
+      const auto it = files.find(paths[i]);
+      docs.push_back(it != files.end() ? it->second : std::make_shared<opad::Document>(opad::read_variant(fsPath(paths[i]))));
+      if (it == files.end()) out->read.emplace_back(paths[i], docs.back());
+    }
+    for (const auto& d : docs) scenes.push_back(opad::resolve(*d));
+    p.setPhase(CompareMode::tr("Matching the bodies"), 50);
+    std::vector<const opad::Document*> dp;
+    std::vector<const opad::Scene*> sp;
+    for (size_t i = 0; i < docs.size(); ++i) dp.push_back(docs[i].get()), sp.push_back(&scenes[i]);
+    out->rows = opad::variant_table(dp, sp, [p] { return p.cancelled(); });
+    // each column's bodies, for its pane side by side (C, D)
+    out->bodies.resize(docs.size() - 1);
+    for (size_t k = 1; k < docs.size(); ++k) out->docs.push_back(docs[k]);
+    for (const auto& row : out->rows)
+      for (size_t k = 0; k + 1 < docs.size(); ++k) {
+        const opad::json cells = row.value("cells", opad::json::array());
+        if (k >= cells.size() || !cells[k].is_object()) continue;
+        const opad::json& cell = cells[k];
+        const std::string id = cell.value("id", "");
+        const opad::Node* n = id.empty() ? nullptr : scenes[k + 1].node(id);
+        if (!n || n->kind != opad::Node::Kind::Body || !scenes[k + 1].effectively_visible(id)) continue;
+        out->bodies[k].push_back({id, n->body_key, scenes[k + 1].world(id), cell.value("change", "")});
+      }
+  }, [this, self = QPointer<CompareMode>(this), out, key, labels](bool ok, const QString& error) {
+    if (!self || !m_active || key != m_tableKey) return;
+    for (auto& [file, d] : out->read) m_files.emplace(file, d);
+    if (!ok) {
+      m_tableKey.clear();
+      if (error != "cancelled") m_services.showMessage(i18n::t(error), 6000);
+      return m_panel->setVariants({}, opad::json::array(), -1);
+    }
+    const int current = int(std::find(m_variantColumns.begin(), m_variantColumns.end(), m_b) - m_variantColumns.begin());
+    m_panel->setVariants(labels, out->rows, current);
+    m_variantBodies = std::move(out->bodies);
+    m_variantDocs = std::move(out->docs);
+    if (m_sideBySide) buildExtras();
+  });
 }
 
 bool CompareMode::settled() const {
