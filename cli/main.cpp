@@ -26,6 +26,7 @@
 #include <fstream>
 #include <thread>
 
+#include "opad/variants.hpp"
 #include "opad/core.hpp"
 #include "opad/diff.hpp"
 #include "opad/drawing_io.hpp"
@@ -57,6 +58,8 @@ void print_usage() {
   std::printf("  new <doc>                     import <doc> <file.step>        append <doc> <op.json|->\n");
   std::printf("  inspect <doc> <ref>...        export <doc> --format stl --out f.stl\n");
   std::printf("  diff <a> <b> [--text] [--metrics]   what changed; a side is a file or git:REV[:path], one file alone = since git:HEAD\n");
+  std::printf("  variants <base> <file>... [--table]   variants that share no history (exports of one model): each body of\n");
+  std::printf("                                a file paired with the base's by the file's own ids, geometry, names or overlap\n");
   std::printf("  textconv <doc.opad>           the document as readable lines, for git: diff.opad.textconv \"opad-cli textconv\"\n");
   std::printf("  merge-driver %%O %%A %%B [%%P]    git's merge driver: base, ours and theirs merged into ours (exit 0), or ours left\n");
   std::printf("                                as it was (exit 1); merge.opad.driver \"opad-cli merge-driver %%O %%A %%B %%P\"\n");
@@ -274,6 +277,35 @@ int main(int argc, char** argv) {
       _setmode(_fileno(stdout), _O_BINARY);  // LF, as git compares it
 #endif
       std::fwrite(out.data(), 1, out.size(), stdout);
+      return 0;
+    }
+    if (command == "variants") {  // variants of one design read from any files, matched body by body (opad/variants.hpp)
+      if (positional.size() < 2) throw opad::Error("usage: opad-cli variants <base> <file>... [--table]");
+      std::vector<opad::Document> docs;
+      std::vector<opad::Scene> scenes;
+      docs.reserve(positional.size());
+      for (const auto& f : positional) docs.push_back(opad::read_variant(opad::path_from_utf8(f)));
+      for (const auto& d : docs) scenes.push_back(opad::resolve(d));
+      json out = json::object();
+      out["files"] = positional;
+      if (args.value("table", false)) {
+        std::vector<const opad::Document*> dp;
+        std::vector<const opad::Scene*> sp;
+        for (size_t i = 0; i < docs.size(); ++i) dp.push_back(&docs[i]), sp.push_back(&scenes[i]);
+        out["rows"] = opad::variant_table(dp, sp);
+      } else {
+        json each = json::array();
+        for (size_t i = 1; i < docs.size(); ++i) {
+          json d = opad::variant_diff(opad::match_bodies(docs[0], scenes[0], docs[i], scenes[i]), scenes[0], scenes[i]);
+          d["a"] = positional[0];
+          d["b"] = positional[i];
+          each.push_back(std::move(d));
+        }
+        out["variants"] = std::move(each);
+      }
+      const std::string text = compact ? out.dump() : out.dump(2);
+      std::fwrite(text.data(), 1, text.size(), stdout);
+      std::fputc('\n', stdout);
       return 0;
     }
     if (command == "probe") {

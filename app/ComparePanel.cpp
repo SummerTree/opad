@@ -230,6 +230,23 @@ ComparePanel::ComparePanel(QWidget* parent) : QWidget(parent) {
   m_status->setWordWrap(true);
   m_status->hide();
   b->addWidget(m_status);
+  m_variantsTitle = new QLabel(tr("Variants"), this);
+  m_variantsTitle->setFont(theme::ui(11, QFont::DemiBold));
+  m_variantsTitle->hide();
+  b->addWidget(m_variantsTitle);
+  m_variants = new QTableWidget(this);
+  m_variants->setObjectName("compareVariants");
+  m_variants->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  m_variants->setSelectionMode(QAbstractItemView::NoSelection);
+  m_variants->setFocusPolicy(Qt::NoFocus);
+  m_variants->verticalHeader()->hide();
+  m_variants->horizontalHeader()->setSectionsClickable(true);
+  m_variants->horizontalHeader()->setHighlightSections(false);
+  m_variants->setToolTip(tr("Each body of A in every other file; click a file's column to show it as B"));
+  m_variants->hide();
+  b->addWidget(m_variants);
+  connect(m_variants, &QTableWidget::cellClicked, this, [this](int, int column) { if (column > 0) emit variantChosen(column - 1); });
+  connect(m_variants->horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int column) { if (column > 0) emit variantChosen(column - 1); });
   m_list = makeList(this);
   m_list->setObjectName("compareChanges");
   m_list->setFocusPolicy(Qt::NoFocus);  // ] and [ stay with the window
@@ -391,6 +408,7 @@ void ComparePanel::setResult(const opad::json& diff, const std::array<int, Categ
   else if (relation == "ancestor") how = tr("B is an earlier A: %n op(s) fewer.", nullptr, na - nb);
   else if (relation == "diverged") how = tr("Diverged after %n common op(s).", nullptr, common);
   else if (relation == "unrelated") how = tr("Another document.");
+  else if (relation == "variants") how = tr("Separate files, matched body by body.");
   if (diff.contains("summary")) m_summary->setText(how + (m_changes.empty() ? " " + tr("No changes.") : " " + summaryOf(m_changes, relation) + "."));
   m_status->hide();
   m_details->hide();
@@ -578,7 +596,7 @@ void ComparePanel::fillDetails(QTableWidget* table, const opad::json& c) {
             return QStringLiteral("(%1, %2, %3)").arg(a[0], 0, 'g', 4).arg(a[1], 0, 'g', 4).arg(a[2], 0, 'g', 4);
           }()));
   } else if (change == "geometry") {
-    add(tr("Body"), text(c, "key_before").left(12), text(c, "key_after").left(12));
+    if (c.contains("key_before")) add(tr("Body"), text(c, "key_before").left(12), text(c, "key_after").left(12));
     if (c.contains("metrics"))
       for (const char* key : {"volume", "area"})
         if (c["metrics"]["before"].contains(key) && c["metrics"]["after"].contains(key)) {
@@ -629,6 +647,12 @@ void ComparePanel::fillDetails(QTableWidget* table, const opad::json& c) {
     };
     add(what, side("before"), side("after"));
   }
+  // Variants (separate files): what paired the body with A's.
+  if (const std::string by = c.value("matched_by", ""); !by.empty()) {
+    const QString how = by == "node" ? tr("the same object") : by == "source" ? tr("the file's own ids") : by == "shape" ? tr("the same geometry")
+                      : by == "name" ? tr("its name") : tr("where it is");
+    add(tr("Matched by"), QString(), how);
+  }
   table->setRowCount(int(rows.size()));
   for (size_t i = 0; i < rows.size(); ++i)
     for (int col = 0; col < 3; ++col) {
@@ -641,6 +665,64 @@ void ComparePanel::fillDetails(QTableWidget* table, const opad::json& c) {
   for (int i = 0; i < std::min(int(rows.size()), 6); ++i) height += table->rowHeight(i);
   table->setFixedHeight(height);
   table->setVisible(!rows.empty());
+}
+
+void ComparePanel::setVariants(const QStringList& columns, const std::optional<opad::json>& rows, int current) {
+  if (rows) m_variantRows = rows->is_array() ? *rows : opad::json::array();
+  m_variantColumns = columns;
+  const bool reading = rows && rows->is_null();
+  const bool shown = !columns.isEmpty();
+  m_variantsTitle->setVisible(shown);
+  m_variants->setVisible(shown && !reading);
+  m_variantsTitle->setText(reading ? tr("Variants · comparing the files…") : tr("Variants: each body of A in every file"));
+  if (!shown || reading) return emit contentResized();
+  const Tokens& t = theme::current();
+  m_variants->setColumnCount(int(columns.size()) + 1);
+  m_variants->setRowCount(int(m_variantRows.size()));
+  auto* body = new QTableWidgetItem(tr("Body"));
+  m_variants->setHorizontalHeaderItem(0, body);
+  for (int c = 0; c < columns.size(); ++c) {
+    auto* h = new QTableWidgetItem(c == current ? QString::fromUtf8("● ") + columns[c] : columns[c]);
+    h->setToolTip(c == current ? tr("%1 (shown as B)").arg(columns[c]) : tr("%1: click to show it as B").arg(columns[c]));
+    QFont f = h->font();
+    f.setBold(c == current);
+    h->setFont(f);
+    m_variants->setHorizontalHeaderItem(c + 1, h);
+  }
+  struct Look {
+    const char* change;
+    QString text;
+    QColor colour;
+  };
+  const std::vector<Look> looks = {{"unchanged", QStringLiteral("="), t.fg3},
+                                   {"moved", tr("moved"), t.*colour(Moved)},
+                                   {"modified", tr("changed"), t.*colour(Modified)},
+                                   {"added", tr("new"), t.*colour(Added)},
+                                   {"removed", tr("gone"), t.*colour(Removed)},
+                                   {"absent", QString(), t.fg3}};
+  for (size_t r = 0; r < m_variantRows.size(); ++r) {
+    const opad::json& row = m_variantRows[r];
+    auto* name = new QTableWidgetItem(text(row, "name"));
+    name->setToolTip(text(row, "name"));
+    m_variants->setItem(int(r), 0, name);
+    const opad::json cells = row.value("cells", opad::json::array());
+    for (size_t c = 0; c < cells.size() && int(c) < columns.size(); ++c) {
+      const std::string change = cells[c].value("change", "");
+      const auto look = std::find_if(looks.begin(), looks.end(), [&](const Look& l) { return change == l.change; });
+      auto* cell = new QTableWidgetItem(look == looks.end() ? QString() : look->text);
+      cell->setTextAlignment(Qt::AlignCenter);
+      if (look != looks.end()) cell->setForeground(look->colour);
+      if (int(c) == current) cell->setBackground(t.selbg);
+      m_variants->setItem(int(r), int(c) + 1, cell);
+    }
+  }
+  m_variants->resizeColumnsToContents();
+  m_variants->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+  m_variants->resizeRowsToContents();
+  int height = m_variants->horizontalHeader()->sizeHint().height() + 2 * m_variants->frameWidth() + 2;
+  for (int i = 0; i < std::min(m_variants->rowCount(), 8); ++i) height += m_variants->rowHeight(i);  // eight rows; the rest scroll
+  m_variants->setFixedHeight(height);
+  emit contentResized();
 }
 
 QSize ComparePanel::preferredSize(int width) const { return QSize(width, 660); }

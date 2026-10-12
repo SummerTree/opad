@@ -918,6 +918,9 @@ std::vector<BodyChange> body_changes(const Scene& a, const Scene& b) {
     c.world_b = b.world(id);
     c.shown_b = b.effectively_visible(id);
     if (x) {
+      c.id_a = id;
+      c.name_a = x->name;
+      c.matched_by = "node";
       c.key_a = x->body_key;
       c.world_a = a.world(id);
       c.shown_a = a.effectively_visible(id);
@@ -930,8 +933,8 @@ std::vector<BodyChange> body_changes(const Scene& a, const Scene& b) {
     if (y && y->kind == Node::Kind::Body) continue;
     BodyChange c;
     c.kind = BodyChange::Kind::Removed;
-    c.id = id;
-    c.name = a.node(id)->name;
+    c.id = c.id_a = id;
+    c.name = c.name_a = a.node(id)->name;
     c.key_a = a.node(id)->body_key;
     c.world_a = a.world(id);
     c.shown_a = a.effectively_visible(id);

@@ -58,3 +58,9 @@ OPAD_BENCH(OPAD_BENCH_COMPARE, compare) {
   auto* compare = w.findChild<CompareMode*>();
   return compare && compare->bench(value);
 }
+
+// OPAD_BENCH_COMPARE_FILES=<prefix> on tools/bench_cases/vcs.py's variants/v1.step (CompareMode::benchFiles).
+OPAD_BENCH(OPAD_BENCH_COMPARE_FILES, compareFiles) {
+  auto* compare = w.findChild<CompareMode*>();
+  return compare && compare->benchFiles(value);
+}

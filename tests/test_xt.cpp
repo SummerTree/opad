@@ -36,6 +36,7 @@
 #include "../core/src/xt/xt_brep.hpp"
 #include "../core/src/xt/xt_parse.hpp"
 #include "opad/core.hpp"
+#include "opad/drawing_io.hpp"
 
 using namespace opad;
 
@@ -195,6 +196,7 @@ Writer cube() {
         q[c] = (side << axis) | (a << u) | (b << v);
       }
       const uint32_t face = w.add(xt::FACE), loop = w.add(xt::LOOP), plane = w.add(xt::PLANE);
+      w[face].num["node_id"] = {double(100 + axis * 2 + side)};  // persistent ids: kept for matching variants
       std::vector<double> normal(3, 0.0), x_axis(3, 0.0);
       normal[axis] = side ? 1 : -1, x_axis[u] = 1;
       w[plane].num["pvec"] = {corner(q[0], 0), corner(q[0], 1), corner(q[0], 2)};
@@ -260,6 +262,8 @@ void check_cube(const xt::File& f) {
   GProp_GProps g;
   BRepGProp::VolumeProperties(shape, g);
   CHECK_NEAR(g.Mass(), 8000.0, 1e-6);  // mm: 20 mm cube, outward faces (a turned-over shell measures -8000)
+  // The faces' node_ids, by TShape (a BODY has none in a transmit file).
+  CHECK_EQ(b.ids.size(), 6u);
 }
 }  // namespace
 
@@ -275,6 +279,25 @@ TEST(cube_neutral_binary) {
   CHECK(f.format == 'N');
   CHECK_EQ(f.nodes.size(), xt::parse(cube().write(false)).nodes.size());
   check_cube(f);
+}
+
+// Imported, each body keeps its own ids in its meta (one per face ordinal), for matching variants of one model.
+TEST(ids_reach_the_body_meta) {
+  const std::filesystem::path file = std::filesystem::temp_directory_path() / "opad-test-ids.x_t";
+  {
+    std::ofstream out(file, std::ios::binary);
+    out << cube().write(false);
+  }
+  Document doc = Document::create();
+  import_file(doc, file, {});
+  std::filesystem::remove(file);
+  CHECK_EQ(doc.body_count(), 1u);
+  const json ids = doc.bodies().front().meta.value("ids", json());
+  CHECK(ids.is_object() && ids.value("source", "") == "parasolid" && !ids.contains("body"));
+  CHECK(ids.contains("faces") && ids["faces"].size() == 6);
+  std::set<std::string> faces;
+  for (const auto& f : ids["faces"]) faces.insert(f.get<std::string>());
+  CHECK(faces == (std::set<std::string>{"100", "101", "102", "103", "104", "105"}));
 }
 
 TEST(text_lexing) {

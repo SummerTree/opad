@@ -51,7 +51,8 @@ ImportResult import_parasolid(Document& doc, const std::filesystem::path& file, 
         TDataStd_Name::Set(roots.Value(1), TCollection_ExtendedString(file.stem().u16string().c_str()));
     }
   }
-  ImportResult result = import_xcaf(doc, built.doc, file, opt, false);
+  EntityIds ids{"parasolid", std::move(built.ids)};  // the bodies' and faces' node_ids, for matching variants
+  ImportResult result = import_xcaf(doc, built.doc, file, opt, false, 1.0, {}, &ids);
   for (const auto& w : parsed.warnings) result.warnings.push_back(w);
   for (const auto& w : built.warnings) result.warnings.push_back(w);
   if (!xt::schema_known(parsed.schema_version) && !parsed.base_version)

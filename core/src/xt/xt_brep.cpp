@@ -1415,6 +1415,7 @@ class Builder {
     out.bodies = built_;
     out.face_source = std::move(face_source_);
     out.face_node = std::move(face_node_);
+    out.ids = std::move(ids_);
     if (dropped_faces_) {
       std::string kinds;
       for (const auto& [kind, count] : dropped_kinds_) kinds += (kinds.empty() ? "" : ", ") + kind + " " + std::to_string(count);
@@ -1478,6 +1479,7 @@ class Builder {
         face_source_[x.Current().TShape().get()] = surface_kind(fi);
         face_node_[x.Current().TShape().get()] = fi;
         const Node* fn = f_.get(fi);
+        if (const int id = fn ? fn->integer("node_id") : 0; id > 0) ids_[x.Current().TShape().get()] = std::to_string(id);
         if (fn && colour_of(*fn, col)) {
           const TDF_Label sub = st_->AddSubShape(label, x.Current());
           if (!sub.IsNull()) ct_->SetColor(sub, col, XCAFDoc_ColorSurf);
@@ -1559,6 +1561,7 @@ class Builder {
   std::map<std::string, int> dropped_kinds_;
   std::unordered_map<const void*, std::string> face_source_;
   std::unordered_map<const void*, uint32_t> face_node_;
+  std::unordered_map<const void*, std::string> ids_;
   std::set<uint32_t> building_;
   std::set<std::string> warned_;
   Handle(XCAFDoc_ShapeTool) st_;

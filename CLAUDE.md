@@ -490,6 +490,19 @@ flag: `updateDirty()` compares op ids + body count with the snapshot `markSaved(
 undoing back to the saved state clears the asterisk. Depth: setting `edit/undoDepth` (Settings > Undo
 history…, default 50). The bench logs `bench: undo/redo:` with the dirty transitions.
 
+## Variants: comparing files without a shared history (`core/src/variants.cpp`, `opad/variants.hpp`)
+
+`read_variant` opens any file as a document (.opad in index mode, the rest in viewer mode). `match_bodies` pairs bodies
+tier by tier, each over what is still unpaired: node id, the file's own ids (body meta `"ids"`: Parasolid gives
+*faces* a `node_id`, not bodies; `xt_brep` collects them, `import_xcaf` writes `{"source", "faces"}` per face ordinal and
+`follow_face_ids` keeps them through healing; a pair by face ids needs Jaccard >= 0.3 and to overlap or be of a like
+size), shape (`body_print`: counts + volume/area/principal moments within 1e-5, rotation-free; `same_place` = unchanged),
+name (path below the root, or a unique name), near (box IoU). `variant_diff` gives Compare's change list (relation
+"variants"), `variant_table` the multi-file table. CompareMode switches to it when the two documents' header uuids differ
+(`Run::variants`); `vcs.compareFiles` / `openFiles(files)` (no document: the first file opens, viewed, then they are
+compared); the Variants table (`ComparePanel::setVariants`) appears with two other files or more. `opad-cli variants`,
+`ctest -R "variants|xt"`, bench `compare-files` (OPAD_BENCH_COMPARE_FILES).
+
 ## Commits
 
 One-line commit messages, no body or trailer.

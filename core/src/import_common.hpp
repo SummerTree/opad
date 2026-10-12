@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "opad/step_io.hpp"
@@ -27,8 +28,15 @@ std::string persist_body(TopoDS_Shape& shape, json& meta, bool& healed);
 // Walks an XCAF document (assemblies, instances, names, colours, materials) into one import op. `mesh`: the shapes are
 // triangulations (glTF, OBJ, VRML), not B-reps. For readers that do not convert units or axes themselves, `scale` takes
 // file units to mm and `root` turns the file's axes to OPAD's.
+// `ids` (optional): the reader's own persistent ids of bodies and faces, by TShape (Parasolid's faces' node_id): each
+// body's meta gets {"ids": {"source", "body" (when it has one), "faces": [one per face ordinal, "" when unknown]}}, which
+// follows healing, so variants of one model exported apart can be matched by them (opad/variants.hpp).
+struct EntityIds {
+  std::string source;  // "parasolid"
+  std::unordered_map<const void*, std::string> by_shape;
+};
 ImportResult import_xcaf(Document& doc, const Handle(TDocStd_Document)& xdoc, const std::filesystem::path& file, const ImportOptions& opt, bool mesh,
-                         double scale = 1.0, const Mat4& root = {});
+                         double scale = 1.0, const Mat4& root = {}, const EntityIds* ids = nullptr);
 
 // A triangle mesh as one face: `xyz` holds 3 floats per vertex, `triangles` 3 zero-based indices per triangle. Vertices at
 // the same position are merged first when `weld` is set (STL repeats them per facet). Normals are smoothed across edges

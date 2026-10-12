@@ -48,6 +48,11 @@ struct BodyChange {
   enum class Kind { Added, Removed, Modified, Moved, Unchanged };
   Kind kind = Kind::Unchanged;
   std::string id, name, key_a, key_b;
+  // Variants matched across documents (opad/variants.hpp): the body's node in a (id is b's, or a's when removed) and
+  // what paired them: "node", "source" (the file's own ids), "name", "shape" (geometry), "" when unpaired. body_changes
+  // pairs by node id: id_a == id, "node".
+  std::string id_a, matched_by, name_a;
+  Vec3 translation{0, 0, 0};  // variants: how far its centre of mass moved (b - a)
   Mat4 world_a, world_b;
   bool shown_a = false, shown_b = false;
 };

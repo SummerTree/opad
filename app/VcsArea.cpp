@@ -45,7 +45,7 @@ class Vcs : public AreaController {
     compare.icon = "compare";
     compare.group = group;
     compare.keywords = {"diff", "changes", "git", "history", "version", "revision"};
-    compare.enabledWhen = [](const CommandContext& c) { return c.document && !c.viewer && !c.sketching; };
+    compare.enabledWhen = [](const CommandContext& c) { return c.document && !c.sketching; };  // an opened STEP or X_T too
     services().addCommand(compare, [this] { if (m_compare) m_compare->open(); });
     CommandInfo unsaved;  // UI-59: also the unsaved-changes question's Review changes…
     unsaved.id = "vcs.unsavedChanges";
@@ -66,6 +66,14 @@ class Vcs : public AreaController {
     withFile.keywords = {"diff", "changes", "other document", "copy", "variant", "version"};
     withFile.enabledWhen = compare.enabledWhen;
     services().addCommand(withFile, [this] { if (m_compare) m_compare->openWithFile(); });
+    CommandInfo files;  // separate files (exports of one design from another CAD system): bodies matched by ids, then shape
+    files.id = "vcs.compareFiles";
+    files.label = tr("Compare files…");
+    files.icon = "compare";
+    files.group = group;
+    files.keywords = {"diff", "variants", "files", "step", "x_t", "parasolid", "export", "several"};
+    files.enabledWhen = [](const CommandContext& c) { return !c.sketching; };
+    services().addCommand(files, [this] { if (m_compare) m_compare->openFiles(); });
     // Version control (UI-62): the panel and its commands, for a saved OPAD document; they say why when git cannot.
     auto saved = [this](const CommandContext& c) {
       const AppDocument* d = services().document();
@@ -135,12 +143,12 @@ class Vcs : public AreaController {
       file->insertMenu(before, version);
     }
     for (const char* id : {"vcs.panel", "-", "vcs.commit", "vcs.pull", "vcs.push", "vcs.fetch", "vcs.backgroundFetch", "-", "vcs.history", "vcs.branches", "vcs.newBranch", "-",
-                           "vcs.compare", "vcs.compareFile", "vcs.unsavedChanges", "-", "vcs.resolve", "vcs.pack"})
+                           "vcs.compare", "vcs.compareFile", "vcs.compareFiles", "vcs.unsavedChanges", "-", "vcs.resolve", "vcs.pack"})
       if (QString::fromLatin1(id) == "-") version->addSeparator();
       else version->addAction(services().action(QString::fromLatin1(id)));
     if (QMenu* inspect = menus.value("inspect")) {
       inspect->addSeparator();
-      inspect->addActions({services().action("vcs.compare"), services().action("vcs.compareFile"), services().action("vcs.unsavedChanges")});
+      inspect->addActions({services().action("vcs.compare"), services().action("vcs.compareFile"), services().action("vcs.compareFiles"), services().action("vcs.unsavedChanges")});
     }
   }
   void statusWidgets(QStatusBar*) override {  // the chip beside the document's path, in the row that never collapses (UI-08)

@@ -37,6 +37,19 @@ def compared(root, document, name="compare"):
     return doc
 
 
+def variants(root, document):
+    """Compare files: three STEP exports of one design in variants/ (v2: the second box moved; v3: the first box longer,
+    the cylinder gone); the bench opens v1.step and compares the three."""
+    folder = root / "variants"
+    folder.mkdir(exist_ok=True)
+    box = lambda x, size: ("feature", "--kind", "box", "--inputs", json.dumps({"x": f"{x} mm", "length": f"{size} mm", "width": "20 mm", "height": "10 mm"}))
+    cylinder = ("feature", "--kind", "cylinder", "--inputs", '{"x":"100 mm","diameter":"20 mm","height":"10 mm"}')
+    for name, parts in (("v1", (box(0, 30), box(50, 20), cylinder)), ("v2", (box(0, 30), box(60, 20), cylinder)), ("v3", (box(0, 40), box(50, 20)))):
+        doc = document(f"variants/{name}", *parts)
+        subprocess.run([str(document.cli), "export", str(doc), "--format", "step", "--out", str(folder / f"{name}.step")], check=True, capture_output=True)
+    return folder / "v1.step"
+
+
 def recovered(root, document, name="recovery"):
     """Recovery with diff (UI-59): <name>/model.opad with three boxes, saved; the bench changes, snapshots, restores and saves
     it."""
@@ -253,6 +266,8 @@ CASES = [
     ("compare-ar", lambda root, document: compared(root, document, "compare-ar"),
      {"OPAD_BENCH_COMPARE": "{prefix}", "OPAD_BENCH_COMPARE_GIT": "1" if shutil.which("git") else "0", "GIT_CONFIG_GLOBAL": "{root}/git-global",
       "GIT_CONFIG_NOSYSTEM": "1", "OPAD_LANG": "ar"}),
+    # Compare files: separate STEP exports matched body by body, the Variants table, another file shown as B from its column.
+    ("compare-files", variants, {"OPAD_BENCH_COMPARE_FILES": "{prefix}"}),
     # Recovery with diff: the offer's detail pane, Restore into file, Merge into current, Review changes…, Discard; also in Arabic.
     # Version control: commit, push, branch, merge, pull, history; git's global config the run's own (the author is asked).
     ("version", versioned_with_remote, {"OPAD_BENCH_VERSION": "{prefix}", "OPAD_BENCH_CLI": "{cli}", "GIT_CONFIG_GLOBAL": "{root}/version-global",

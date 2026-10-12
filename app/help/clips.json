@@ -5526,6 +5526,28 @@
    ]
   },
   {
+   "id": "vcs.compareFiles", "duration": 7.0, "view": "iso",
+   "items": [
+    {"el": "camera", "center": [-14, 0], "zoom": 0.85},
+    {"use": "isoScene", "args": {"area": [-24, -16, 24, 16]}},
+    {"el": "solid", "profile": {"rect": [0, 0, 40, 24], "round": 2}, "height": 4, "from": 1.9, "fade": 0.3},
+    {"el": "solid", "profile": {"rect": [4, 5, 10, 8]}, "at": [0, 0, 4], "height": 6, "tone": "amber", "toneAmount": 0.6, "from": 1.9, "fade": 0.3},
+    {"el": "solid", "profile": {"circle": [12, -5, 3.5]}, "at": [0, 0, 4], "height": 9, "tone": "red", "toneAmount": 0.6, "opacity": 0.5, "from": 1.9, "to": 4.6, "fade": 0.3},
+    {"el": "solid", "profile": {"circle": [16, 4, 3.5]}, "at": [0, 0, 4], "height": 9, "tone": "blue", "toneAmount": 0.6, "from": 1.9, "to": 4.6, "fade": 0.3},
+    {"el": "solid", "profile": {"circle": [12, -5, 3.5]}, "at": [0, 0, 4], "height": 12, "tone": "amber", "toneAmount": 0.6, "from": 4.6, "fade": 0.3},
+    {"el": "card", "screen": [0.03, 0.06], "w": 170, "title": "Compare files", "button": "Open", "press": 1.5, "from": 0.2, "to": 1.7, "fade": 0.15, "hl": -1, "rows": [{"label": "Bracket-A.x_t"}, {"label": "Bracket-B.x_t"}, {"label": "Bracket-C.step"}], "keys": [[0.5, {"hl": 0}], [0.8, {"hl": 1}], [1.1, {"hl": 2}]]},
+    {"el": "chip", "screen": [0.03, 0.86], "text": "Compare: Bracket-A.x_t → Bracket-B.x_t", "dot": "sel", "from": 1.8, "to": 4.5},
+    {"el": "chip", "screen": [0.03, 0.86], "text": "Compare: Bracket-A.x_t → Bracket-C.step", "dot": "sel", "from": 4.6},
+    {"el": "card", "screen": [0.03, 0.05], "w": 170, "title": "Variants", "from": 1.8, "hl": -1, "rows": [{"label": "Bracket-B.x_t · Bracket-C.step"}, {"text": "Plate", "value": "=  ·  ="}, {"text": "Boss", "value": "changed  ·  changed", "color": "amber"}, {"text": "Shaft", "value": "moved  ·  changed", "color": "blue"}], "keys": [[3.2, {"hl": 3}], [4.6, {"hl": 0}]]},
+    {"el": "cursor", "keys": [[0, {"screen": [0.62, 0.8]}], [1.3, {"screen": [0.518, 0.439]}], [1.5, {"screen": [0.518, 0.439], "click": 1}], [3.9, {"screen": [0.16, 0.12]}], [4.3, {"screen": [0.16, 0.12]}], [4.4, {"screen": [0.16, 0.12], "click": 1}], [5.4, {"screen": [0.66, 0.8]}]]}
+   ],
+   "steps": [
+    {"to": 1.7, "caption": "Choose two or more files of one design"},
+    {"to": 3.6, "caption": "Bodies paired by the files' ids, else by shape and name"},
+    {"to": 7.0, "caption": "A column per file: click one to show it as B"}
+   ]
+  },
+  {
    "id": "file.recover", "duration": 5.0, "view": "iso",
    "items": [
     {"el": "camera", "center": [-14, 0], "zoom": 0.85},

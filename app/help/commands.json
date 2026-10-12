@@ -29,7 +29,7 @@
    "summary": "Shows two versions of the document in one view: what was added, removed, changed or moved.",
    "details": "Pick A and B in the Compare panel: this session, the saved file, git commits, recovery snapshots or another file. The view draws B tinted by change with ghosts of A, the panel lists the changes and Next change ({key:vcs.nextChange}) steps through them; Done or {fixed:esc} ends it.",
    "keywords": ["diff", "changes", "git", "history", "version", "revision"],
-   "requires": "Open an OPAD document; not while a sketch is open."
+   "requires": "Open or create a document first; not available while a sketch is open."
   },
   {
    "id": "vcs.unsavedChanges",
@@ -2538,10 +2538,18 @@
   {
    "id": "vcs.compareFile",
    "title": "Compare with a file",
-   "summary": "Compares another OPAD document, such as a copy or a variant, with this session.",
-   "details": "Choose the .opad file: Compare opens with it as A and this session as B, its changes listed in the panel and drawn in the view. The panel's pickers change either side afterwards.",
+   "summary": "Compares another file, such as a copy, a variant or an export, with this session.",
+   "details": "Choose an OPAD document or any file OPAD opens (STEP, X_T, IGES, meshes): Compare opens with it as A and this session as B, its changes listed in the panel and drawn in the view. Files without a shared history are matched body by body, as Compare files does. The panel's pickers change either side afterwards.",
    "keywords": ["diff", "other document", "variant", "copy", "changes"],
-   "requires": "Open an OPAD document; not while a sketch is open."
+   "requires": "Open or create a document first; not available while a sketch is open."
+  },
+  {
+   "id": "vcs.compareFiles",
+   "title": "Compare files",
+   "summary": "Compares several files of one design, such as exports from another CAD system, body by body.",
+   "details": "Choose two or more files of any format OPAD opens. Bodies are paired by the ids the files carry (Parasolid's face ids), else by the same geometry, then by name and by where they are; the rest are new or gone. The first file is A and the second B; the Variants table lists each body of A in every file, and a click on a file's column shows it as B.",
+   "keywords": ["variants", "files", "STEP", "X_T", "export", "diff"],
+   "requires": "Not while a sketch is open."
   },
   {
    "id": "file.recover",
