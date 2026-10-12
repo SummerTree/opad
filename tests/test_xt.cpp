@@ -4,13 +4,21 @@
 #include <BRep_Tool.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_Surface.hxx>
+#include <Geom2d_Curve.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_ListOfStatus.hxx>
 #include <BRepCheck_Result.hxx>
 #include <BRepCheck_Status.hxx>
 #include <Standard_Failure.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <gp_Pnt2d.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Quantity_Color.hxx>
 #include <TCollection_AsciiString.hxx>
@@ -37,6 +45,7 @@
 #include "../core/src/xt/xt_parse.hpp"
 #include "opad/core.hpp"
 #include "opad/drawing_io.hpp"
+#include "opad/geometry.hpp"
 
 using namespace opad;
 
@@ -347,7 +356,7 @@ TEST(public_corpus) {
       {"pymechanical-hsec.x_t", 3, 0, 2700000.0},
       {"scorec-sphere.x_t", 1, 0, 0.469145},
       {"quickdraw-omron-assembly.x_t", 10, 0, 2251.5},
-      {"quickdraw-microswitch-dock.x_t", 1, 0, 6691.8},
+      {"quickdraw-microswitch-dock.x_t", 1, 0, 6287.1},  // 6691.8 with its two fillet tori drawn as donuts
       {"sparkfun-display.x_t", 18, 0, 5526.8},
   };
   for (const Case& c : cases) {
@@ -367,7 +376,22 @@ TEST(public_corpus) {
         BRepGProp::VolumeProperties(x.Current(), g);
         volume += g.Mass();
       }
-    std::printf("  %-32s solids %d invalid %d volume %.1f\n", c.file, solids, invalid, volume);
+    // A face keeps its own loops: healing adds no natural boundary to one that has some (a fillet on a torus whose loop
+    // read as a hole became the rest of the torus, a donut).
+    const xt::File f = xt::parse(read(path));
+    int bounded = 0;
+    for (int i = 1; i <= roots.Length(); ++i)
+      for (TopExp_Explorer x(st->GetShape(roots.Value(i)), TopAbs_FACE); x.More(); x.Next()) {
+        const auto fn = b.face_node.find(x.Current().TShape().get());
+        const xt::Node* face = fn == b.face_node.end() ? nullptr : f.get(fn->second);
+        if (!face) continue;
+        int loops = 0, wires = 0;
+        for (uint32_t lp = face->ptr("loop"), g = 0; lp && g < 1000; ++g, lp = f.get(lp) ? f.get(lp)->ptr("next") : 0) ++loops;
+        for (TopExp_Explorer w(x.Current(), TopAbs_WIRE); w.More(); w.Next()) ++wires;
+        if (loops && wires > loops) ++bounded;
+      }
+    std::printf("  %-32s solids %d invalid %d volume %.1f, %d faces given natural bounds\n", c.file, solids, invalid, volume, bounded);
+    CHECK_EQ(bounded, 0);
     CHECK_EQ(solids, c.solids);
     CHECK(invalid <= c.invalid);
     CHECK_NEAR(volume, c.volume, c.volume * 1e-3);
@@ -546,6 +570,113 @@ TEST(one_file) {
       std::printf("    bad face (%s, %s):%s\n", kinds[std::min(k, 10)], src == b.face_source.end() ? "?" : src->second.c_str(), why.c_str());
       if (const auto fn = b.face_node.find(face.TShape().get()); fn != b.face_node.end()) std::printf("      face node %u\n", fn->second);
     }
+  }
+}
+
+// OPAD_XT_SPILL=<file>: faces that cover more than their loops bound (a fillet drawn as a whole torus: the face is the
+// rest of its periodic surface), found as a meshed box much bigger than the box of the face's edges.
+TEST(spill_survey) {
+  const char* file = std::getenv("OPAD_XT_SPILL");
+  if (!file || !*file) return;
+  const char* kinds[] = {"plane", "cylinder", "cone", "sphere", "torus", "bezier", "bspline", "revolution", "extrusion", "offset", "other"};
+  const std::string ext = std::filesystem::path(file).extension().string();
+  const bool parasolid = ext == ".x_t" || ext == ".X_T" || ext == ".x_b" || ext == ".X_B";
+  const xt::Built b = parasolid ? xt::build(xt::parse(read(file))) : xt::Built();
+  Handle(XCAFDoc_ShapeTool) st = parasolid ? XCAFDoc_DocumentTool::ShapeTool(b.doc->Main()) : Handle(XCAFDoc_ShapeTool)();
+  TDF_LabelSequence shapes;
+  if (parasolid) st->GetShapes(shapes);
+  int faces = 0, spilled = 0;
+  for (int i = 1; i <= shapes.Length(); ++i) {
+    if (st->IsAssembly(shapes.Value(i)) || st->IsComponent(shapes.Value(i))) continue;
+    const TopoDS_Shape shape = st->GetShape(shapes.Value(i));
+    BRepMesh_IncrementalMesh(shape, 0.01, false, 0.2);
+    for (TopExp_Explorer x(shape, TopAbs_FACE); x.More(); x.Next()) {
+      ++faces;
+      const TopoDS_Face face = TopoDS::Face(x.Current());
+      Bnd_Box all, edges;
+      BRepBndLib::Add(face, all, true);
+      for (TopExp_Explorer y(face, TopAbs_EDGE); y.More(); y.Next()) BRepBndLib::Add(y.Current(), edges, false);
+      if (all.IsVoid() || edges.IsVoid()) continue;
+      const double da = std::sqrt(all.SquareExtent()), de = std::sqrt(edges.SquareExtent());
+      if (da < 1.02 * de + 0.05) continue;
+      ++spilled;
+      double u0, u1, v0, v1;
+      BRepTools::UVBounds(face, u0, u1, v0, v1);
+      GProp_GProps g;
+      BRepGProp::SurfaceProperties(face, g);
+      const int k = int(BRepAdaptor_Surface(face).GetType());
+      const auto src = b.face_source.find(face.TShape().get());
+      const auto fn = b.face_node.find(face.TShape().get());
+      int wires = 0;
+      for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) ++wires;
+      std::printf("  spill (%s, %s, node %u): box %.3g vs edges %.3g, area %.4g, %d wires, uv %.4g..%.4g x %.4g..%.4g\n", kinds[std::min(k, 10)],
+                  src == b.face_source.end() ? "?" : src->second.c_str(), fn == b.face_node.end() ? 0u : fn->second, da, de, g.Mass(), wires, u0, u1, v0, v1);
+      std::printf("    face %s\n", face.Orientation() == TopAbs_REVERSED ? "reversed" : "forward");
+      {  // the first wire's middle in UV: which way the face normal points there, relative to the solid
+        TopExp_Explorer w(face, TopAbs_WIRE);
+        double su = 0, sv = 0;
+        int k2 = 0;
+        for (TopExp_Explorer ed(w.Current(), TopAbs_EDGE); ed.More(); ed.Next()) {
+          double f0, f1;
+          Handle(Geom2d_Curve) pc = BRep_Tool::CurveOnSurface(TopoDS::Edge(ed.Current()), face, f0, f1);
+          if (pc.IsNull()) continue;
+          const gp_Pnt2d m = pc->Value((f0 + f1) / 2);
+          su += m.X(), sv += m.Y(), ++k2;
+        }
+        if (k2) {
+          BRepAdaptor_Surface ad(face);
+          gp_Pnt pt;
+          gp_Vec du, dv;
+          ad.D1(su / k2, sv / k2, pt, du, dv);
+          gp_Vec nn = du.Crossed(dv);
+          if (face.Orientation() == TopAbs_REVERSED) nn.Reverse();
+          nn.Normalize();
+          BRepClass3d_SolidClassifier out(shape, pt.Translated(nn * 0.05), 1e-6), in(shape, pt.Translated(nn * -0.05), 1e-6);
+          std::printf("    at the patch: +n %s, -n %s\n", out.State() == TopAbs_OUT ? "out" : out.State() == TopAbs_IN ? "in" : "on",
+                      in.State() == TopAbs_OUT ? "out" : in.State() == TopAbs_IN ? "in" : "on");
+        }
+      }
+      for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next())
+        for (TopExp_Explorer ed(w.Current(), TopAbs_EDGE); ed.More(); ed.Next()) {
+          const TopoDS_Edge e = TopoDS::Edge(ed.Current());
+          double f0, f1;
+          Handle(Geom2d_Curve) pc = BRep_Tool::CurveOnSurface(e, face, f0, f1);
+          if (pc.IsNull()) continue;
+          const gp_Pnt2d p0 = pc->Value(f0), p1 = pc->Value(f1), pm = pc->Value((f0 + f1) / 2);
+          std::printf("    edge %s %s: (%.4g, %.4g) -> (%.4g, %.4g) -> (%.4g, %.4g)\n", e.Orientation() == TopAbs_REVERSED ? "rev" : "fwd",
+                      BRep_Tool::IsClosed(e, face) ? "seam" : "", p0.X(), p0.Y(), pm.X(), pm.Y(), p1.X(), p1.Y());
+        }
+    }
+  }
+  std::printf("%d faces, %d spill\n", faces, spilled);
+  // ... and once imported (healed, stored), as the app shows it
+  for (const bool viewer : {false, true}) {
+    Document d = Document::create();
+    ImportOptions opt;
+    opt.viewer = viewer;
+    import_file(d, file, opt);
+    const Scene sc = resolve(d);
+    int n = 0, bad = 0;
+    for (const auto& id : sc.all_bodies()) {
+      const TopoDS_Shape shape = body_shape(d, sc.node(id)->body_key);
+      BRepMesh_IncrementalMesh(shape, 0.01, false, 0.2);
+      for (TopExp_Explorer x(shape, TopAbs_FACE); x.More(); x.Next()) {
+        ++n;
+        const TopoDS_Face face = TopoDS::Face(x.Current());
+        Bnd_Box all, edges;
+        BRepBndLib::Add(face, all, true);
+        for (TopExp_Explorer y(face, TopAbs_EDGE); y.More(); y.Next()) BRepBndLib::Add(y.Current(), edges, false);
+        if (all.IsVoid() || edges.IsVoid()) continue;
+        const double da = std::sqrt(all.SquareExtent()), de = std::sqrt(edges.SquareExtent());
+        if (da < 1.02 * de + 0.05) continue;
+        ++bad;
+        const int k = int(BRepAdaptor_Surface(face).GetType());
+        double u0, u1, v0, v1;
+        BRepTools::UVBounds(face, u0, u1, v0, v1);
+        std::printf("  imported%s spill (%s): box %.3g vs edges %.3g, uv %.4g..%.4g x %.4g..%.4g\n", viewer ? " (viewer)" : "", kinds[std::min(k, 10)], da, de, u0, u1, v0, v1);
+      }
+    }
+    std::printf("imported%s: %d faces, %d spill\n", viewer ? " (viewer)" : "", n, bad);
   }
 }
 

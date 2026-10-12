@@ -127,7 +127,11 @@ bad faces with their source kind and FACE node), `OPAD_XT_FACES=<dir>` (bad face
 blends on blends touch them on their charted contact curves (BLEND_BOUND intersections; not for exact supports: worse),
 a tolerant edge takes a fin curve on an exact surface over one on a blend, spun circles -> spheres/ring tori, closed
 clamped B-surfaces -> periodic (else a tube face splits into slivers), healed faces matched to built ones by surface
-(healing gives rebuilt faces new TShapes; colours were lost). Tried and worse: extending blend arcs past the contacts,
+(healing gives rebuilt faces new TShapes; colours were lost), a reversed face takes its wires reversed (a loop runs
+anticlockwise about the face's *own* normal: otherwise every loop of a reversed face was a hole, which healing turned
+round on most surfaces but on a torus or sphere answered with natural bounds = a fillet drawn as the rest of its torus,
+a "donut"; blends measure their normal against the ball's centre, `blend_normal_outward`; `public_corpus` checks no face
+gains a natural bound, `OPAD_XT_SPILL=<file>` lists faces reaching past their edges). Tried and worse: extending blend arcs past the contacts,
 padding the spine range beyond 2%. State: 33 of 1036 solids invalid in the 196-file public survey, mostly blend faces.
 
 ## Floating tool panels (no right dock)

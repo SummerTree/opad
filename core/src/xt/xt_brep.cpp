@@ -614,6 +614,7 @@ class Builder {
         }
         case BLENDED_EDGE:
           out.s = blend(*n, i);
+          if (!out.s.IsNull()) out.flip = !blend_normal_outward(*n, out.s);
           break;
         default:
           warn("surfaces of node type " + std::to_string(n->type) + " are not supported");
@@ -920,6 +921,19 @@ class Builder {
     }
     return nullptr;
   }
+  // Whether the fitted blend's natural normal points away from the ball's centre (on the spine), as Parasolid's does.
+  bool blend_normal_outward(const Node& n, const Handle(Geom_Surface)& s) {
+    const Crv& spine = curve(n.ptr("spine"));
+    if (spine.c.IsNull()) return true;
+    double u0, u1, v0, v1;
+    s->Bounds(u0, u1, v0, v1);
+    gp_Pnt p;
+    gp_Vec du, dv;
+    s->D1((u0 + u1) / 2, (v0 + v1) / 2, p, du, dv);
+    GeomAPI_ProjectPointOnCurve centre(p, spine.c);
+    if (centre.NbPoints() == 0) return true;
+    return du.Crossed(dv).Dot(gp_Vec(centre.NearestPoint(), p)) >= 0;
+  }
   // Spine parameters a blend's faces reach, from their vertices (before the blend surface is built).
   void blend_ranges() {
     for (const auto& [index, node] : f_.nodes) {
@@ -1177,12 +1191,17 @@ class Builder {
       }
       return result;
     }
-    TopoDS_Face f;
-    bb.MakeFace(f, s.s, Precision::Confusion());
-    for (const auto& w : wires) bb.Add(f, w);
     // the face normal is the surface's natural normal when the face and surface senses agree (the reference)
     const bool natural = (n->chr("sense", '+') == '-') == (sn && sn->chr("sense", '+') == '-');
-    if (natural == s.flip) f.Reverse();
+    const bool reversed = natural == s.flip;
+    // A loop runs anticlockwise about the face's own normal, so its fins are the directions the edges have *in the
+    // oriented face*: a reversed face takes its wires reversed, which its orientation turns back. Otherwise every loop of
+    // a reversed face is a hole: healing turns most of them round, but on a torus or a sphere a hole is a face of its own
+    // and healing adds the surface's natural bounds instead (a fillet drawn as the rest of its torus, a donut).
+    TopoDS_Face f;
+    bb.MakeFace(f, s.s, Precision::Confusion());
+    for (const auto& w : wires) bb.Add(f, reversed ? TopoDS::Wire(w.Reversed()) : w);
+    if (reversed) f.Reverse();
     attach_pcurves(*n, sp, f);
     result = f;
     return result;
