@@ -107,6 +107,18 @@ class CompareMode : public QObject {
   std::map<QString, std::shared_ptr<opad::Document>> m_files;  // files read as versions, kept while Compare is open
   std::vector<int> m_variantColumns;  // the table's columns: indices into the versions
   QString m_tableKey;
+  // Side by side with more files: the bodies of each table column's file as A's matcher paired them (its node, key and
+  // place, and what it is of A's: unchanged, moved, modified, added), and the file, for panes C and D.
+  struct VariantBody {
+    std::string id, key;
+    opad::Mat4 world;
+    std::string change;
+  };
+  std::vector<std::vector<VariantBody>> m_variantBodies;
+  std::vector<std::shared_ptr<opad::Document>> m_variantDocs;
+  size_t m_mainParts = 0;      // m_parts past this are panes C's and D's
+  unsigned m_extraSerial = 0;  // their meshing job
+  void buildExtras();          // panes C and D: up to two files of the table other than A and B, side by side
   QStringList m_pendingFiles;  // openFiles with nothing open: compared once the first has opened
   AreaServices& m_services;
   GitWatch* m_git;

@@ -2547,7 +2547,7 @@
    "id": "vcs.compareFiles",
    "title": "Compare files",
    "summary": "Compares several files of one design, such as exports from another CAD system, body by body.",
-   "details": "Choose two or more files of any format OPAD opens. Bodies are paired by the ids the files carry (Parasolid's face ids, face names a STEP or IGES exporter wrote, 3MF object ids), else by the same geometry, then by the faces an edit left alone, by name and by where they are; the rest are new or gone. The first file is A and the second B; the Variants table lists each body of A in every file, and a click on a file's column shows it as B.",
+   "details": "Choose two or more files of any format OPAD opens. Bodies are paired by the ids the files carry (Parasolid's face ids, face names a STEP or IGES exporter wrote, 3MF object ids), else by the same geometry, then by the faces an edit left alone, by name and by where they are; the rest are new or gone. The first file is A and the second B; the Variants table lists each body of A in every file, and a click on a file's column shows it as B. Side by side shows up to four files at once, their views turning and zooming together.",
    "keywords": ["variants", "files", "STEP", "X_T", "export", "diff"],
    "requires": "Not while a sketch is open."
   },

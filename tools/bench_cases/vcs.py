@@ -38,13 +38,15 @@ def compared(root, document, name="compare"):
 
 
 def variants(root, document):
-    """Compare files: three STEP exports of one design in variants/ (v2: the second box moved; v3: the first box longer,
-    the cylinder gone); the bench opens v1.step and compares the three."""
+    """Compare files: four STEP exports of one design in variants/ (v2: the second box moved; v3: the first box longer,
+    the cylinder gone; v4: the cylinder wider); the bench opens v1.step and compares the four."""
     folder = root / "variants"
     folder.mkdir(exist_ok=True)
     box = lambda x, size: ("feature", "--kind", "box", "--inputs", json.dumps({"x": f"{x} mm", "length": f"{size} mm", "width": "20 mm", "height": "10 mm"}))
     cylinder = ("feature", "--kind", "cylinder", "--inputs", '{"x":"100 mm","diameter":"20 mm","height":"10 mm"}')
-    for name, parts in (("v1", (box(0, 30), box(50, 20), cylinder)), ("v2", (box(0, 30), box(60, 20), cylinder)), ("v3", (box(0, 40), box(50, 20)))):
+    wider = ("feature", "--kind", "cylinder", "--inputs", '{"x":"100 mm","diameter":"24 mm","height":"10 mm"}')
+    for name, parts in (("v1", (box(0, 30), box(50, 20), cylinder)), ("v2", (box(0, 30), box(60, 20), cylinder)), ("v3", (box(0, 40), box(50, 20))),
+                        ("v4", (box(0, 30), box(50, 20), wider))):
         doc = document(f"variants/{name}", *parts)
         subprocess.run([str(document.cli), "export", str(doc), "--format", "step", "--out", str(folder / f"{name}.step")], check=True, capture_output=True)
     return folder / "v1.step"

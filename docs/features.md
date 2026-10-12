@@ -703,7 +703,8 @@ paired from the surest evidence to the loosest: the ids the files carry (Parasol
 exporter wrote when they are unique, 3MF object UUIDs: the most faces shared), the same geometry (counts, volume, area and
 principal moments; the same place = unchanged, else moved), the faces an edit left alone (any B-rep without ids: their
 kind, area and place, one translation for all), the same names, then how much they overlap; the rest are new or gone. With three files or more the panel's **Variants** table lists
-each body of the first file in every other file, and a click on a file's column shows it as B. `opad-cli variants
+each body of the first file in every other file, and a click on a file's column shows it as B. Side by side shows up to
+four files at once (A and B above, two more files below), every pane with the same camera. `opad-cli variants
 a.x_t b.x_t [c.step...] [--table]` prints the same.
 
 `opad-cli diff` compares two versions semantically: parameters, sketch entities and dimensions, feature inputs

@@ -712,6 +712,7 @@
  "Choose two files or more: the first is compared with each of the others.": "اختر ملفين أو أكثر: يُقارَن الأول بكل من الباقي.",
  "Matching the bodies": "مطابقة الأجسام",
  "Comparing the variants": "مقارنة البدائل",
+ "Drawing the other files": "رسم الملفات الأخرى",
  "Each body of A in every other file; click a file's column to show it as B": "كل جسم من A في كل ملف آخر؛ انقر عمود ملف لعرضه بوصفه B",
  "Separate files, matched body by body.": "ملفات منفصلة، مُطابَقة جسمًا بجسم.",
  "the same object": "الكائن نفسه",

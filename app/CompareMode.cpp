@@ -309,7 +309,7 @@ void CompareMode::setSideBySide(bool on) {
   Viewport* vp = m_services.viewport();
   vp->setSideBySide(on, tr("A · %1").arg(m_a >= 0 ? m_versions[size_t(m_a)].label : QString()));
   showVersions();
-  restyle();  // both whole, or weighted again
+  buildExtras();  // more files: their panes (C, D), or none; both whole, or weighted again
   vp->fitAll();  // the view is half as wide (or twice): the model framed again
 }
 
@@ -504,6 +504,11 @@ void CompareMode::close() {
   m_files.clear();
   m_variantColumns.clear();
   m_tableKey.clear();
+  m_variantBodies.clear();
+  for (auto& d : m_variantDocs) dispose(std::move(d));
+  m_variantDocs.clear();
+  ++m_extraSerial;
+  m_mainParts = 0;
   m_parts.clear();
   m_partInfo.clear();
   m_arrows.clear();
@@ -528,6 +533,9 @@ void CompareMode::failed(const QString& error) {
   m_parts.clear();
   m_partInfo.clear();
   m_arrows.clear();
+  m_mainParts = 0;
+  ++m_extraSerial;
+  m_services.viewport()->setSideExtras({});
   m_services.viewport()->setSideHidden({});
   m_services.viewport()->clearLookLayer(LookSource::Compare);
   m_services.viewport()->setFaceTints({});
@@ -787,9 +795,9 @@ void CompareMode::buildParts() {
     if (c.shown_b && !r.sessionDraws[i]) add(c, false, {categoryOf(c.kind), 0, faces ? faceTint(*faces, false, t, true) : nullptr, {}});
     if (c.kind == K::Moved && !r.boxA[i].IsVoid() && !r.boxB[i].IsVoid()) m_arrows.push_back({centre(r.boxA[i]), centre(r.boxB[i])});
   }
-  restyle();
+  m_mainParts = m_parts.size();
   sideHidden();
-  vp->setCompare(m_parts, m_arrows, theme::current().diffMoved);
+  buildExtras();  // restyles and draws them all
   if (needs->empty()) return release(m_run, false);
   // The other version's geometry, meshed on a worker; drawn once it is all there.
   m_meshing = true;
@@ -862,6 +870,103 @@ void CompareMode::buildParts() {
       part.shape = out->shapes[i];
       part.prs = out->prs[i];
       part.world = out->worlds[i];
+    }
+    restyle();
+    m_services.viewport()->setCompare(m_parts, m_arrows, theme::current().diffMoved);
+  });
+}
+
+// Side by side with three or four files: the first two of the table's files other than A and B, each in a pane of its own
+// (C, D) with every body drawn as A's matcher found it (unchanged ghosted, moved, changed and new in their colours), the
+// cameras all one. The variant documents are the files Compare already read (m_files), meshed on a worker.
+void CompareMode::buildExtras() {
+  if (!m_active || !m_run) return;
+  Viewport* vp = m_services.viewport();
+  m_parts.resize(m_mainParts);
+  m_partInfo.resize(m_mainParts);
+  const unsigned serial = ++m_extraSerial;
+  std::vector<size_t> columns;
+  if (m_sideBySide)
+    for (size_t c = 0; c < m_variantColumns.size() && columns.size() < 2; ++c)
+      if (m_variantColumns[c] != m_b && c < m_variantBodies.size() && c < m_variantDocs.size() && m_variantDocs[c]) columns.push_back(c);
+  QStringList captions;
+  struct Need {
+    size_t part;
+    std::shared_ptr<opad::Document> doc;
+    std::string key;
+    opad::Mat4 world;
+  };
+  auto needs = std::make_shared<std::vector<Need>>();
+  for (size_t e = 0; e < columns.size(); ++e) {
+    const size_t c = columns[e];
+    const QChar letter('C' + int(e));
+    captions << tr("%1 · %2").arg(letter, m_versions[size_t(m_variantColumns[c])].label);
+    for (const VariantBody& vb : m_variantBodies[c]) {
+      Viewport::ComparePart part;
+      part.id = vb.id;
+      part.world = vb.world;
+      part.view = char('C' + int(e));
+      const Category category = vb.change == "moved" ? ComparePanel::Moved : vb.change == "modified" ? ComparePanel::Modified
+                              : vb.change == "added" ? ComparePanel::Added : ComparePanel::Unchanged;
+      needs->push_back({m_parts.size(), m_variantDocs[c], vb.key, vb.world});
+      m_parts.push_back(std::move(part));
+      m_partInfo.push_back({category, false, 'S', false});
+    }
+  }
+  vp->setSideExtras(captions);
+  restyle();
+  vp->setCompare(m_parts, m_arrows, theme::current().diffMoved);
+  if (needs->empty()) return;
+  struct Out {
+    std::vector<TopoDS_Shape> shapes;
+    std::vector<std::shared_ptr<const BodyPrs>> prs;
+    std::vector<opad::Mat4> worlds;
+  };
+  auto out = std::make_shared<Out>();
+  out->shapes.resize(needs->size());
+  out->prs.resize(needs->size());
+  out->worlds.resize(needs->size());
+  m_services.jobs()->async(tr("Drawing the other files"), [needs, out](Progress p) {
+    std::map<std::pair<const opad::Document*, std::string>, size_t> meshed;  // instances share their mesh
+    for (size_t i = 0; i < needs->size(); ++i) {
+      if (p.cancelled()) return;
+      const Need& n = (*needs)[i];
+      p.setPhase(CompareMode::tr("Meshing body %1 of %2").arg(i + 1).arg(needs->size()), int(i * 100 / needs->size()));
+      out->worlds[i] = n.world;
+      const bool rigid = opad::mat_is_rigid(n.world);
+      if (const auto it = meshed.find({n.doc.get(), n.key}); rigid && it != meshed.end()) {
+        out->shapes[i] = out->shapes[it->second];
+        out->prs[i] = out->prs[it->second];
+        continue;
+      }
+      try {
+        TopoDS_Shape shape = BRepBuilderAPI_Copy(opad::body_shape(*n.doc, n.key)).Shape();
+        if (!rigid) {  // a scaled placement: baked into a copy drawn at identity
+          gp_GTrsf g;
+          for (int row = 0; row < 3; ++row)
+            for (int col = 0; col < 4; ++col) g.SetValue(row + 1, col + 1, n.world.at(row, col));
+          shape = BRepBuilderAPI_GTransform(shape, g, Standard_True).Shape();
+          out->worlds[i] = opad::Mat4();
+        }
+        Bnd_Box box;
+        BRepBndLib::Add(shape, box, Standard_False);
+        BodyPrs::meshForDisplay(shape, deflection(box));
+        out->shapes[i] = shape;
+        auto prs = BodyPrs::build(shape, box, true, nullptr);
+        prs->buildNavigation();  // the orbit pivot lands on it, in its pane
+        out->prs[i] = std::move(prs);
+        if (rigid) meshed[{n.doc.get(), n.key}] = i;
+      } catch (const std::exception&) {  // unreadable: not drawn
+      }
+    }
+  }, [this, self = QPointer<CompareMode>(this), needs, out, serial](bool ok, const QString&) {
+    if (!self || !ok || serial != m_extraSerial || !m_active) return;
+    for (size_t i = 0; i < needs->size(); ++i) {
+      const size_t k = (*needs)[i].part;
+      if (k >= m_parts.size()) continue;
+      m_parts[k].shape = out->shapes[i];
+      m_parts[k].prs = out->prs[i];
+      m_parts[k].world = out->worlds[i];
     }
     restyle();
     m_services.viewport()->setCompare(m_parts, m_arrows, theme::current().diffMoved);
@@ -1024,7 +1129,11 @@ void CompareMode::variantTable() {
   if (!fileLike(a) || columns.size() < 2) {
     m_variantColumns.clear();
     m_tableKey.clear();
+    m_variantBodies.clear();
+    for (auto& d : m_variantDocs) dispose(std::move(d));
+    m_variantDocs.clear();
     m_panel->setVariants({}, opad::json::array(), -1);
+    if (m_sideBySide) buildExtras();
     return;
   }
   auto column = [&] { return int(std::find(columns.begin(), columns.end(), m_b) - columns.begin()); };
@@ -1034,10 +1143,15 @@ void CompareMode::variantTable() {
   if (key == m_tableKey) return m_panel->setVariants(labels, std::nullopt, column());  // the same table: B's column marked
   m_tableKey = key;
   m_variantColumns = columns;
+  m_variantBodies.clear();
+  for (auto& d : m_variantDocs) dispose(std::move(d));
+  m_variantDocs.clear();
   m_panel->setVariants(labels, opad::json(), column());  // reading
   struct Out {
     std::vector<std::pair<QString, std::shared_ptr<opad::Document>>> read;
     opad::json rows;
+    std::vector<std::vector<VariantBody>> bodies;  // per column: its file's bodies as paired with A's
+    std::vector<std::shared_ptr<opad::Document>> docs;
   };
   auto out = std::make_shared<Out>();
   std::vector<QString> paths{path(a)};
@@ -1059,6 +1173,19 @@ void CompareMode::variantTable() {
     std::vector<const opad::Scene*> sp;
     for (size_t i = 0; i < docs.size(); ++i) dp.push_back(docs[i].get()), sp.push_back(&scenes[i]);
     out->rows = opad::variant_table(dp, sp, [p] { return p.cancelled(); });
+    // each column's bodies, for its pane side by side (C, D)
+    out->bodies.resize(docs.size() - 1);
+    for (size_t k = 1; k < docs.size(); ++k) out->docs.push_back(docs[k]);
+    for (const auto& row : out->rows)
+      for (size_t k = 0; k + 1 < docs.size(); ++k) {
+        const opad::json cells = row.value("cells", opad::json::array());
+        if (k >= cells.size() || !cells[k].is_object()) continue;
+        const opad::json& cell = cells[k];
+        const std::string id = cell.value("id", "");
+        const opad::Node* n = id.empty() ? nullptr : scenes[k + 1].node(id);
+        if (!n || n->kind != opad::Node::Kind::Body || !scenes[k + 1].effectively_visible(id)) continue;
+        out->bodies[k].push_back({id, n->body_key, scenes[k + 1].world(id), cell.value("change", "")});
+      }
   }, [this, self = QPointer<CompareMode>(this), out, key, labels](bool ok, const QString& error) {
     if (!self || !m_active || key != m_tableKey) return;
     for (auto& [file, d] : out->read) m_files.emplace(file, d);
@@ -1069,6 +1196,9 @@ void CompareMode::variantTable() {
     }
     const int current = int(std::find(m_variantColumns.begin(), m_variantColumns.end(), m_b) - m_variantColumns.begin());
     m_panel->setVariants(labels, out->rows, current);
+    m_variantBodies = std::move(out->bodies);
+    m_variantDocs = std::move(out->docs);
+    if (m_sideBySide) buildExtras();
   });
 }
 

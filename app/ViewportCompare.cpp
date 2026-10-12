@@ -41,8 +41,9 @@ Handle(Aspect_Window) opad_make_cocoa_window(void* nsview);
 // are the same size), keeps the caption in its top-left corner and the split in step with the parent's size.
 class Viewport::SideView : public QWidget {
  public:
-  SideView(Viewport* viewport, QWidget* host) : QWidget(host), m_vp(viewport) {
-    setObjectName("compareSide");
+  // `extra`: a pane C or D (setSideExtras), else A's; A's follows the parent's size for all of them.
+  SideView(Viewport* viewport, QWidget* host, bool extra = false) : QWidget(host), m_vp(viewport), m_extra(extra) {
+    setObjectName(extra ? "compareExtra" : "compareSide");
     setAttribute(Qt::WA_PaintOnScreen);
     setAttribute(Qt::WA_NoSystemBackground);
     setAttribute(Qt::WA_NativeWindow);
@@ -57,8 +58,10 @@ class Viewport::SideView : public QWidget {
     m_caption->setObjectName("chipSel");
     row->addWidget(m_caption);
     paintCaption();
-    host->installEventFilter(this);
+    if (!extra) host->installEventFilter(this);
   }
+  void setView(const Handle(V3d_View)& view) { m_v3d = view; }
+  const Handle(V3d_View)& view() const { return m_v3d; }
   QPaintEngine* paintEngine() const override { return nullptr; }
   void setCaption(const QString& text) {
     m_caption->setText(text);
@@ -74,18 +77,22 @@ class Viewport::SideView : public QWidget {
   bool forwarding() const { return m_forward; }
 
  protected:
-  void paintEvent(QPaintEvent*) override { m_vp->drawSide(true); }
+  void paintEvent(QPaintEvent*) override { m_vp->drawPane(this, m_v3d, true); }
   void resizeEvent(QResizeEvent*) override {
     if (QWindow* native = windowHandle()) native->resize(size());
-    if (!m_vp->m_sideView.IsNull()) m_vp->m_sideView->MustBeResized();
-    m_vp->drawSide(true);
+    if (!m_v3d.IsNull()) m_v3d->MustBeResized();
+    m_vp->drawPane(this, m_v3d, true);
+  }
+  void handOver() {  // its orbit pivot and zoom point are found among what this pane draws
+    if (m_extra) m_vp->m_navExtra = m_v3d;
+    else m_vp->m_navSide = true;
   }
   // Wheel, middle and right buttons navigate; the left one only on the cube (A's view selects nothing).
   void mousePressEvent(QMouseEvent* e) override {
     if (!m_forward && e->button() == Qt::LeftButton && !m_vp->cubeAt(e->position())) return;
     m_forward = true;
     m_vp->mousePressEvent(e);
-    m_vp->m_navSide = true;  // its orbit pivot is found among what A's view draws
+    handOver();
   }
   void mouseDoubleClickEvent(QMouseEvent* e) override { mousePressEvent(e); }
   void mouseMoveEvent(QMouseEvent* e) override {
@@ -98,7 +105,7 @@ class Viewport::SideView : public QWidget {
   }
   void wheelEvent(QWheelEvent* e) override {
     m_vp->wheelEvent(e);
-    m_vp->m_navSide = true;  // it zooms towards what A's view draws under the pointer
+    handOver();
   }
   bool eventFilter(QObject* object, QEvent* e) override {
     if (object == parentWidget() && e->type() == QEvent::Resize) m_vp->layoutSide();
@@ -107,6 +114,8 @@ class Viewport::SideView : public QWidget {
 
  private:
   Viewport* m_vp;
+  bool m_extra;
+  Handle(V3d_View) m_v3d;
   QWidget* m_captionHost;
   QLabel* m_caption;
   bool m_forward = false;  // a press was handed over: its moves and release follow it
@@ -406,23 +415,13 @@ void Viewport::setSideBySide(bool on, const QString& caption) {
     m_hostMargins = host->contentsMargins();
     m_side = new SideView(this, host);
     m_side->setCaption(caption);
-    m_sideView = m_viewer->CreateView();
-#if defined(_WIN32)
-    Handle(Aspect_Window) win = new WNT_Window(reinterpret_cast<Aspect_Handle>(m_side->winId()));
-#elif defined(__APPLE__)
-    Handle(Aspect_Window) win = opad_make_cocoa_window(reinterpret_cast<void*>(m_side->winId()));
-#else
-    Handle(Aspect_Window) win = new Xw_Window(Handle(OpenGl_GraphicDriver)::DownCast(m_viewer->Driver())->GetDisplayConnection(),
-                                              static_cast<Aspect_Drawable>(m_side->winId()));
-#endif
-    m_sideView->SetImmediateUpdate(Standard_False);
-    m_sideView->SetWindow(win);
-    if (!win->IsMapped()) win->Map();
+    m_sideView = paneView(m_side);
     layoutSide();
     m_side->show();
     applySideMasks();
     drawSide(true);
   } else {
+    dropExtras();
     const std::set<std::string> hidden = std::exchange(m_sideHidden, {});
     for (const auto& id : hidden) maskSide(id, nullptr);  // every view shows everything again: no mask outlives the view
     m_sideHidden = hidden;
@@ -444,18 +443,114 @@ void Viewport::setSideCaption(const QString& caption) {
 
 QWidget* Viewport::sideWidget() const { return m_side; }
 
-Handle(V3d_View) Viewport::navView() const { return m_side && m_navSide && !m_sideView.IsNull() ? m_sideView : m_view; }
+Handle(V3d_View) Viewport::navView() const {
+  if (m_side && !m_navExtra.IsNull()) return m_navExtra;
+  return m_side && m_navSide && !m_sideView.IsNull() ? m_sideView : m_view;
+}
 
-// The parent's left half is A's, the right one this view's (the parent's layout keeps us in its contents rectangle), with
-// a two-pixel gap between them.
+Handle(V3d_View) Viewport::paneView(SideView* pane) {
+  Handle(V3d_View) view = m_viewer->CreateView();
+#if defined(_WIN32)
+  Handle(Aspect_Window) win = new WNT_Window(reinterpret_cast<Aspect_Handle>(pane->winId()));
+#elif defined(__APPLE__)
+  Handle(Aspect_Window) win = opad_make_cocoa_window(reinterpret_cast<void*>(pane->winId()));
+#else
+  Handle(Aspect_Window) win = new Xw_Window(Handle(OpenGl_GraphicDriver)::DownCast(m_viewer->Driver())->GetDisplayConnection(),
+                                            static_cast<Aspect_Drawable>(pane->winId()));
+#endif
+  view->SetImmediateUpdate(Standard_False);
+  view->SetWindow(win);
+  if (!win->IsMapped()) win->Map();
+  pane->setView(view);
+  return view;
+}
+
+void Viewport::setSideExtras(const QStringList& captions) {
+  QWidget* host = parentWidget();
+  const int want = m_side ? int(std::min<qsizetype>(captions.size(), 2)) : 0;
+  if (want == int(m_extraPanes.size())) {  // the same panes: their captions
+    for (int k = 0; k < want; ++k) m_extraPanes[size_t(k)].widget->setCaption(captions[k]);
+    return;
+  }
+  dropExtras();
+  if (!want || !host || !m_initialised) {
+    layoutSide();
+    redrawScene();
+    return;
+  }
+  trace::Scope scope("Viewport: more panes side by side");
+  for (int k = 0; k < want; ++k) {
+    Pane pane;
+    pane.letter = char('C' + k);
+    pane.widget = new SideView(this, host, true);
+    pane.widget->setCaption(captions[k]);
+    pane.view = paneView(pane.widget);
+    m_extraPanes.push_back(pane);
+  }
+  layoutSide();
+  for (const auto& pane : m_extraPanes) pane.widget->show();
+  applySideMasks();
+  drawSide(true);
+}
+
+void Viewport::dropExtras() {
+  if (m_extraPanes.empty()) return;
+  m_navExtra.Nullify();
+  for (auto& pane : m_extraPanes) {
+    pane.view->Remove();  // the view goes before its window
+    delete pane.widget;
+  }
+  m_extraPanes.clear();
+}
+
+QImage Viewport::grabExtra(int k) {
+  if (k < 0 || size_t(k) >= m_extraPanes.size()) return QImage();
+  const Pane& pane = m_extraPanes[size_t(k)];
+  drawPane(pane.widget, pane.view, true);
+  Image_PixMap pix;
+  V3d_ImageDumpOptions o;
+  o.Width = static_cast<int>(pane.widget->width() * pane.widget->devicePixelRatioF());
+  o.Height = static_cast<int>(pane.widget->height() * pane.widget->devicePixelRatioF());
+  o.BufferType = Graphic3d_BT_RGB;
+  o.ToAdjustAspect = Standard_True;
+  if (!pane.view->ToPixMap(pix, o)) return QImage();
+  QImage img(static_cast<int>(pix.Width()), static_cast<int>(pix.Height()), QImage::Format_RGB888);
+  for (int y = 0; y < img.height(); ++y) {
+    uchar* row = img.scanLine(y);
+    for (int x = 0; x < img.width(); ++x) {
+      const Quantity_ColorRGBA c = pix.PixelColor(x, y);
+      row[x * 3] = static_cast<uchar>(c.GetRGB().Red() * 255);
+      row[x * 3 + 1] = static_cast<uchar>(c.GetRGB().Green() * 255);
+      row[x * 3 + 2] = static_cast<uchar>(c.GetRGB().Blue() * 255);
+    }
+  }
+  return img;
+}
+
+// Two panes: the parent's left half is A's, the right one this view's (the parent's layout keeps us in its contents
+// rectangle). Three: columns A | C | this view. Four: A and this view above, C and D below. Two pixels between them.
 void Viewport::layoutSide() {
   QWidget* host = parentWidget();
-  if (!m_side || !host) return;
+  if (!host) return;
+  if (!m_side) return host->setContentsMargins(m_hostMargins);
   const QRect area = host->rect().marginsRemoved(m_hostMargins);
   constexpr int gap = 2;
-  const int half = std::max(1, (area.width() - gap) / 2);
-  m_side->setGeometry(area.left(), area.top(), half, area.height());
-  host->setContentsMargins(m_hostMargins + QMargins(half + gap, 0, 0, 0));
+  if (m_extraPanes.empty()) {
+    const int half = std::max(1, (area.width() - gap) / 2);
+    m_side->setGeometry(area.left(), area.top(), half, area.height());
+    host->setContentsMargins(m_hostMargins + QMargins(half + gap, 0, 0, 0));
+  } else if (m_extraPanes.size() == 1) {
+    const int third = std::max(1, (area.width() - 2 * gap) / 3);
+    m_side->setGeometry(area.left(), area.top(), third, area.height());
+    m_extraPanes[0].widget->setGeometry(area.left() + third + gap, area.top(), third, area.height());
+    host->setContentsMargins(m_hostMargins + QMargins(2 * (third + gap), 0, 0, 0));
+  } else {
+    const int half = std::max(1, (area.width() - gap) / 2), tall = std::max(1, (area.height() - gap) / 2);
+    m_side->setGeometry(area.left(), area.top(), half, tall);
+    m_extraPanes[0].widget->setGeometry(area.left(), area.top() + tall + gap, half, area.height() - tall - gap);
+    m_extraPanes[1].widget->setGeometry(area.left() + half + gap, area.top() + tall + gap, area.width() - half - gap, area.height() - tall - gap);
+    host->setContentsMargins(m_hostMargins + QMargins(half + gap, 0, 0, area.height() - tall));
+  }
 }
 
 void Viewport::setSideHidden(const std::vector<std::string>& ids) {
@@ -474,7 +569,9 @@ void Viewport::maskSide(const std::string& id, const Handle(AIS_InteractiveObjec
   if (!m_side || m_sideView.IsNull()) return;
   const bool shown = !m_sideHidden.count(id);
   auto mask = [&](const Handle(AIS_InteractiveObject)& object) {
-    if (!object.IsNull()) m_ctx->SetViewAffinity(object, m_sideView, shown);
+    if (object.IsNull()) return;
+    m_ctx->SetViewAffinity(object, m_sideView, shown);
+    for (const auto& pane : m_extraPanes) m_ctx->SetViewAffinity(object, pane.view, false);  // C and D: their file alone
   };
   if (!ais.IsNull()) return mask(ais);
   if (const auto item = m_items.find(id); item != m_items.end()) {
@@ -494,16 +591,28 @@ void Viewport::applySideMasks() {
     const Handle(AIS_Shape)& ais = m_compareParts[k].second;
     if (ais.IsNull()) continue;
     const char view = k < m_compareViews.size() ? m_compareViews[k] : 0;
-    m_ctx->SetViewAffinity(ais, m_view, !side || view != 'A');
-    if (side) m_ctx->SetViewAffinity(ais, m_sideView, view != 'B');
+    const bool extra = view == 'C' || view == 'D';
+    m_ctx->SetViewAffinity(ais, m_view, (!side && !extra) || (side && view != 'A' && !extra));
+    if (side) m_ctx->SetViewAffinity(ais, m_sideView, view == 0 || view == 'A');
+    for (const auto& pane : m_extraPanes) m_ctx->SetViewAffinity(ais, pane.view, view == pane.letter);
   }
-  if (side)
+  if (!m_compareArrows.IsNull())
+    for (const auto& pane : m_extraPanes) m_ctx->SetViewAffinity(m_compareArrows, pane.view, false);  // A to B's moves
+  if (side) {
     for (const auto& id : m_sideHidden) maskSide(id, nullptr);
+    if (!m_extraPanes.empty()) {  // C and D show their file alone: none of the session's own objects
+      for (const auto& [id, item] : m_items) maskSide(id, nullptr);
+      for (const auto& [id, wire] : m_sketchWires) maskSide(id, nullptr);
+    }
+  }
   // The layers' boxes are cached per view and the z range comes from them: what a view shows now must not be clipped.
-  for (const Handle(V3d_View)& view : {m_view, m_sideView})
+  std::vector<Handle(V3d_View)> views = {m_view, m_sideView};
+  for (const auto& pane : m_extraPanes) views.push_back(pane.view);
+  for (const Handle(V3d_View)& view : views)
     if (!view.IsNull())
       for (const Graphic3d_ZLayerId layer : {Graphic3d_ZLayerId_Default, Graphic3d_ZLayerId_Topmost}) view->View()->InvalidateZLayerBoundingBox(layer);
   if (side) m_sideView->Invalidate();
+  for (const auto& pane : m_extraPanes) pane.view->Invalidate();
   redrawScene();
 }
 
@@ -512,30 +621,36 @@ void Viewport::applySideMasks() {
 // immediate layer when nothing moved.
 void Viewport::drawSide(bool full) {
   if (!m_side || m_sideView.IsNull() || !m_initialised) return;
+  drawPane(m_side, m_sideView, full);
+  for (const auto& pane : m_extraPanes) drawPane(pane.widget, pane.view, full);
+}
+
+void Viewport::drawPane(SideView* pane, const Handle(V3d_View)& paneView, bool full) {
+  if (!m_side || !pane || paneView.IsNull() || !m_initialised) return;
   const Handle(Graphic3d_Camera)& from = m_view->Camera();
-  const Handle(Graphic3d_Camera)& to = m_sideView->Camera();
+  const Handle(Graphic3d_Camera)& to = paneView->Camera();
   const bool moved = from->ProjectionType() != to->ProjectionType() || from->Scale() != to->Scale() || from->FOVy() != to->FOVy() ||
                      !from->Eye().IsEqual(to->Eye(), 0) || !from->Center().IsEqual(to->Center(), 0) || !from->Up().IsEqual(to->Up(), 0);
-  if (moved || full || m_sideView->IsInvalidated()) {
+  if (moved || full || paneView->IsInvalidated()) {
     Standard_Integer w = 0, h = 0;
-    m_sideView->Window()->Size(w, h);
+    paneView->Window()->Size(w, h);
     to->CopyMappingData(from);
     to->CopyOrientationData(from);
     if (w > 0 && h > 0) to->SetAspect(double(w) / h);
-    m_sideView->ChangeRenderingParams() = m_view->RenderingParams();
-    if (m_sideView->BackgroundColor() != m_view->BackgroundColor()) m_sideView->SetBackgroundColor(m_view->BackgroundColor());
+    paneView->ChangeRenderingParams() = m_view->RenderingParams();
+    if (paneView->BackgroundColor() != m_view->BackgroundColor()) paneView->SetBackgroundColor(m_view->BackgroundColor());
     Quantity_Color top, bottom, hadTop, hadBottom;
-    const Aspect_GradientBackground gradient = m_view->GradientBackground(), had = m_sideView->GradientBackground();
+    const Aspect_GradientBackground gradient = m_view->GradientBackground(), had = paneView->GradientBackground();
     gradient.Colors(top, bottom);
     had.Colors(hadTop, hadBottom);
     if (had.BgGradientFillMethod() != gradient.BgGradientFillMethod() || hadTop != top || hadBottom != bottom)
-      m_sideView->SetBgGradientColors(top, bottom, gradient.BgGradientFillMethod(), Standard_False);
-    if (m_sideView->ClipPlanes() != m_view->ClipPlanes()) m_sideView->SetClipPlanes(m_view->ClipPlanes());
-    m_side->paintCaption();
-    m_sideView->Invalidate();
-    m_sideView->Redraw();
+      paneView->SetBgGradientColors(top, bottom, gradient.BgGradientFillMethod(), Standard_False);
+    if (paneView->ClipPlanes() != m_view->ClipPlanes()) paneView->SetClipPlanes(m_view->ClipPlanes());
+    pane->paintCaption();
+    paneView->Invalidate();
+    paneView->Redraw();
   } else {
-    m_sideView->RedrawImmediate();  // a hover: the immediate layer is shown in every view
+    paneView->RedrawImmediate();  // a hover: the immediate layer is shown in every view
   }
 }
 
@@ -586,13 +701,18 @@ opad::json Viewport::benchSideState() {
                     {"host", {host ? host->width() : 0, host ? host->height() : 0}}};
   const int mainId = m_view->View()->Identification(), sideId = m_side ? m_sideView->View()->Identification() : -1;
   auto shown = [&](const Handle(AIS_InteractiveObject)& ais) {
-    return opad::json{{"main", ais->ViewAffinity()->IsVisible(mainId)}, {"side", sideId >= 0 && ais->ViewAffinity()->IsVisible(sideId)}};
+    opad::json out = {{"main", ais->ViewAffinity()->IsVisible(mainId)}, {"side", sideId >= 0 && ais->ViewAffinity()->IsVisible(sideId)}};
+    opad::json extra = opad::json::array();
+    for (const auto& pane : m_extraPanes) extra.push_back(bool(ais->ViewAffinity()->IsVisible(pane.view->View()->Identification())));
+    out["extra"] = extra;
+    return out;
   };
   opad::json parts = opad::json::array(), bodies = opad::json::object();
   for (const auto& [id, ais] : m_compareParts)
     if (!ais.IsNull()) {
       opad::json part = shown(ais);
       part["id"] = id;
+      part["displayed"] = m_ctx->IsDisplayed(ais);
       parts.push_back(part);
     }
   for (const auto& [id, item] : m_items) bodies[id] = shown(item.ais);
@@ -602,5 +722,10 @@ opad::json Viewport::benchSideState() {
   out["sideCamera"] = camera(m_sideView->Camera());
   out["sideRect"] = {m_side->x(), m_side->y(), m_side->width(), m_side->height()};
   out["caption"] = m_side->caption().toStdString();
+  opad::json extras = opad::json::array();
+  for (const auto& pane : m_extraPanes)
+    extras.push_back({{"caption", pane.widget->caption().toStdString()}, {"rect", {pane.widget->x(), pane.widget->y(), pane.widget->width(), pane.widget->height()}},
+                      {"camera", camera(pane.view->Camera())}});
+  out["extras"] = extras;
   return out;
 }

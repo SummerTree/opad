@@ -506,7 +506,10 @@ unchanged), faces (no ids: per-face kind/area/centre marks, pairs vote for one t
 nearest alike bodies), name (path below the root, or a unique name), near (box IoU). `variant_diff` gives Compare's change list (relation
 "variants"), `variant_table` the multi-file table. CompareMode switches to it when the two documents' header uuids differ
 (`Run::variants`); `vcs.compareFiles` / `openFiles(files)` (no document: the first file opens, viewed, then they are
-compared); the Variants table (`ComparePanel::setVariants`) appears with two other files or more. `opad-cli variants`,
+compared); the Variants table (`ComparePanel::setVariants`) appears with two other files or more. Side by side with more
+files: `Viewport::setSideExtras` adds panes C and D (views on the same context, the main camera copied in `drawPane`; parts
+with `view` 'C'/'D' only there, the session's own objects masked out; 3 panes = columns A | C | B, 4 = a 2x2 grid),
+filled by `CompareMode::buildExtras` from the table's bodies (`m_variantBodies`, the files in `m_variantDocs`). `opad-cli variants`,
 `ctest -R "variants|xt"`, bench `compare-files` (OPAD_BENCH_COMPARE_FILES).
 
 ## Commits
