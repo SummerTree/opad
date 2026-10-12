@@ -12,6 +12,7 @@
 
 #include "AppDocument.hpp"
 
+class PanelFooter;
 class ToolValues;
 
 // ---------------------------------------------------------------- section
@@ -29,11 +30,18 @@ class SectionPanel : public QWidget {
   bool pickRange(double& dmin, double& dmax) const;  // the model's extent along the picked normal
   opad::Vec3 normal() const;
   bool caps() const;
-  bool picking() const { return m_pick; }  // "Pick face" is active: the next planar face picked in the view sets the plane
-  void beginPick();                          // what the "Pick face" button does
+  // "Pick face" waits for a click: the next planar face picked in the view sets the plane, and the picking ends there (the
+  // view selects as before; Pick face again picks another). The plane then stays the face's (fromFace) until an axis.
+  bool picking() const { return m_picking; }
+  bool fromFace() const { return m_fromFace; }
+  void beginPick();  // what the "Pick face" button does
+  void endPick();    // picked, or the pick cancelled (Esc, another tool)
+  PanelFooter* footer() const { return m_footer; }
  signals:
   void planeChanged();
   void pickRequested();  // the user wants to pick a face: switch the select filter to faces
+  void pickCancelled();  // Pick face clicked again while it waits
+  void exitRequested();  // Exit section: the section off and the panel closed
   void saveRequested(const QString& name, const opad::Vec3& origin, const opad::Vec3& normal);
   void enabledChanged(bool on);
  public slots:
@@ -61,7 +69,8 @@ class SectionPanel : public QWidget {
   bool m_enabled = false;
   int m_axis = 2;
   bool m_flip = false;
-  bool m_pick = false;
+  bool m_fromFace = false;  // the plane is a picked face's (else an axis)
+  bool m_picking = false;   // Pick face waits for a click
   opad::Vec3 m_pickOrigin{0, 0, 0}, m_pickNormal{0, 0, 1};
   QList<QToolButton*> m_axisButtons;
   QSlider* m_slider;
@@ -70,4 +79,5 @@ class SectionPanel : public QWidget {
   QToolButton* m_capButton;
   QListWidget* m_named;
   QLabel* m_state;
+  PanelFooter* m_footer;
 };

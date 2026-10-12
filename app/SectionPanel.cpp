@@ -11,6 +11,7 @@
 
 #include "CommandHelp.hpp"
 #include "Icons.hpp"
+#include "PanelFooter.hpp"
 #include "KeyText.hpp"
 #include "Theme.hpp"
 #include "ToolValues.hpp"
@@ -20,7 +21,12 @@
 // ---------------------------------------------------------------- SectionPanel
 SectionPanel::SectionPanel(AppDocument* doc, QWidget* parent) : QWidget(parent), m_doc(doc) {
   connect(units::notifier(), &units::Notifier::changed, this, [this] { describe(); rebuild(); });
-  auto* layout = new QVBoxLayout(this);
+  auto* outer = new QVBoxLayout(this);
+  outer->setContentsMargins(0, 0, 0, 0);
+  outer->setSpacing(0);
+  auto* body = new QWidget(this);
+  outer->addWidget(body, 1);
+  auto* layout = new QVBoxLayout(body);
   layout->setContentsMargins(12, 8, 12, 8);
   layout->setSpacing(8);
   m_state = new QLabel(this);
@@ -49,9 +55,14 @@ SectionPanel::SectionPanel(AppDocument* doc, QWidget* parent) : QWidget(parent),
     sl->addWidget(b, 1);
     m_axisButtons << b;
     connect(b, &QToolButton::clicked, this, [this, i] {
-      if (i == 3) { beginPick(); return; }
+      if (i == 3) {  // Pick face again: another face (or, while it waits, not after all)
+        if (m_picking) emit pickCancelled();
+        else beginPick();
+        return;
+      }
       for (int k = 0; k < 4; ++k) m_axisButtons[k]->setChecked(k == i);
-      m_pick = false;
+      m_fromFace = false;
+      if (m_picking) emit pickCancelled();
       m_axis = i;
       m_exact.reset();
       if (m_enabled) emitChange();
@@ -109,9 +120,16 @@ SectionPanel::SectionPanel(AppDocument* doc, QWidget* parent) : QWidget(parent),
   layout->addWidget(namedLabel);
   m_named = new QListWidget(this);
   layout->addWidget(m_named, 1);
-  auto* save = new QPushButton(tr("Save as named section"), this);
-  save->setObjectName("primary");
-  layout->addWidget(save);
+  // Exit section is what the panel is left with; saving the plane as a named section is the side action.
+  m_footer = new PanelFooter(this);
+  QPushButton* save = m_footer->addSecondary(tr("Save as named section"));
+  save->setObjectName("sectionSave");
+  m_footer->setCancelVisible(false);
+  m_footer->setPrimary(tr("Exit section"), QStringLiteral("inspect.section"));
+  m_footer->primary()->setObjectName("sectionExit");
+  m_footer->setKeysStayWithWindow(true);
+  outer->addWidget(m_footer);
+  connect(m_footer, &PanelFooter::accepted, this, &SectionPanel::exitRequested);
 
   connect(m_slider, &QSlider::actionTriggered, this, [this](int) {  // moved by hand: the slider's place
     m_exact.reset();
@@ -155,7 +173,7 @@ bool SectionPanel::pickRange(double& dmin, double& dmax) const {
 }
 
 opad::Vec3 SectionPanel::origin() const {
-  if (m_pick) {
+  if (m_fromFace) {
     // The slider slides the picked plane along its normal; 0..1000 spans the model in that direction.
     double dmin = 0, dmax = 0;
     if (!pickRange(dmin, dmax) && !m_exact) return m_pickOrigin;
@@ -172,11 +190,11 @@ opad::Vec3 SectionPanel::origin() const {
 
 double SectionPanel::along() const {
   const opad::Vec3 o = origin();
-  return m_pick ? o[0] * m_pickNormal[0] + o[1] * m_pickNormal[1] + o[2] * m_pickNormal[2] : o[m_axis];  // pick mode: along the face normal
+  return m_fromFace ? o[0] * m_pickNormal[0] + o[1] * m_pickNormal[1] + o[2] * m_pickNormal[2] : o[m_axis];  // pick mode: along the face normal
 }
 
 opad::Vec3 SectionPanel::normal() const {
-  if (m_pick) return m_flip ? opad::Vec3{-m_pickNormal[0], -m_pickNormal[1], -m_pickNormal[2]} : m_pickNormal;
+  if (m_fromFace) return m_flip ? opad::Vec3{-m_pickNormal[0], -m_pickNormal[1], -m_pickNormal[2]} : m_pickNormal;
   opad::Vec3 n{0, 0, 0};
   n[m_axis] = m_flip ? 1 : -1;
   return n;
@@ -185,7 +203,7 @@ opad::Vec3 SectionPanel::normal() const {
 bool SectionPanel::caps() const { return m_capButton->isChecked(); }
 
 bool SectionPanel::range(double& lo, double& hi) const {
-  if (m_pick) return pickRange(lo, hi);
+  if (m_fromFace) return pickRange(lo, hi);
   opad::Vec3 a, b;
   if (!opad::scene_bbox(m_doc->doc, m_doc->scene, {}, a, b)) return false;
   lo = a[m_axis];
@@ -205,7 +223,7 @@ void SectionPanel::setAlong(double along) {
 
 void SectionPanel::setOrigin(const opad::Vec3& o) {
   // The slider's valueChanged re-emits planeChanged, so the view follows (at the slider's 1/1000 resolution).
-  setAlong(m_pick ? o[0] * m_pickNormal[0] + o[1] * m_pickNormal[1] + o[2] * m_pickNormal[2] : o[m_axis]);
+  setAlong(m_fromFace ? o[0] * m_pickNormal[0] + o[1] * m_pickNormal[1] + o[2] * m_pickNormal[2] : o[m_axis]);
 }
 
 void SectionPanel::emitChange() {
@@ -220,7 +238,7 @@ void SectionPanel::describe() {
   m_value->setText(units::format(units::Kind::Length, along));
   // The keys as bound now (a command without one: its name alone, help::expand).
   m_state->setText(help::expand(!m_enabled ? tr("Section off · choose an axis, or turn it on with Inspect › Section ({key:inspect.section})")
-                   : m_pick ? tr("Section along the picked face = %1 · drag the slider or the plane's edge; Flip section ({key:inspect.flip}) turns it over").arg(units::format(units::Kind::Length, along))
+                   : m_fromFace ? tr("Section along the picked face = %1 · drag the slider or the plane's edge; Flip section ({key:inspect.flip}) turns it over").arg(units::format(units::Kind::Length, along))
                             : tr("Section %1 = %2 · drag the slider or the plane's edge; Flip section ({key:inspect.flip}) turns it over").arg(axes[m_axis]).arg(units::format(units::Kind::Length, o[m_axis]))));
 }
 
@@ -234,15 +252,22 @@ void SectionPanel::setEnabled(bool on) {
 void SectionPanel::flip() { m_flipButton->setChecked(!m_flipButton->isChecked()); }
 
 void SectionPanel::beginPick() {
-  m_pick = true;
-  m_exact.reset();
+  m_picking = true;
   for (int k = 0; k < 4; ++k) m_axisButtons[k]->setChecked(k == 3);
   m_state->setText(tr("Pick face · click a planar face in the 3D view"));
   emit pickRequested();
 }
 
+void SectionPanel::endPick() {
+  if (!m_picking) return;
+  m_picking = false;
+  for (int k = 0; k < 4; ++k) m_axisButtons[k]->setChecked(m_fromFace ? k == 3 : k == m_axis);  // cancelled: as it was
+  describe();
+}
+
 void SectionPanel::setFromFace(const opad::Vec3& origin, const opad::Vec3& normal) {
-  m_pick = true;
+  m_picking = false;
+  m_fromFace = true;
   m_exact.reset();
   m_pickOrigin = origin;
   m_pickNormal = normal;

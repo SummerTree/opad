@@ -233,7 +233,9 @@ void MainWindow::startTool(const QString& id) {
 
 void MainWindow::cancelTool(bool restoreFilter) {
   if (m_tool.id.isEmpty()) return;
+  const bool sectionFace = m_tool.id == "sectionface";
   m_tool = Tool();  // first: hiding the panel below reports back here
+  if (sectionFace) m_section->endPick();  // Esc or another tool: the section panel's Pick face waits no more
   m_toolError.clear();
   ++m_toolRun;
   if (Job* old = std::exchange(m_measureJob, nullptr)) old->cancel();

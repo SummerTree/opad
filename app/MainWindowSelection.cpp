@@ -74,7 +74,10 @@ void MainWindow::onViewportSelection() {
   for (const auto& r : refs)
     if (seen.insert(r.body).second) ids.push_back(r.body);
   m_browser->setSelectedIds(ids);
-  if (m_section && m_section->picking() && !refs.empty() && refs.front().kind == opad::Ref::Kind::Face) sectionFromFace(refs.front());
+  if (m_section && m_section->picking() && !refs.empty() && refs.front().kind == opad::Ref::Kind::Face) {  // one face: Pick face is done
+    m_section->endPick();
+    sectionFromFace(refs.front());
+  }
   m_selRows.clear();
   selectionMoved(refs);
   if (!m_tool.id.isEmpty()) toolPicksChanged(refs, true);
