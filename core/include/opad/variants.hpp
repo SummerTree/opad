@@ -3,11 +3,15 @@
 // beside an X_T): read from any file OPAD opens, and their bodies matched as Compare draws them (diff.hpp BodyChange).
 // Matching goes from the surest to the loosest evidence, each step only over what is still unpaired:
 //   node    the same node id (versions of one OPAD document)
-//   source  the ids the file itself gave the body, or its faces (Parasolid's node_id, kept in the body meta "ids" on
-//           import): the most faces shared first (an edit keeps the ids of the faces it left alone), instances of one
-//           part (which share them all) by nearest place; a pair by face ids must overlap or be of a like size
+//   source  the ids the file itself gave the body or its faces, whatever the format (body meta "ids" {source, body,
+//           faces}, written on import: Parasolid's face node_id, STEP and IGES face names where the exporter wrote
+//           unique ones, 3MF's object UUID): the most faces shared first (an edit keeps the ids of the faces it left
+//           alone), instances of one part (which share them all) by nearest place; a pair by face ids must overlap or be
+//           of a like size
 //   shape   the same geometry: face, edge and vertex counts, volume, area and principal moments within a tolerance;
 //           unchanged where its centre and principal axes are the same too, else moved (nearest first, its name preferred)
+//   faces   no ids at all (any B-rep, any format): the faces an edit left alone, by their kind, area and centre, one
+//           translation for all of them (a part edited and moved); the most shared first, Jaccard >= 0.3, alike bodies
 //   name    the same path of names (component names down to the body's), or the same name when it is unique on both
 //           sides
 //   near    what is left, by how much the world boxes overlap and how close the volumes are (a part reworked in place)
@@ -52,7 +56,7 @@ std::vector<BodyChange> match_bodies(const Document& a, const Scene& sa, const D
 
 // Those pairs as semantic_diff lists changes, so Compare's list shows them: {relation "variants", changes [{kind "body",
 // change added|removed|geometry|moved|renamed, id, name, matched_by, translation (moved), before/after (renamed)}],
-// counts {unchanged, moved, modified, added, removed, by: {node, source, shape, name, near}}, summary}.
+// counts {unchanged, moved, modified, added, removed, by: {node, source, shape, faces, name, near}}, summary}.
 json variant_diff(const std::vector<BodyChange>& bodies, const Scene& sa, const Scene& sb);
 
 // Several variants against one (the first): per body of any of them, what each variant has of it. rows [{name, a (the

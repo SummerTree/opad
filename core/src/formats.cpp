@@ -3,6 +3,7 @@
 // through OCCT's readers into an XCAF document and the shared assembly walk; BREP is OCCT's own text.
 #include <BRep_Builder.hxx>
 #include <IGESCAFControl_Reader.hxx>
+#include <IGESData_IGESEntity.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_Static.hxx>
 #include <Message_ProgressIndicator.hxx>
@@ -248,6 +249,7 @@ struct Model3mf {
   struct Component { std::string object, path; Mat4 transform; };
   struct Object {
     std::string name;
+    std::string uuid;  // the Production extension's p:UUID (slicers write one): the object's own id across saves
     std::vector<float> xyz;
     std::vector<uint32_t> triangles;
     std::vector<Component> components;
@@ -367,6 +369,7 @@ Model3mf parse_3mf_model(std::string_view text, const ImportOptions& opt, double
       finishObject();
       object = &model.objects[std::string(tag.attr("id"))];
       object->name = xml_unescape(tag.attr("name"));
+      object->uuid = std::string(tag.attr("UUID"));  // p:UUID (the scanner drops prefixes)
       objectPid = std::string(tag.attr("pid"));
       objectIndex = std::string(tag.attr("pindex"));
       if (tag.empty) finishObject();
@@ -888,6 +891,7 @@ ImportResult import_3mf(Document& doc, const std::filesystem::path& file, const 
         look = json::object();
         if (own) meta["color"] = look["color"] = {own->first[0], own->first[1], own->first[2]};
         if (own && own->second < 1.0) look["opacity"] = own->second;
+        if (!o.uuid.empty()) meta["ids"] = {{"source", "3mf"}, {"body", o.uuid}};  // variants.hpp
         const TopoDS_Shape shape = mesh_faces(o.xyz, o.triangles, false, colour, rgb, &meta);
         key = store_body(doc, shape, meta, opt, true, &result);
       }
@@ -947,7 +951,11 @@ ImportResult import_iges(Document& doc, const std::filesystem::path& file, const
   }
   if (progress->cancelled) throw Error("import cancelled");
   if (!ok) throw Error("IGES transfer produced no shapes: " + file.filename().string());
-  return import_xcaf(doc, xdoc, file, opt, false);
+  const EntityIds ids = transfer_names(reader.WS(), "iges", [](const Handle(Standard_Transient)& e) {
+    const Handle(IGESData_IGESEntity) entity = Handle(IGESData_IGESEntity)::DownCast(e);
+    return entity.IsNull() || !entity->HasName() || entity->NameValue().IsNull() ? std::string() : std::string(entity->NameValue()->ToCString());
+  });
+  return import_xcaf(doc, xdoc, file, opt, false, 1.0, {}, ids.by_shape.empty() ? nullptr : &ids);
 }
 
 ImportResult import_mesh_scene(Document& doc, const std::filesystem::path& file, const ImportOptions& opt, bool kicad_vrml) {

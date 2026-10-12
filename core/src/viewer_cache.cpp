@@ -31,8 +31,9 @@ constexpr std::uintmax_t kBudget = 2ull << 30;  // all viewer entries together; 
 // DXF layer table's off / frozen / locked / plot / linetype / lineweight, TODO 11 UI-37; 3: by_layer, 4: a layer's linetype pattern, UI-89;
 // 5: a far drawing's drawing_origin, UI-90; 6: shaped text, 7: a body's own linetype and lineweight, 8: shape fonts, 9: MTEXT formatting, 10: bold and italic styles, 11: MTEXT parts and obliquing, 12: a body's own linetype scale, 13: explicit bidi embeddings and isolates, 14: MTEXT indents and tabs, UI-92; 15: the display meshes of drilled shapes
 // keep their extruded faces, 17: faces BRepMesh refuses are triangulated from their boundary, mesh_shape; 18: a body's own
-// entity ids ("ids", variants.hpp); 19: Parasolid loops of reversed faces kept as loops, not holes (fillets drawn as donuts).
-constexpr const char* kReaders = "19";
+// entity ids ("ids", variants.hpp); 19: Parasolid loops of reversed faces kept as loops, not holes (fillets drawn as donuts);
+// 20: STEP and IGES face names and 3MF object UUIDs as ids.
+constexpr const char* kReaders = "20";
 
 using Clock = std::chrono::steady_clock;
 double since(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }

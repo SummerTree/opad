@@ -650,7 +650,7 @@ void ComparePanel::fillDetails(QTableWidget* table, const opad::json& c) {
   // Variants (separate files): what paired the body with A's.
   if (const std::string by = c.value("matched_by", ""); !by.empty()) {
     const QString how = by == "node" ? tr("the same object") : by == "source" ? tr("the file's own ids") : by == "shape" ? tr("the same geometry")
-                      : by == "name" ? tr("its name") : tr("where it is");
+                      : by == "faces" ? tr("the faces it kept") : by == "name" ? tr("its name") : tr("where it is");
     add(tr("Matched by"), QString(), how);
   }
   table->setRowCount(int(rows.size()));

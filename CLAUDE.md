@@ -500,8 +500,10 @@ history…, default 50). The bench logs `bench: undo/redo:` with the dirty trans
 tier by tier, each over what is still unpaired: node id, the file's own ids (body meta `"ids"`: Parasolid gives
 *faces* a `node_id`, not bodies; `xt_brep` collects them, `import_xcaf` writes `{"source", "faces"}` per face ordinal and
 `follow_face_ids` keeps them through healing; a pair by face ids needs Jaccard >= 0.3 and to overlap or be of a like
-size), shape (`body_print`: counts + volume/area/principal moments within 1e-5, rotation-free; `same_place` = unchanged),
-name (path below the root, or a unique name), near (box IoU). `variant_diff` gives Compare's change list (relation
+size; STEP/IGES face names unique in the file through `detail::transfer_names` over the reader's TransientProcess, 3MF
+p:UUID as body id), shape (`body_print`: counts + volume/area/principal moments within 1e-5, rotation-free; `same_place` =
+unchanged), faces (no ids: per-face kind/area/centre marks, pairs vote for one translation, Jaccard >= 0.3 over the 8
+nearest alike bodies), name (path below the root, or a unique name), near (box IoU). `variant_diff` gives Compare's change list (relation
 "variants"), `variant_table` the multi-file table. CompareMode switches to it when the two documents' header uuids differ
 (`Run::variants`); `vcs.compareFiles` / `openFiles(files)` (no document: the first file opens, viewed, then they are
 compared); the Variants table (`ComparePanel::setVariants`) appears with two other files or more. `opad-cli variants`,

@@ -1,6 +1,9 @@
 // Variants that share no history matched body by body (opad/variants.hpp): the file's own ids first, then the same
 // geometry (in place: unchanged; elsewhere: moved), then names, then what overlaps; the rest added or removed.
+#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <STEPControl_Writer.hxx>
+#include <Interface_Static.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepTools.hxx>
@@ -8,10 +11,15 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
+#include <set>
+#include <regex>
+#include <sstream>
 
 #include "check.hpp"
 #include "opad/core.hpp"
+#include "opad/drawing_io.hpp"
 #include "opad/geometry.hpp"
 #include "opad/variants.hpp"
 
@@ -129,6 +137,72 @@ TEST(variants_match_by_the_ids_their_faces_share) {
   auto c = by_name(match_bodies(a, sa, b, sb));
   CHECK(c["Bracket"].kind == BodyChange::Kind::Modified && c["Bracket"].matched_by == "source" && c["Bracket"].name_a == "Bracket");
   CHECK(c["Housing"].matched_by != "source");
+}
+
+TEST(variants_match_by_the_faces_an_edit_kept) {
+  // No ids, and the names a reader made up: a bracket drilled (four of its faces as they were), another drilled and moved;
+  // a block of the same size elsewhere, with none of its faces in common, is not taken for either.
+  auto drilled = [](const TopoDS_Shape& s, double x, double y) { return BRepAlgoAPI_Cut(s, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(x, y, -1), gp::DZ()), 2, 50).Shape()).Shape(); };
+  auto moved = [](const TopoDS_Shape& s, double dx) {
+    gp_Trsf t;
+    t.SetTranslation(gp_Vec(dx, 0, 0));
+    return BRepBuilderAPI_Transform(s, t, true).Shape();
+  };
+  const Document a = make({{"Body 1", box(0, 0, 0, 40, 30, 20)}, {"Body 2", box(0, 100, 0, 20, 20, 10)}}, "a.step");
+  const Document b = make({{"Solid 7", drilled(box(0, 0, 0, 40, 30, 20), 10, 10)},
+                           {"Solid 8", moved(drilled(box(0, 100, 0, 20, 20, 10), 5, 105), 300)},
+                           {"Solid 9", box(-200, 0, 0, 40, 30, 20.5)}},
+                          "b.step");
+  const Scene sa = resolve(a), sb = resolve(b);
+  auto c = by_name(match_bodies(a, sa, b, sb));
+  CHECK(c["Solid 7"].kind == BodyChange::Kind::Modified && c["Solid 7"].matched_by == "faces" && c["Solid 7"].name_a == "Body 1");
+  CHECK(c["Solid 8"].kind == BodyChange::Kind::Modified && c["Solid 8"].matched_by == "faces" && c["Solid 8"].name_a == "Body 2");
+  CHECK(c["Solid 9"].kind == BodyChange::Kind::Added);
+}
+
+TEST(variants_take_the_ids_a_step_exporter_wrote) {
+  // Faces named by the exporter: unique names are ids; NONE everywhere is none.
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("opad-variants-" + new_uuid());
+  std::filesystem::create_directories(dir);
+  STEPControl_Writer w;
+  Interface_Static::SetCVal("write.step.unit", "MM");
+  w.Transfer(box(0, 0, 0, 10, 20, 30), STEPControl_AsIs);
+  const std::filesystem::path plain = dir / "plain.step";
+  w.Write(plain.string().c_str());
+  std::stringstream text;
+  text << std::ifstream(plain).rdbuf();
+  auto renamed = [&](const std::function<std::string(int)>& name) {
+    std::string s = text.str(), out;
+    std::regex face("ADVANCED_FACE\\('[^']*'");
+    int n = 0;
+    auto last = s.cbegin();
+    for (std::sregex_iterator it(s.begin(), s.end(), face), end; it != end; ++it) {
+      out.append(last, (*it)[0].first);
+      out += "ADVANCED_FACE('" + name(++n) + "'";
+      last = (*it)[0].second;
+    }
+    out.append(last, s.cend());
+    return out;
+  };
+  std::ofstream(dir / "named.step") << renamed([](int n) { return "FACE-" + std::to_string(100 + n); });
+  std::ofstream(dir / "none.step") << renamed([](int) { return std::string("NONE"); });
+  for (const bool viewer : {false, true}) {
+    auto ids_of = [viewer](const std::filesystem::path& file) {
+      Document d = Document::create();
+      ImportOptions opt;
+      opt.viewer = viewer;
+      import_file(d, file, opt);
+      const Scene s = resolve(d);
+      return d.body(s.node(s.all_bodies().front())->body_key)->meta.value("ids", json());
+    };
+    const json named = ids_of(dir / "named.step");
+    CHECK_EQ(named.value("source", ""), "step");
+    std::set<std::string> faces;
+    for (const auto& f : named.value("faces", json::array())) faces.insert(f.get<std::string>());
+    CHECK(faces.size() == 6 && faces.count("FACE-101") && faces.count("FACE-106"));
+    CHECK(ids_of(dir / "none.step").is_null());
+  }
+  std::filesystem::remove_all(dir);
 }
 
 TEST(variants_table_lists_every_body_across_variants) {

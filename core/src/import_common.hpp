@@ -1,6 +1,7 @@
 #pragma once
 // Shared by the format readers (step_io.cpp, drawing_io.cpp, formats.cpp); not a public header: it carries OCCT types.
 #include <TDocStd_Document.hxx>
+#include <XSControl_WorkSession.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
 
@@ -32,9 +33,14 @@ std::string persist_body(TopoDS_Shape& shape, json& meta, bool& healed);
 // body's meta gets {"ids": {"source", "body" (when it has one), "faces": [one per face ordinal, "" when unknown]}}, which
 // follows healing, so variants of one model exported apart can be matched by them (opad/variants.hpp).
 struct EntityIds {
-  std::string source;  // "parasolid"
+  std::string source;  // "parasolid", "step", "iges"
   std::unordered_map<const void*, std::string> by_shape;
 };
+// The names an OCCT reader's entities carried, by the faces made of them (STEP's ADVANCED_FACE name, IGES's name
+// property): an exporter's own face ids where it writes them. Only names unique in the file count ("" and NONE are no
+// names), and none when fewer than half the named faces have one of their own (a name every face shares is no id).
+EntityIds transfer_names(const Handle(XSControl_WorkSession)& ws, const std::string& source,
+                         const std::function<std::string(const Handle(Standard_Transient)&)>& name_of);
 ImportResult import_xcaf(Document& doc, const Handle(TDocStd_Document)& xdoc, const std::filesystem::path& file, const ImportOptions& opt, bool mesh,
                          double scale = 1.0, const Mat4& root = {}, const EntityIds* ids = nullptr);
 

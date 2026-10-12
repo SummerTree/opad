@@ -1,6 +1,7 @@
 // Variants of one design that share no history, matched body by body (opad/variants.hpp).
 #include "opad/variants.hpp"
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Tool.hxx>
@@ -117,16 +118,86 @@ BodyPrint place(const Intrinsic& m, const Mat4& world) {
 bool close_to(double x, double y, double tolerance, double floor) { return std::abs(x - y) <= tolerance * std::max({std::abs(x), std::abs(y)}) + floor; }
 double distance(const Vec3& a, const Vec3& b) { return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])); }
 
+// A face as geometry alone, in its body's frame: what an edit leaves alone keeps all three.
+struct Mark {
+  int kind = 0;  // GeomAbs_SurfaceType
+  double area = 0;
+  gp_Pnt centre;
+};
+
+std::vector<Mark> marks(const Document& doc, const std::string& key) {
+  std::vector<Mark> out;
+  try {
+    const TopoDS_Shape shape = body_shape(doc, key);
+    TopTools_IndexedMapOfShape faces;
+    TopExp::MapShapes(shape, TopAbs_FACE, faces);
+    for (int i = 1; i <= faces.Extent(); ++i) {
+      const TopoDS_Face f = TopoDS::Face(faces(i));
+      TopLoc_Location loc;
+      if (BRep_Tool::Surface(f, loc).IsNull()) return {};  // a mesh: its triangles say nothing of what an edit kept
+      GProp_GProps g;
+      BRepGProp::SurfaceProperties(f, g);
+      out.push_back({int(BRepAdaptor_Surface(f, false).GetType()), std::abs(g.Mass()), g.CentreOfMass()});
+    }
+  } catch (const Standard_Failure&) {
+    return {};
+  }
+  return out;
+}
+
 // The measures of every body key met, per document, computed once.
 struct Prints {
   std::map<std::pair<const Document*, std::string>, Intrinsic> by_key;
+  std::map<std::pair<const Document*, std::string>, std::vector<Mark>> marks_by_key;
   const Intrinsic& of(const Document& doc, const std::string& key) {
     const auto k = std::make_pair(&doc, key);
     auto it = by_key.find(k);
     if (it == by_key.end()) it = by_key.emplace(k, measure(doc, key)).first;
     return it->second;
   }
+  const std::vector<Mark>& marks_of(const Document& doc, const std::string& key) {
+    const auto k = std::make_pair(&doc, key);
+    auto it = marks_by_key.find(k);
+    if (it == marks_by_key.end()) it = marks_by_key.emplace(k, marks(doc, key)).first;
+    return it->second;
+  }
 };
+
+// How many faces two bodies share as geometry (the same kind and area, centres one translation apart), over the faces of
+// both (Jaccard); `moved` the translation most of them agree on.
+double shared_faces(std::vector<Mark> a, const Mat4& wa, std::vector<Mark> b, const Mat4& wb, double size, Vec3& moved) {
+  moved = {0, 0, 0};
+  if (a.empty() || b.empty()) return 0;
+  auto world = [](std::vector<Mark>& m, const Mat4& w) {
+    for (auto& x : m) {
+      const Vec3 p = w.apply({x.centre.X(), x.centre.Y(), x.centre.Z()});
+      x.centre.SetCoord(p[0], p[1], p[2]);
+    }
+  };
+  world(a, wa), world(b, wb);
+  std::sort(b.begin(), b.end(), [](const Mark& x, const Mark& y) { return x.area < y.area; });
+  const double reach = 1e-4 * size + 1e-6, area_floor = reach * reach;
+  // each pair of faces alike in kind and area votes for the translation between their centres (cells of `reach`)
+  std::map<std::array<long long, 3>, std::vector<std::pair<size_t, size_t>>> votes;
+  for (size_t i = 0; i < a.size(); ++i) {
+    const double lo = a[i].area * (1 - 1e-4) - area_floor;
+    auto it = std::lower_bound(b.begin(), b.end(), lo, [](const Mark& m, double v) { return m.area < v; });
+    for (; it != b.end() && it->area <= a[i].area * (1 + 1e-4) + area_floor; ++it) {
+      if (it->kind != a[i].kind) continue;
+      const gp_Vec t(a[i].centre, it->centre);
+      votes[{std::llround(t.X() / reach), std::llround(t.Y() / reach), std::llround(t.Z() / reach)}].push_back({i, size_t(it - b.begin())});
+    }
+  }
+  size_t best = 0;
+  for (const auto& [cell, pairs] : votes) {
+    std::vector<char> ua(a.size(), 0), ub(b.size(), 0);  // each face counted once
+    size_t n = 0;
+    for (const auto& [i, j] : pairs)
+      if (!ua[i] && !ub[j]) ua[i] = ub[j] = 1, ++n;
+    if (n > best) best = n, moved = {double(cell[0]) * reach, double(cell[1]) * reach, double(cell[2]) * reach};
+  }
+  return double(best) / double(a.size() + b.size() - best);
+}
 
 struct Item {
   std::string id, name, path, key, source;
@@ -297,6 +368,31 @@ std::vector<BodyChange> match(const Document& da, const Scene& sa, const Documen
       }
     }
     take(c, "shape");
+  }
+  // faces: no ids, but the faces an edit left alone (any B-rep, any format): the most shared first, by the kind, area and
+  // place of each face (one translation for all: a part edited and moved), between bodies that overlap or are alike
+  {
+    std::vector<Candidate> c;
+    const auto ub = unpaired(B);
+    for (size_t i : unpaired(A)) {
+      stop();
+      const auto& ma = prints.marks_of(da, A[i].key);
+      if (ma.empty()) continue;
+      std::vector<std::pair<double, size_t>> near;  // the nearest alike bodies only: a thousand like screws stay cheap
+      for (size_t j : ub)
+        if (alike(i, j)) near.push_back({distance(pa(i).centre, pb(j).centre), j});
+      const size_t keep = std::min<size_t>(near.size(), 8);
+      std::partial_sort(near.begin(), near.begin() + std::ptrdiff_t(keep), near.end());
+      near.resize(keep);
+      for (const auto& [away, j] : near) {
+        const auto& mb = prints.marks_of(db, B[j].key);
+        Vec3 moved;
+        const double shared = shared_faces(ma, A[i].world, mb, B[j].world, std::max(pa(i).size, pb(j).size), moved);
+        if (shared < 0.3) continue;
+        c.push_back({(1 - shared) + std::min(distance(pa(i).centre, pb(j).centre) / std::max(pa(i).size, 1e-9), 1e6) * 1e-7, i, j});
+      }
+    }
+    take(c, "faces");
   }
   // name: the same path of names, else a name unique on both sides
   {

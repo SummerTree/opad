@@ -8,6 +8,11 @@
 #include <Message_ProgressScope.hxx>
 #include <Quantity_Color.hxx>
 #include <STEPCAFControl_Reader.hxx>
+#include <StepRepr_RepresentationItem.hxx>
+#include <TransferBRep.hxx>
+#include <Transfer_TransientProcess.hxx>
+#include <XSControl_TransferReader.hxx>
+#include <XSControl_WorkSession.hxx>
 #include <APIHeaderSection_MakeHeader.hxx>
 #include <Interface_InterfaceModel.hxx>
 #include <StepData_StepModel.hxx>
@@ -533,8 +538,46 @@ ImportResult import_step(Document& doc, const std::filesystem::path& step, const
   }
   if (prog->cancelled) throw Error("import cancelled");
   if (!ok) throw Error("STEP transfer produced no shapes: " + step.string());
-  return detail::import_xcaf(doc, xdoc, step, opt, false);
+  const detail::EntityIds ids = detail::transfer_names(reader.Reader().WS(), "step", [](const Handle(Standard_Transient)& e) {
+    const Handle(StepRepr_RepresentationItem) item = Handle(StepRepr_RepresentationItem)::DownCast(e);
+    return item.IsNull() || item->Name().IsNull() ? std::string() : std::string(item->Name()->ToCString());
+  });
+  return detail::import_xcaf(doc, xdoc, step, opt, false, 1.0, {}, ids.by_shape.empty() ? nullptr : &ids);
 }
+
+namespace detail {
+EntityIds transfer_names(const Handle(XSControl_WorkSession)& ws, const std::string& source,
+                         const std::function<std::string(const Handle(Standard_Transient)&)>& name_of) {
+  EntityIds out{source, {}};
+  try {
+    if (ws.IsNull() || ws->TransferReader().IsNull()) return out;
+    const Handle(Transfer_TransientProcess) tp = ws->TransferReader()->TransientProcess();
+    if (tp.IsNull()) return out;
+    std::vector<std::pair<const void*, std::string>> named;
+    std::unordered_map<std::string, int> uses;
+    for (Standard_Integer i = 1; i <= tp->NbMapped(); ++i) {
+      const Handle(Transfer_Binder) binder = tp->MapItem(i);
+      if (binder.IsNull()) continue;
+      const TopoDS_Shape s = TransferBRep::ShapeResult(binder);
+      if (s.IsNull() || s.ShapeType() != TopAbs_FACE) continue;
+      std::string name = name_of(tp->Mapped(i));
+      while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+      name.erase(0, std::min(name.size(), name.find_first_not_of(" \t")));
+      std::string upper = name;
+      for (char& ch : upper) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+      if (name.empty() || upper == "NONE" || upper == "$") continue;
+      named.push_back({s.TShape().get(), name});
+      ++uses[name];
+    }
+    for (const auto& [shape, name] : named)
+      if (uses[name] == 1) out.by_shape[shape] = name;
+    if (out.by_shape.size() * 2 < named.size()) out.by_shape.clear();
+  } catch (const Standard_Failure&) {
+    out.by_shape.clear();
+  }
+  return out;
+}
+}  // namespace detail
 
 namespace {
 // Healing rebuilds the faces it touches (and the ones above edges it fixed): the body's face colours follow each face to

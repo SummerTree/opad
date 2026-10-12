@@ -312,7 +312,7 @@ TEST(three_mf_colours_per_triangle_painting_and_filaments) {
   // The core spec: a colour group, three triangles red and one green; no colour of the object's own.
   const std::string plain =
       "<model unit=\"millimeter\"><resources><colorgroup id=\"5\"><color color=\"#FF0000\"/><color color=\"#00FF00\"/></colorgroup>"
-      "<object id=\"1\" name=\"Tile\">" + square4 + tri(0, 1, "pid=\"5\" p1=\"0\"") + tri(1, 2, "pid=\"5\" p1=\"1\"") +
+      "<object id=\"1\" name=\"Tile\" p:UUID=\"8b1c2f6e-0000-4000-8000-00000000000a\">" + square4 + tri(0, 1, "pid=\"5\" p1=\"0\"") + tri(1, 2, "pid=\"5\" p1=\"1\"") +
       tri(2, 3, "pid=\"5\" p1=\"0\"") + tri(3, 0, "pid=\"5\" p1=\"0\"") + "</triangles></mesh></object></resources>"
       "<build><item objectid=\"1\"/></build></model>";
   write_binary(f.dir / "plain.3mf", zip({{"_rels/.rels", rels}, {"3D/3dmodel.model", plain}}, true));
@@ -322,6 +322,11 @@ TEST(three_mf_colours_per_triangle_painting_and_filaments) {
     CHECK(all[0].has_color && same(all[0].color, kRed));
     CHECK_EQ(all[0].faces.size(), 2u);
     CHECK(same(all[0].faces[0], kOwn) && all[0].triangles[0] == 3 && same(all[0].faces[1], kGreen) && all[0].triangles[1] == 1);
+    // the object's own id across saves (the Production extension's p:UUID), for variants.hpp
+    const Document d = open(f.dir / "plain.3mf", viewer);
+    const Scene s = resolve(d);
+    const json ids = d.body(s.node(s.all_bodies().front())->body_key)->meta.value("ids", json());
+    CHECK(ids.value("source", "") == "3mf" && ids.value("body", "") == "8b1c2f6e-0000-4000-8000-00000000000a");
   }
   // Bambu Studio: an object of two parts, one printed in filament 2, the other in the object's filament 1 with one triangle
   // painted mostly in filament 2 (split in four, three of them) and one in filament 4 (an extended state).

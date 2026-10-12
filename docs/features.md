@@ -699,9 +699,10 @@ first commit when git has none, offers **Trust this folder** when git refuses a 
 
 **Compare files** (Version menu, Compare > Compare with ▾) compares files that share no history, such as several exports
 of one design from another CAD system, in any format OPAD opens (OPAD, STEP, X_T/X_B, IGES, meshes...). Bodies are
-paired from the surest evidence to the loosest: the ids the files carry (Parasolid's face ids: the most faces shared),
-the same geometry (counts, volume, area and principal moments; the same place = unchanged, else moved), the same names,
-then how much they overlap; the rest are new or gone. With three files or more the panel's **Variants** table lists
+paired from the surest evidence to the loosest: the ids the files carry (Parasolid's face ids, face names a STEP or IGES
+exporter wrote when they are unique, 3MF object UUIDs: the most faces shared), the same geometry (counts, volume, area and
+principal moments; the same place = unchanged, else moved), the faces an edit left alone (any B-rep without ids: their
+kind, area and place, one translation for all), the same names, then how much they overlap; the rest are new or gone. With three files or more the panel's **Variants** table lists
 each body of the first file in every other file, and a click on a file's column shows it as B. `opad-cli variants
 a.x_t b.x_t [c.step...] [--table]` prints the same.
 
