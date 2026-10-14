@@ -26,7 +26,6 @@
 #include "opad/drawing/tables.hpp"
 
 using opad::json;
-using opad::drawing::Display;
 using opad::drawing::Vec2;
 using Tool = SheetAnnotator::Tool;
 
@@ -86,7 +85,7 @@ QString toolName(Tool t) {
 
 // A drafting glyph as a small picture for a list (the characteristics).
 QIcon glyphIcon(const std::string& glyph) {
-  Display d;
+  opad::drawing::Display d;
   opad::drawing::rich_text(d, d.layer({"G", opad::drawing::kInk, opad::drawing::LineType::Continuous, 0.15}), glyph, {0, 0}, 3.5);
   const auto b = d.bounds();
   QPixmap pm(40, 32);
@@ -897,7 +896,7 @@ std::pair<json, json> SheetAnnotator::current() {
 
 void SheetAnnotator::updatePreview() {
   if (!m_canvas) return;
-  auto d = std::make_shared<Display>();
+  auto d = std::make_shared<opad::drawing::Display>();
   const QColor sel = theme::current().sel;
   const uint32_t rgb = (static_cast<uint32_t>(sel.red()) << 16) | (static_cast<uint32_t>(sel.green()) << 8) | static_cast<uint32_t>(sel.blue());
   const int picked = d->layer({"Picked", opad::drawing::kInk, opad::drawing::LineType::Continuous, 0.6});
@@ -915,7 +914,7 @@ void SheetAnnotator::updatePreview() {
     }
     for (size_t i = from; i < d->prims.size(); ++i) d->prims[i].rgb = rgb;
   }
-  m_canvas->setPreview(d->prims.empty() ? nullptr : std::shared_ptr<const Display>(d));
+  m_canvas->setPreview(d->prims.empty() ? nullptr : std::shared_ptr<const opad::drawing::Display>(d));
   syncInputs();
 }
 
