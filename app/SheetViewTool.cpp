@@ -11,7 +11,6 @@
 #include "SheetValueCard.hpp"
 #include "Theme.hpp"
 
-using opad::drawing::Display;
 using opad::drawing::Vec2;
 
 namespace {
@@ -690,7 +689,7 @@ void SheetViewTool::updatePreview() {
   if (!m_canvas || m_tool == Tool::None) return;
   const auto* f = frame();
   if (!f) return;
-  auto d = std::make_shared<Display>();
+  auto d = std::make_shared<opad::drawing::Display>();
   const auto paper = [&](Vec2 v) { return m_canvas->toPaper(toScene(v)); };
   const Vec2 mouse = m_canvas->toPaper(m_mouse), mv = toView(m_mouse);
   using opad::drawing::kInk;
