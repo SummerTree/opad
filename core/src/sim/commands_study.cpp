@@ -1,4 +1,7 @@
 // The study and load commands (sim/study.hpp, sim/fea.hpp).
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
 #include <cmath>
 #include <functional>
 #include <set>
@@ -108,7 +111,15 @@ void register_study_commands(const std::function<void(const CommandInfo&, Handle
           out["id"] = id;
           return out;
         }
-        const auto run = sim::run_study_cached(doc, s, def);
+        // OPAD_PROGRESS=1: each phase and whole percent on stderr (a thermal study with the air solved runs for minutes).
+        sim::Progress shown;
+        if (const char* p = std::getenv("OPAD_PROGRESS"); p && *p && *p != '0')
+          shown = [last = std::string()](double f, const std::string& phase) mutable {
+            const std::string line = std::to_string(int(std::lround(100 * f))) + "% " + phase;
+            if (line != last) std::fprintf(stderr, "%s\n", (last = line).c_str());
+            return true;
+          };
+        const auto run = sim::run_study_cached(doc, s, def, shown);
         const json summary = rounded(run->summary);
         if (id.empty()) {
           def["result"] = summary;

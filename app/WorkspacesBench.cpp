@@ -132,7 +132,7 @@ OPAD_BENCH(OPAD_BENCH_WORKSPACES, workspaces) {
       for (QToolButton* b : page->findChildren<QToolButton*>())
         if (b->defaultAction() == w.action("sketch.finish")) finish = b;
     const QStringList tabs = w.m_ribbon->tabIds();
-    require(sketching && tabs.value(0) == "design.sketch" && tabs.mid(1) == QStringList({"design.solid", "design.assemble", "design.construct", "design.inspect", "design.insert", "design.view"}) &&
+    require(sketching && tabs.value(0) == "design.sketch" && tabs.mid(1) == QStringList({"design.solid", "design.assemble", "design.construct", "design.inspect", "design.insert", "design.version", "design.view"}) &&
                 w.m_ribbon->currentPage() == w.m_ribbon->page("design.sketch"),
             "sketching: the Sketch tab first and current, the Design tabs after it: " + tabs.join(' '));
     RibbonPage* page = w.m_ribbon->page("design.sketch");

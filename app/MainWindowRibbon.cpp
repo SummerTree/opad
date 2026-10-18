@@ -286,6 +286,7 @@ void MainWindow::buildRibbon() {
   m_ribbon->setWorkspace(restored >= 0 && !layout.spaces[restored].workspace.contextual ? restored : layout.index("review"));
   m_workspaceId = m_workspaceIds.value(m_ribbon->workspace());
   action("workspace." + m_workspaceId)->setChecked(true);
+  connect(m_ribbon, &RibbonBar::tabChanged, this, [this](const QString& tab) { forEachArea([&tab](AreaController* area) { area->tabChanged(tab); }); });
   connect(m_ribbon, &RibbonBar::workspaceChanged, this, [this](int i) {  // from the shortcuts or the chip's list
     const QString id = m_workspaceIds.value(i);
     // A sketch is open: its tab stays until it is finished, in Design (or in Drafting, for one drawn there).

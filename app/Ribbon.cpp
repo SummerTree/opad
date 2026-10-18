@@ -745,6 +745,7 @@ RibbonBar::RibbonBar(QWidget* parent) : QWidget(parent) {
     const Entry& e = set.entries[set.row[i]];
     set.current = e.id;
     m_stack->setCurrentWidget(e.page);
+    noteTab();
   });
   connect(theme::notifier(), &theme::Notifier::changed, this, [this] {
     m_tabs->setFixedHeight(theme::px(28));
@@ -834,6 +835,22 @@ void RibbonBar::refillTabs() {
   m_filling = false;
   m_tabs->updateGeometry();  // QTabBar does not while hidden, and the row would keep its old width
   fitTabRow();
+  noteTab();
+}
+
+QString RibbonBar::currentTabId() const { return m_workspace >= 0 ? m_tabSets[m_workspace].current : QString(); }
+
+bool RibbonBar::setCurrentTabId(const QString& id) {
+  const int at = tabIds().indexOf(id);
+  if (at >= 0) m_tabs->setCurrentIndex(at);
+  return at >= 0;
+}
+
+void RibbonBar::noteTab() {
+  if (const QString id = currentTabId(); id != m_reportedTab) {
+    m_reportedTab = id;
+    emit tabChanged(id);
+  }
 }
 
 bool RibbonBar::setContextualTab(const QString& id, bool shown) {

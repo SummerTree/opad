@@ -14,6 +14,7 @@
 
 #include <AIS_InteractiveObject.hxx>
 
+#include "SimulatePanel.hpp"
 #include "AreaController.hpp"
 #include "BrowserDelegate.hpp"
 #include "opad/sim/kinematics.hpp"
@@ -21,7 +22,6 @@
 
 class Job;
 class SimLegend;
-class SimulatePanel;
 class ToolPanel;
 
 class Simulate : public AreaController {
@@ -35,6 +35,7 @@ class Simulate : public AreaController {
   void selectionChanged(const SelectionContext& selection) override;
   void documentChanged(bool replaced) override;
   void workspaceChanged(const QString& id) override;
+  void tabChanged(const QString& tabId) override;  // the panel follows the tab: Mechanism, Structure or Thermal
   void positionOverlays(const QRect& viewport) override;
 
   // For benches: what is shown.
@@ -53,6 +54,16 @@ class Simulate : public AreaController {
   void openGuide(int useCase);  // the Simulation guide, at that use case
   void printSettings();  // the Printed part dialog for the structural study shown (or the last one)
   void openCooling(int step = -1);  // Thermal setup (the CoolingAssistant)
+  // What the Simulation folder's rows picked in the browser light in the view (SimulateLit.cpp): each target with its nature
+  // ("heat", "fan", "heatsink", "board", "box", a load's kind), drawn in its colour with its badge when it is shown.
+  struct Lit {
+    std::string row, nature;
+    opad::Ref target;
+    bool shown = false;  // in the view (a hidden part is not lit)
+  };
+  const std::vector<Lit>& lit() const { return m_lit; }
+  static QColor natureColor(const std::string& nature);
+  static QString natureIcon(const std::string& nature);
 
  private:
   opad::json write(const std::string& command, const opad::json& args, const QString& label);  // doc->run once it is free
@@ -63,6 +74,9 @@ class Simulate : public AreaController {
   void addJoint(const QString& kind);
   void newStudy(const QString& kind);
   void chooseStudy(const std::string& id);
+  void showMode(SimulatePanel::Mode mode);  // the panel's sections and studies for a tab
+  void followStudy(const std::string& id);  // the tab (and the panel) of that study's kind
+  SimulatePanel::Mode studyMode(const opad::Study& study) const;
   void showRun();
   void showSeries(int index);
   void play();
@@ -76,8 +90,15 @@ class Simulate : public AreaController {
   std::vector<browser::Item> folderItems() const;
   void folderMenu(const std::string& id, QMenu& menu);
   std::vector<std::string> pickedJoints() const;  // joints chosen in the browser's Simulation folder, in order
+  std::vector<browser::Item> setupRows(const opad::Study& study) const;  // a thermal study's box, boards, heatsinks and air
+  std::vector<Lit> rowTargets(const std::string& row) const;
+  void lightRows(const std::vector<std::string>& rows);  // the rows' targets lit (none: what was lit goes)
+  void placeBadges();  // over their targets, after every camera move
+  std::vector<Lit> m_lit;
+  std::vector<std::pair<opad::Vec3, QWidget*>> m_badges;
 
   SimulatePanel* m_form = nullptr;
+  bool m_modeShown = false;
   ToolPanel* m_panel = nullptr;
   SimLegend* m_legend = nullptr;
   std::unique_ptr<opad::sim::Mechanism> m_mech;  // the document's mechanism, for the slider's preview

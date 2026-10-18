@@ -1,10 +1,12 @@
 #pragma once
-// The Simulate workspace's panel (SimulateArea): the mechanism (its joints, each one's value on a slider), a new joint or
-// relation from what is picked, and the studies: run one, step or play its frames, plot its series, show a structural
-// study's result map. It only shows and asks; the area does the work.
+// The Simulate workspace's panel (SimulateArea), for the ribbon tab shown (setMode): Mechanism has the mechanism (its joints,
+// each one's value on a slider), a new joint or relation from what is picked, and its motion and dynamic studies; Structure
+// its static and vibration studies; Thermal its thermal studies and the Thermal setup. Each runs a study, steps or plays its
+// frames, plots its series, shows a result map. It only shows and asks; the area does the work.
 #include <QString>
 #include <QStringList>
 #include <QWidget>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -23,6 +25,10 @@ class SimulatePanel : public QWidget {
  public:
   using Entries = std::vector<std::pair<QString, QString>>;  // id, shown text
   explicit SimulatePanel(QWidget* parent = nullptr);
+  enum class Mode { Mechanism, Structure, Thermal };
+  void setMode(Mode mode);  // what the panel is about: its sections and the kinds of New study
+  Mode mode() const { return m_mode; }
+  static Mode modeOf(const std::string& studyKind);  // the tab a study's kind belongs to (a sweep: its own study's)
   // Mechanism
   void setMechanism(const QString& status);
   void setJoints(const Entries& joints, const QString& current);
@@ -49,6 +55,7 @@ class SimulatePanel : public QWidget {
   void newStudyRequested(const QString& kind);
   void runRequested();
   void guideRequested();
+  void coolingRequested();
   void playRequested();
   void frameChosen(int frame);
   void seriesChosen(int index);
@@ -61,9 +68,11 @@ class SimulatePanel : public QWidget {
   QComboBox *m_joints, *m_kind, *m_studies, *m_newKind, *m_series, *m_fields;
   QSlider *m_jointSlider, *m_frames;
   QDoubleSpinBox *m_jointValue, *m_relation;
-  QPushButton *m_addJoint, *m_new, *m_run;
+  QPushButton *m_addJoint, *m_new, *m_run, *m_cooling;
   QToolButton *m_play, *m_results;
-  QWidget *m_motionRows, *m_resultRows;
+  QWidget *m_motionRows, *m_resultRows, *m_mechanismBox;
+  QLabel* m_studyHeader;
+  Mode m_mode = Mode::Mechanism;
   SimPlot* m_plot;
   PanelFooter* m_footer;
   double m_lo = 0, m_hi = 1;

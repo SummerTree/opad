@@ -85,15 +85,19 @@ SimulatePanel::SimulatePanel(QWidget* parent) : QWidget(parent) {
   connect(guide, &QPushButton::clicked, this, &SimulatePanel::guideRequested);
   layout->addWidget(guide);
 
-  // ---- the mechanism and its joints
-  layout->addWidget(header(tr("MECHANISM"), body));
+  // ---- the mechanism and its joints (the Mechanism tab)
+  m_mechanismBox = new QWidget(body);
+  auto* mech = new QVBoxLayout(m_mechanismBox);
+  mech->setContentsMargins(0, 0, 0, 0);
+  mech->setSpacing(6);
+  mech->addWidget(header(tr("MECHANISM"), body));
   m_mechanism = note(body);
   m_mechanism->setObjectName("simMechanism");
-  layout->addWidget(m_mechanism);
+  mech->addWidget(m_mechanism);
   m_joints = new QComboBox(body);
   m_joints->setObjectName("simJoints");
   m_joints->setToolTip(tr("The joint whose value the slider sets; the parts joined to it follow"));
-  layout->addWidget(m_joints);
+  mech->addWidget(m_joints);
   auto* valueRow = new QHBoxLayout;
   m_jointSlider = new QSlider(Qt::Horizontal, body);
   m_jointSlider->setObjectName("simJointSlider");
@@ -109,9 +113,9 @@ SimulatePanel::SimulatePanel(QWidget* parent) : QWidget(parent) {
   valueRow->addWidget(m_jointSlider, 1);
   valueRow->addWidget(m_jointValue);
   valueRow->addWidget(m_jointUnit);
-  layout->addLayout(valueRow);
+  mech->addLayout(valueRow);
 
-  layout->addWidget(header(tr("NEW JOINT"), body));
+  mech->addWidget(header(tr("NEW JOINT"), body));
   auto* kindRow = new QHBoxLayout;
   m_kind = new QComboBox(body);
   m_kind->setObjectName("simJointKind");
@@ -127,7 +131,7 @@ SimulatePanel::SimulatePanel(QWidget* parent) : QWidget(parent) {
   m_addJoint->setObjectName("simAddJoint");
   kindRow->addWidget(m_kind, 1);
   kindRow->addWidget(m_addJoint);
-  layout->addLayout(kindRow);
+  mech->addLayout(kindRow);
   auto* relationRow = new QHBoxLayout;
   m_relationLabel = new QLabel(body);
   m_relation = new QDoubleSpinBox(body);
@@ -136,12 +140,22 @@ SimulatePanel::SimulatePanel(QWidget* parent) : QWidget(parent) {
   m_relation->setRange(-1e5, 1e5);
   relationRow->addWidget(m_relationLabel);
   relationRow->addWidget(m_relation, 1);
-  layout->addLayout(relationRow);
+  mech->addLayout(relationRow);
   m_jointHint = note(body);
-  layout->addWidget(m_jointHint);
+  mech->addWidget(m_jointHint);
+
+  layout->addWidget(m_mechanismBox);
+
+  // ---- the Thermal tab: the setup that writes the case and its study
+  m_cooling = new QPushButton(tr("Thermal setup…"), body);
+  m_cooling->setObjectName("simCooling");
+  m_cooling->setToolTip(tr("The box, what makes heat and how the air moves (fans or natural convection), step by step; it writes the case and its study"));
+  connect(m_cooling, &QPushButton::clicked, this, &SimulatePanel::coolingRequested);
+  layout->addWidget(m_cooling);
 
   // ---- studies
-  layout->addWidget(header(tr("STUDY"), body));
+  m_studyHeader = header(tr("STUDY"), body);
+  layout->addWidget(m_studyHeader);
   auto* studyRow = new QHBoxLayout;
   m_studies = new QComboBox(body);
   m_studies->setObjectName("simStudies");
@@ -154,11 +168,6 @@ SimulatePanel::SimulatePanel(QWidget* parent) : QWidget(parent) {
   auto* newRow = new QHBoxLayout;
   m_newKind = new QComboBox(body);
   m_newKind->setObjectName("simNewKind");
-  m_newKind->addItem(tr("Motion (kinematic)"), "motion");
-  m_newKind->addItem(tr("Dynamic (gravity, motors, contacts)"), "dynamic");
-  m_newKind->addItem(tr("Static stress"), "static");
-  m_newKind->addItem(tr("Vibration modes"), "modal");
-  m_newKind->addItem(tr("Thermal (heat, fans, air)"), "thermal");
   m_new = new QPushButton(tr("New study"), body);
   m_new->setObjectName("simNewStudy");
   newRow->addWidget(m_newKind, 1);
@@ -247,6 +256,32 @@ SimulatePanel::SimulatePanel(QWidget* parent) : QWidget(parent) {
   jointKindChanged();
   setJointValue(false, 0, 1, 0, {});
   setRun({}, 0, false);
+  setMode(Mode::Mechanism);
+}
+
+SimulatePanel::Mode SimulatePanel::modeOf(const std::string& kind) {
+  if (kind == "motion" || kind == "dynamic") return Mode::Mechanism;
+  if (kind == "thermal") return Mode::Thermal;
+  return Mode::Structure;  // static, modal (a sweep says its own study's kind: SimulateArea)
+}
+
+void SimulatePanel::setMode(Mode mode) {
+  m_mode = mode;
+  m_mechanismBox->setVisible(mode == Mode::Mechanism);
+  m_cooling->setVisible(mode == Mode::Thermal);
+  m_studyHeader->setText(mode == Mode::Mechanism ? tr("MOTION STUDY") : mode == Mode::Structure ? tr("STRUCTURAL STUDY") : tr("THERMAL STUDY"));
+  const QSignalBlocker block(m_newKind);
+  m_newKind->clear();
+  if (mode == Mode::Mechanism) {
+    m_newKind->addItem(tr("Motion (kinematic)"), "motion");
+    m_newKind->addItem(tr("Dynamic (gravity, motors, contacts)"), "dynamic");
+  } else if (mode == Mode::Structure) {
+    m_newKind->addItem(tr("Static stress"), "static");
+    m_newKind->addItem(tr("Vibration modes"), "modal");
+  } else {
+    m_newKind->addItem(tr("Thermal (heat, fans, air)"), "thermal");
+  }
+  m_newKind->setVisible(m_newKind->count() > 1);  // one kind: the button says it
 }
 
 QString SimulatePanel::jointKind() const { return m_kind->currentData().toString(); }

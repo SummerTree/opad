@@ -232,6 +232,8 @@ class RibbonBar : public QWidget {
   static constexpr int kRowMargin = 8, kChipGap = 12, kClusterGap = 16;  // tab row: its ends, after the chip, before the cluster
   void setCurrentTab(int index) { m_tabs->setCurrentIndex(index); }
   int currentTab() const { return m_tabs->currentIndex(); }
+  QString currentTabId() const;  // the current workspace's current tab ("simulate.thermal"); empty before one is shown
+  bool setCurrentTabId(const QString& id);  // a tab of the current workspace's row; false: not there
   QStringList tabIds() const;  // the current workspace's tabs as the row shows them
   RibbonPage* page(const QString& tabId) const;
   RibbonPage* currentPage() const;
@@ -244,6 +246,7 @@ class RibbonBar : public QWidget {
 
  signals:
   void workspaceChanged(int index);
+  void tabChanged(const QString& id);  // another tab is current: clicked, a workspace switched, a contextual tab shown or hidden
 
  protected:
   void resizeEvent(QResizeEvent*) override;
@@ -252,6 +255,8 @@ class RibbonBar : public QWidget {
   void showWorkspaceMenu();
   void fitTabRow();  // search whole or as its icon, whichever lets every tab show whole
   void refillTabs();  // the current workspace's row: shown contextual tabs first, then the others
+  void noteTab();  // tabChanged when the current tab is another than the one last reported
+  QString m_reportedTab;
   struct Entry {
     QString id, title;
     RibbonPage* page;

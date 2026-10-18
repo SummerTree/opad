@@ -294,6 +294,9 @@ CASES = [
     # (a lone box beside them) open none.
     # <prefix>.menu.png, <prefix>.preview.png.
     ("select-other", fresh("select-other-empty"), {"OPAD_BENCH_SELECTOTHER": "{prefix}"}),
+    # A click takes the body in front, not a selected one behind it (drawn raised: OCCT ranks layers before depth).
+    ("pick-front", fresh("pick-front-empty"), {"OPAD_BENCH_PICKFRONT": "1"}),
+    ("browser-filter-clear", "box", {"OPAD_BENCH_BROWSER_FILTER": "1"}),  # the filter box's clear button clears it
     # The empty design document (UI-51): the Design workspace shows the origin's axes, its three planes (picked where they
     # are) and the grid with its setting off (no echo star at the pointer), Review none of it; the XY plane picked first is
     # where New sketch draws, the origin goes while the sketch is open and comes back when it closes empty, a body ends it.

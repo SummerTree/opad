@@ -1,6 +1,6 @@
 // The Cooling assistant as a user drives it (OPAD_BENCH_COOLING=<prefix>): opened from its command on an empty document,
 // the example built from its first page (a board, two chips, a heatsink and a fan block in a vented ABS box, the exhaust
-// slots' height the parameter vent_z), the box found, the heat and fan rows filled from what the example set, a power
+// slots' height the parameter vent_z), the box, the heat and fan rows filled from what the example set (nothing guessed), a power
 // changed in the table and written back as the case's load, the board's copper as the study's material; four pages, no
 // optimising (it sets the study up). With OPAD_BENCH_COOLING_RUN set (and OpenFOAM) it also runs the case at
 // Quick quality and checks that the heat put in leaves. Screenshots of every page at <prefix>.<page>.png.
@@ -101,7 +101,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING, cooling) {
                     c->buildExample();
                   }});
   list.push_back({[assistant] { return assistant() && assistant()->settled(); }, [=](bool ok) {
-                    require(ok, "the box's bodies are found (a worker measures them)");
+                    require(ok, "the page filled from what the example set");
                     CoolingAssistant* c = assistant();
                     const std::string box = bodyNamed("Enclosure");
                     require(!box.empty() && !bodyNamed("Board").empty() && !bodyNamed("Heatsink").empty() && !bodyNamed("Fan").empty(),
@@ -110,8 +110,8 @@ OPAD_BENCH(OPAD_BENCH_COOLING, cooling) {
                     require(loadsOf("heat").size() == 2 && loadsOf("fan").size() == 1, "two heat sources and a fan in the case Cooling");
                     require(c->pickedBodies() == std::vector<std::string>{box}, "the box's bodies picked: the enclosure alone");
                     int heated = 0;
-                    for (int r = 0; r < c->heatTable()->rowCount(); ++r) heated += c->heatTable()->item(r, 0)->checkState() == Qt::Checked;
-                    require(heated == 2, QString("the heat table ticks the two chips (%1)").arg(heated));
+                    for (int r = 0; r < c->heatTable()->rowCount(); ++r) heated += c->heatTable()->item(r, 1)->data(Qt::EditRole).toDouble() > 0;
+                    require(heated == 2, QString("the heat table's rows with a power: the two chips (%1)").arg(heated));
                     require(c->fans().size() == 1 && c->fans()[0].on == std::vector<std::string>{bodyNamed("Fan")} &&
                                 c->fans()[0].sink == std::vector<std::string>{bodyNamed("Heatsink")} && c->fans()[0].model.isEmpty() &&
                                 std::fabs(c->fans()[0].flow - 8) < 1e-9,

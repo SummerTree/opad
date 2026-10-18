@@ -209,6 +209,7 @@ BrowserPanel::BrowserPanel(AppDocument* doc, QWidget* parent) : QWidget(parent),
   {
     QLabel* hint = filterKey;
     hint->setObjectName("tertiary");
+    hint->setAttribute(Qt::WA_TransparentForMouseEvents);  // never in the way of the box (it sat on the clear button)
     hint->setLayoutDirection(Qt::LeftToRight);  // a key reads left to right
     hint->setFont(theme::mono(11));
     auto* fl = new QHBoxLayout(m_filter);
@@ -241,16 +242,18 @@ BrowserPanel::BrowserPanel(AppDocument* doc, QWidget* parent) : QWidget(parent),
   };
   m_parentBtn = button("chevronUp", QString());
   // The keys as bound now (keys::notifier): tooltips, the hint in the filter box (none, and no room kept, without a key).
+  // The key shows while the box is empty; typed into, the clear button takes its place at the end of the box.
   auto keyTexts = [this, filterKey] {
     m_filter->setToolTip(help::expand(tr("Filter objects ({key:edit.filter})")));
     m_parentBtn->setToolTip(help::expand(tr("Select parent ({key:edit.selectparent})")));
-    const QString key = keys::plain(keys::binding("edit.filter"));
+    const QString key = m_filter->text().isEmpty() ? keys::plain(keys::binding("edit.filter")) : QString();
     filterKey->setText(key);
     filterKey->setVisible(!key.isEmpty());
     m_filter->setTextMargins(0, 0, key.isEmpty() ? 0 : QFontMetrics(theme::mono(11)).horizontalAdvance(key) + 16, 0);
   };
   keyTexts();
   connect(keys::notifier(), &keys::Notifier::changed, this, keyTexts);
+  connect(m_filter, &QLineEdit::textChanged, this, keyTexts);
   auto* pin=button("pin",tr("Keep browser expanded"));pin->setCheckable(true);
   pin->setChecked(!QSettings().value("ui/browserAutoHide",true).toBool());
   pin->setStyleSheet("QToolButton:checked { background: #865bce; border: 1px solid #cab0ff; border-radius: 3px; }");
