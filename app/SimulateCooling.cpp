@@ -107,6 +107,18 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
   setWindowTitle(tr("Thermal setup"));
   setAttribute(Qt::WA_StyledBackground);
   resize(980, 640);
+  m_syncTimer = new QTimer(this);
+  m_syncTimer->setSingleShot(true);
+  m_syncTimer->setInterval(300);
+  connect(m_syncTimer, &QTimer::timeout, this, [this] { sync(); });
+  // Changed from elsewhere (undo, the Simulation panel, an agent) while it is open: the pages follow, unless they hold a change
+  // of their own still to write.
+  if (AppDocument* d = m_hooks.document ? m_hooks.document() : nullptr)
+    connect(d, &AppDocument::changed, this, [this] {
+      const AppDocument* doc = m_hooks.document();
+      if (m_writing || !isVisible() || m_syncTimer->isActive() || !doc) return;
+      if (std::make_pair(doc->generation, doc->revision) != m_loaded) reload();
+    });
   auto* h = new QHBoxLayout(this);
   h->setContentsMargins(0, 0, 0, 0);
   h->setSpacing(0);
@@ -247,7 +259,9 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       for (const QModelIndex& i : m_heat->selectionModel()->selectedRows()) rows.insert(i.row());
       for (auto r = rows.rbegin(); r != rows.rend(); ++r) m_heat->removeRow(*r);
       if (m_picking == Pick::Parts || m_picking == Pick::Faces) reselect();
+      scheduleSync();
     });
+    connect(m_heat, &QTableWidget::itemChanged, this, [this] { scheduleSync(); });  // a power, a board's tick or layers
     connect(m_heat, &QTableWidget::itemSelectionChanged, this, [this] { m_heatRemove->setEnabled(m_heat->selectionModel()->hasSelection()); });
   }
   // ---- 3. air
@@ -338,6 +352,7 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       add->setEnabled(on);
       remove->setEnabled(on);
       if (!on && (m_picking == Pick::Fan || m_picking == Pick::Way || m_picking == Pick::Sink)) stopPicking();
+      scheduleSync();
     });
     connect(add, &QPushButton::clicked, this, [this] {
       m_fanSpecs.push_back({});
@@ -407,6 +422,9 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     m_radiation = new QCheckBox(tr("Radiation"), this);
     m_radiation->setChecked(true);
     g->addWidget(m_radiation, 2, 1);
+    connect(m_ambient, &QDoubleSpinBox::valueChanged, this, [this] { scheduleSync(); });
+    connect(m_quality, &QComboBox::currentIndexChanged, this, [this] { scheduleSync(); });
+    connect(m_radiation, &QCheckBox::toggled, this, [this] { scheduleSync(); });
     g->setColumnStretch(2, 1);
     v->addLayout(g);
     m_runButton = new QPushButton(tr("Run"), this);
@@ -467,6 +485,7 @@ void CoolingAssistant::open(int at) {
 }
 
 void CoolingAssistant::hideEvent(QHideEvent* e) {
+  if (m_syncTimer->isActive()) sync();  // a change still to write
   stopPicking();  // the view's clicks select again
   QWidget::hideEvent(e);
 }
@@ -496,6 +515,12 @@ void CoolingAssistant::showStep(int i) {
 
 // ---------------------------------------------------------------- the pages from the document
 void CoolingAssistant::reload() {
+  if (m_syncTimer->isActive()) sync();  // a change of the pages still to write goes first
+  m_reloading = true;
+  struct Done {
+    bool& flag;
+    ~Done() { flag = false; }
+  } done{m_reloading};
   AppDocument* d = m_hooks.document();
   m_loaded = d ? std::make_pair(d->generation, d->revision) : std::make_pair(0ull, 0ull);
   const bool foam = opad::sim::openfoam().found();
@@ -641,6 +666,10 @@ void CoolingAssistant::selectionChanged(const std::vector<std::string>& ids, con
   if (!d) return;
   // Another filter switched to while picking (the ribbon, a key): its picks are something else, the page's are kept.
   if (m_hooks.filter && m_hooks.filter(QString()) != pickFilter()) return;
+  struct Written {  // whatever was added, written a moment later
+    CoolingAssistant* self;
+    ~Written() { self->scheduleSync(); }
+  } written{this};
   // An Add button's list only grows: what is clicked is added; a click that took a listed one out of the selection (the
   // view's clicks toggle) shows it selected again. Remove takes rows out.
   auto restore = [this] { QTimer::singleShot(0, this, [this] { reselect(); }); };
@@ -729,6 +758,7 @@ void CoolingAssistant::showPicked() {
     item->setToolTip(item->text());
   }
   m_boxRemove->setEnabled(false);
+  scheduleSync();
 }
 
 std::vector<std::string> CoolingAssistant::heatBodies() const {
@@ -845,6 +875,7 @@ void CoolingAssistant::showFans() {
   m_fanList->setCurrentRow(m_fan);
   m_fanLoading = false;
   showFan();
+  scheduleSync();
 }
 
 void CoolingAssistant::showFan() {
@@ -912,6 +943,7 @@ void CoolingAssistant::measureWay(int fan) {
       m_status->setText(tr("That face is not flat: pick a flat face the air goes through, or choose an axis."));
     }
     showFan();
+    scheduleSync();  // its way known: the fan load written
   });
 }
 
@@ -927,72 +959,127 @@ std::string CoolingAssistant::studyId() const {
 bool CoolingAssistant::apply() {
   AppDocument* d = m_hooks.document();
   if (!d || !d->hasDocument) return false;
-  const std::vector<std::string> box = walls();
-  if (box.empty()) {
+  if (walls().empty()) {
     m_status->setText(tr("Tick the box's bodies on the first page."));
     m_steps->setCurrentRow(0);
     return false;
   }
-  json materials = json::object();
-  std::vector<std::pair<json, double>> heat;  // on a body (its id) or a face (its reference), and the power
-  for (int r = 0; r < m_heat->rowCount(); ++r) {
-    const double watts = std::clamp(m_heat->item(r, 1)->data(Qt::EditRole).toDouble(), 0.0, 1000.0);
-    if (const QString face = m_heat->item(r, 0)->data(kFaceRole).toString(); !face.isEmpty()) {
-      heat.push_back({opad::Ref::parse(face.toStdString()).to_json(), watts});
-      continue;
-    }
-    const std::string id = m_heat->item(r, 0)->data(Qt::UserRole).toString().toStdString();
-    if (watts > 0) {  // a part with no power is a board (or kept for later)
-      heat.push_back({json(id), watts});
-      if (opad::material_of(d->doc, d->scene, id).id.empty()) materials[id] = {{"k", 150}, {"cp", 700}, {"density", 2.33}, {"name", "Silicon (assumed)"}};
-    }
-    if (m_heat->item(r, 2)->checkState() == Qt::Checked)
-      materials[id] = {{"pcb", {{"layers", std::clamp(m_heat->item(r, 3)->data(Qt::EditRole).toInt(), 1, 32)}}}};
-  }
-  if (heat.empty()) {
+  bool heat = false;
+  for (int r = 0; r < m_heat->rowCount(); ++r) heat = heat || m_heat->item(r, 1)->data(Qt::EditRole).toDouble() > 0;
+  if (!heat) {
     m_status->setText(tr("Nothing makes heat: add a part (or a face) with its power on the Heat page."));
     m_steps->setCurrentRow(1);
     return false;
   }
-  const bool fans = !naturalConvection();
-  if (fans && std::none_of(m_fanSpecs.begin(), m_fanSpecs.end(), [](const FanSpec& f) { return !f.on.empty(); })) {
+  if (!naturalConvection() && std::none_of(m_fanSpecs.begin(), m_fanSpecs.end(), [](const FanSpec& f) { return !f.on.empty(); })) {
     m_status->setText(tr("No fan: add one on the Air page (Add a fan, then click it), or choose natural convection."));
     m_steps->setCurrentRow(2);
     return false;
   }
-  // The case's loads made again: heat sources, fans.
-  std::vector<std::string> old;  // each write rebuilds the scene: its loads are gathered first
-  for (const auto& l : d->scene.loads)
-    if (l.load_case == kCase) old.push_back(l.id);
-  for (const auto& id : old) m_hooks.write("delete", {{"target", id}}, tr("Thermal setup"));
-  for (const auto& [on, w] : heat) {
-    json list = json::array();
-    list.push_back(on);
-    m_hooks.write("load", {{"kind", "heat"}, {"case", kCase}, {"on", list}, {"value", w}, {"name", tr("Heat").toStdString()}}, tr("Thermal setup"));
-  }
-  if (fans)
-    for (const FanSpec& f : m_fanSpecs) {
-      if (f.on.empty()) continue;
-      json args = {{"kind", "fan"}, {"case", kCase}, {"on", f.on}, {"vector", f.vector()}, {"name", tr("Fan").toStdString()},
-                   {"fan", f.model.isEmpty() ? json{{"flow", f.flow}, {"pressure", f.pressure}} : json(f.model.toStdString())}};
-      if (!f.across.body.empty()) args["across"] = f.across.to_json();
-      if (!f.sink.empty()) args["heatsink"] = f.sink;
-      m_hooks.write("load", args, tr("Thermal setup"));
-      if (!f.material.isEmpty())  // the heatsink one part of one material: each of its bodies
-        for (const auto& id : f.sink)
-          for (const auto& b : d->scene.node(id) && d->scene.node(id)->kind != opad::Node::Kind::Body ? d->scene.bodies_under(id) : std::vector<std::string>{id})
-            materials[b] = {{"material", f.material.toStdString()}};
+  sync();
+  return true;
+}
+
+void CoolingAssistant::scheduleSync() {
+  if (!m_reloading && isVisible()) m_syncTimer->start();
+}
+
+// What the pages hold, written as far as it goes: a heat source per row with a power, a fan load per fan picked, the study with
+// the box, the boards and the heatsinks' materials. Diffed against the case's heat and fan loads: one that the pages still
+// hold is changed in place (its name and id kept), one they no longer hold is deleted; the case's other loads (a convection
+// added by hand) are left alone. All of it one step to undo.
+void CoolingAssistant::sync() {
+  m_syncTimer->stop();
+  AppDocument* d = m_hooks.document();
+  if (!d || !d->hasDocument || m_reloading || d->browse) return;
+  const opad::Scene& s = d->scene;
+  struct Want {
+    std::string kind;
+    json refs, args;
+    QString name;
+    bool keep = false;  // its fan's way being measured: the load stays as it is meanwhile
+    bool used = false;
+  };
+  std::vector<Want> want;
+  json materials = json::object();
+  for (int r = 0; r < m_heat->rowCount(); ++r) {
+    const double watts = std::clamp(m_heat->item(r, 1)->data(Qt::EditRole).toDouble(), 0.0, 1000.0);
+    const QString name = tr("Heat") + " · " + m_heat->item(r, 0)->text();
+    if (const QString face = m_heat->item(r, 0)->data(kFaceRole).toString(); !face.isEmpty()) {
+      if (watts > 0) want.push_back({"heat", json::array({opad::Ref::parse(face.toStdString()).to_json()}), {{"value", watts}}, name});
+      continue;
     }
-  json settings = {{"case", kCase},
-                   {"air", "cfd"},
-                   {"ambient", m_ambient->value()},
-                   {"cfd", {{"enclosure", box.size() == 1 ? json(box.front()) : json(box)}, {"quality", m_quality->currentData().toString().toStdString()}, {"radiation", m_radiation->isChecked()},
-                            {"buoyancy", !fans}}}};
+    const std::string id = m_heat->item(r, 0)->data(Qt::UserRole).toString().toStdString();
+    if (watts > 0) {  // a part with no power is a board (or kept for later)
+      want.push_back({"heat", json::array({id}), {{"value", watts}}, name});
+      if (opad::material_of(d->doc, s, id).id.empty()) materials[id] = {{"k", 150}, {"cp", 700}, {"density", 2.33}, {"name", "Silicon (assumed)"}};
+    }
+    if (m_heat->item(r, 2)->checkState() == Qt::Checked)
+      materials[id] = {{"pcb", {{"layers", std::clamp(m_heat->item(r, 3)->data(Qt::EditRole).toInt(), 1, 32)}}}};
+  }
+  const bool fans = !naturalConvection();
+  for (const FanSpec& f : m_fanSpecs) {
+    if (f.on.empty()) continue;
+    if (fans) {
+      json args = {{"vector", f.vector()}, {"fan", f.model.isEmpty() ? json{{"flow", f.flow}, {"pressure", f.pressure}} : json(f.model.toStdString())},
+                   {"heatsink", f.sink}};
+      if (!f.across.body.empty()) args["across"] = f.across.to_json();
+      Want w{"fan", json(f.on), args, tr("Fan") + " · " + nameOf(s, f.on.front())};
+      w.keep = !f.across.body.empty() && std::hypot(f.normal[0], f.normal[1], f.normal[2]) < 0.5;
+      want.push_back(w);
+    }
+    if (!f.material.isEmpty())  // the heatsink one part of one material: each of its bodies
+      for (const auto& id : f.sink)
+        for (const auto& b : s.node(id) && s.node(id)->kind != opad::Node::Kind::Body ? s.bodies_under(id) : std::vector<std::string>{id})
+          materials[b] = {{"material", f.material.toStdString()}};
+  }
+  // The writes, decided before any is made (without a batch each write resolves the scene again).
+  std::vector<std::pair<std::string, json>> writes;
+  for (const auto& l : s.loads) {
+    if (l.load_case != kCase || (l.kind != "heat" && l.kind != "fan")) continue;
+    const json refs = l.def.value("refs", json::array());
+    auto w = std::find_if(want.begin(), want.end(), [&](const Want& x) { return !x.used && x.kind == l.kind && x.refs == refs; });
+    if (w != want.end() && l.def.contains("across") && !w->args.contains("across") && !w->keep) w = want.end();  // a way that cannot be unset in place
+    if (w == want.end()) {
+      writes.push_back({"delete", {{"target", l.id}}});
+      continue;
+    }
+    w->used = true;
+    if (w->keep) continue;
+    json set = json::object();
+    for (const auto& [k, v] : w->args.items())
+      if (l.def.value(k, json()) != v) set[k] = v;
+    if (!set.empty()) {
+      set["id"] = l.id;
+      writes.push_back({"load", set});
+    }
+  }
+  for (const Want& w : want)
+    if (!w.used && !w.keep) {
+      json args = w.args;
+      args["kind"] = w.kind, args["case"] = kCase, args["on"] = w.refs, args["name"] = w.name.toStdString();
+      if (w.kind == "fan" && args["heatsink"].empty()) args.erase("heatsink");
+      writes.push_back({"load", args});
+    }
+  const std::vector<std::string> box = walls();
+  json cfd = {{"quality", m_quality->currentData().toString().toStdString()}, {"radiation", m_radiation->isChecked()}, {"buoyancy", !fans}};
+  if (!box.empty()) cfd["enclosure"] = box.size() == 1 ? json(box.front()) : json(box);
+  json settings = {{"case", kCase}, {"air", "cfd"}, {"ambient", m_ambient->value()}, {"cfd", cfd}};
   if (!materials.empty()) settings["materials"] = materials;
   const std::string id = studyId();
-  if (id.empty()) m_hooks.write("study", {{"kind", "thermal"}, {"name", studyName().toStdString()}, {"settings", settings}, {"run", false}}, tr("Thermal setup"));
-  else m_hooks.write("study", {{"id", id}, {"settings", settings}, {"run", false}}, tr("Thermal setup"));
-  return true;
+  const opad::Study* st = s.study(id);
+  if (st && st->def.value("settings", json()) != settings) writes.push_back({"study", {{"id", id}, {"settings", settings}, {"run", false}}});
+  else if (!st && (!box.empty() || !want.empty() || !materials.empty()))
+    writes.push_back({"study", {{"kind", "thermal"}, {"name", studyName().toStdString()}, {"settings", settings}, {"run", false}}});
+  if (writes.empty()) return;
+  m_writing = true;
+  auto all = [&] {
+    for (const auto& [command, args] : writes) m_hooks.write(command, args, tr("Thermal setup"));
+  };
+  if (m_hooks.batch) m_hooks.batch(tr("Thermal setup"), all);
+  else all();
+  m_writing = false;
+  m_loaded = {d->generation, d->revision};
 }
 
 bool CoolingAssistant::startRun() {

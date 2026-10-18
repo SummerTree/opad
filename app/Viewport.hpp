@@ -650,6 +650,10 @@ class Viewport : public QWidget, protected AIS_ViewController {
   bool showAnnotationTarget(const opad::Ref& target, opad::Vec3* centre = nullptr, bool add = false, TargetMiss* miss = nullptr);
   void clearAnnotationTarget();
   QRect annotationTargetRect() const;  // null while nothing is shown
+  // The Simulation folder's rows picked in the browser (a load's faces or bodies, the box, a board): lit like a note's target,
+  // in the colour of what they are (a heat source red), beside the ones lit already; apart from the note editor's.
+  bool showSimTarget(const opad::Ref& target, const QColor& color, opad::Vec3* centre = nullptr, TargetMiss* miss = nullptr);
+  void clearSimTargets();
   opad::Frame annotationCameraPlane(const opad::Vec3& origin) const;  // through origin, facing the camera
   void previewAnnotationDrawing(const opad::json& drawing);
   bool cubeAt(const QPointF& point);  // the view cube is under the mouse: a left press there belongs to the cube
@@ -1041,9 +1045,14 @@ class Viewport : public QWidget, protected AIS_ViewController {
   gp_Vec lookOffset(const std::string& node) const;  // how far a look moved it (an exploded part): its notes follow
   std::string m_noteTypeFilter;
   Handle(AIS_InteractiveObject) m_drawingPreview;
-  std::vector<Handle(AIS_InteractiveObject)> m_annotationTargets;  // what showAnnotationTarget lit
-  std::vector<opad::Vec3> m_annotationCorners;  // the targets' boxes, world
-  std::vector<Job*> m_targetJobs;               // a body target's tint, built on a worker when the body has no arrays
+  struct TargetSet {
+    std::vector<Handle(AIS_InteractiveObject)> marks;  // what is lit
+    std::vector<opad::Vec3> corners;                   // the targets' boxes, world
+    std::vector<Job*> jobs;                            // a body target's tint, built on a worker when the body has no arrays
+  };
+  TargetSet m_annotationSet, m_simSet;  // showAnnotationTarget's, showSimTarget's
+  bool showTarget(TargetSet& set, const opad::Ref& target, const QColor& color, opad::Vec3* centre, TargetMiss* miss);
+  void clearTargets(TargetSet& set);
   std::map<std::string, NoteMark> m_notes;  // open notes by op id
   // Where each note is pinned (UI-03), by op id: measured once on a worker (opad::annotation_anchor) and again only when
   // its signature (the reference, the pinned node's body keys and placements) changes. ready && !found: nothing to pin to.

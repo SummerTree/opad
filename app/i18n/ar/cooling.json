@@ -99,5 +99,15 @@
  "THERMAL STUDY": "الدراسة الحرارية",
  "Mechanism simulation (beta)": "محاكاة الآلية (تجريبي)",
  "Structural simulation (beta)": "المحاكاة الإنشائية (تجريبي)",
- "Thermal simulation (beta)": "المحاكاة الحرارية (تجريبي)"
+ "Thermal simulation (beta)": "المحاكاة الحرارية (تجريبي)",
+ "Box: %1": "الصندوق: %1",
+ "The box the air is solved in, with a margin of the room around it: its holes are the vents": "الصندوق الذي يُحلّ فيه الهواء مع هامش من الغرفة حوله: ثقوبه هي الفتحات",
+ "Board: %1 · %n copper layer(s)": "اللوحة: %1 · %n من طبقات النحاس",
+ "A printed circuit board: its copper spreads the heat along it far better than through it": "لوحة دوائر مطبوعة: ينشر نحاسها الحرارة على امتدادها أفضل بكثير من عبرها",
+ "Heatsink: %1": "مشتت الحرارة: %1",
+ "What a fan blows through: its fins get fine cells": "ما تنفخ المروحة عبره: تحصل زعانفه على خلايا دقيقة",
+ "Air: natural convection": "الهواء: حمل حراري طبيعي",
+ "Air: moved by %n fan(s)": "الهواء: تحرّكه %n من المراوح",
+ "No fans: the air rises where the parts warm it and leaves through the vents": "بلا مراوح: يصعد الهواء حيث تدفئه الأجزاء ويخرج من الفتحات",
+ "The fans' loads are in the case's folder": "أحمال المراوح في مجلد الحالة"
 }

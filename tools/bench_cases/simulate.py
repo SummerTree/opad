@@ -23,5 +23,6 @@ CASES = [
     ("cooling", "empty", {"OPAD_BENCH_COOLING": "{prefix}"}),
     ("cooling-rtl", "empty", {"OPAD_BENCH_COOLING": "{prefix}", "OPAD_LANG": "ar"}),
     ("cooling-walls", "empty", {"OPAD_BENCH_COOLING_WALLS": "{prefix}"}),  # a tray and its cover: an enclosure of two bodies
+    ("simulate-lit", "empty", {"OPAD_BENCH_SIMLIT": "{prefix}"}),  # Thermal setup's rows in the browser as it goes; rows light their targets (app/SimulateLitBench.cpp)
     ("cooling-perf-engine", lambda root, document: engine(), {"OPAD_BENCH_COOLING_PERF": "{prefix}"}),  # opening Thermal setup never holds the UI
 ]

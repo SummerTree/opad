@@ -54,6 +54,16 @@ class Simulate : public AreaController {
   void openGuide(int useCase);  // the Simulation guide, at that use case
   void printSettings();  // the Printed part dialog for the structural study shown (or the last one)
   void openCooling(int step = -1);  // Thermal setup (the CoolingAssistant)
+  // What the Simulation folder's rows picked in the browser light in the view (SimulateLit.cpp): each target with its nature
+  // ("heat", "fan", "heatsink", "board", "box", a load's kind), drawn in its colour with its badge when it is shown.
+  struct Lit {
+    std::string row, nature;
+    opad::Ref target;
+    bool shown = false;  // in the view (a hidden part is not lit)
+  };
+  const std::vector<Lit>& lit() const { return m_lit; }
+  static QColor natureColor(const std::string& nature);
+  static QString natureIcon(const std::string& nature);
 
  private:
   opad::json write(const std::string& command, const opad::json& args, const QString& label);  // doc->run once it is free
@@ -80,6 +90,12 @@ class Simulate : public AreaController {
   std::vector<browser::Item> folderItems() const;
   void folderMenu(const std::string& id, QMenu& menu);
   std::vector<std::string> pickedJoints() const;  // joints chosen in the browser's Simulation folder, in order
+  std::vector<browser::Item> setupRows(const opad::Study& study) const;  // a thermal study's box, boards, heatsinks and air
+  std::vector<Lit> rowTargets(const std::string& row) const;
+  void lightRows(const std::vector<std::string>& rows);  // the rows' targets lit (none: what was lit goes)
+  void placeBadges();  // over their targets, after every camera move
+  std::vector<Lit> m_lit;
+  std::vector<std::pair<opad::Vec3, QWidget*>> m_badges;
 
   SimulatePanel* m_form = nullptr;
   bool m_modeShown = false;

@@ -77,7 +77,11 @@ OPAD_ICON_TABLE(simulate,
                 {"simGravity", R"(<path d="M12 3v14M7.5 12.5L12 17l4.5-4.5"/><path d="M5 21h14"/>)"},
                 {"simResults", R"(<rect x="3" y="4" width="14" height="16" rx="1"/><path d="M20 4v16" stroke-width="3" opacity=".55"/><path d="M6 15c2-4 5-6 8-7" />)"},
                 {"simStudy", R"(<path d="M4 20V4"/><path d="M4 20h16"/><path d="M7 15l4-5 3 3 5-7"/>)"},
-                {"simLoad", R"(<path d="M12 3v11M8 10l4 4 4-4"/><rect x="4" y="16" width="16" height="4" rx="1"/>)"});
+                {"simLoad", R"(<path d="M12 3v11M8 10l4 4 4-4"/><rect x="4" y="16" width="16" height="4" rx="1"/>)"},
+                {"simBox", R"(<path d="M3 8l9-4 9 4v9l-9 4-9-4z"/><path d="M3 8l9 4 9-4M12 12v9"/><path d="M15 15.5h3M15 13.5h3" opacity=".55"/>)"},
+                {"simBoard", R"(<rect x="3" y="6" width="18" height="12" rx="1"/><rect x="9" y="9" width="6" height="6"/><path d="M5 9h2M5 12h2M5 15h2M17 9h2M17 12h2M17 15h2"/>)"},
+                {"simHeatsink", R"(<path d="M3 19h18v2H3z"/><path d="M5 19V5M9 19V5M13 19V5M17 19V5"/><path d="M20 8c1 1 1 2 0 3" opacity=".55"/>)"},
+                {"simNatural", R"(<path d="M8 20c-2-3 2-5 0-8s2-5 0-8M16 20c-2-3 2-5 0-8s2-5 0-8"/><path d="M6 6l2-2 2 2M14 6l2-2 2 2"/>)"});
 
 namespace {
 using opad::json;
@@ -495,6 +499,7 @@ void Simulate::ready() {
   });
   connect(m_form, &SimulatePanel::resultsToggled, this, [this](bool on) { services().guarded([&] { showResults(on); }); });
   m_legend = new SimLegend(services().viewport());
+  connect(services().viewport(), &Viewport::notesMoved, this, [this] { placeBadges(); });  // every camera move
   browser::Folder folder;
   folder.id = "simulation";
   folder.title = tr("Simulation");
@@ -561,6 +566,7 @@ void Simulate::workspaceChanged(const QString& id) {
 }
 
 void Simulate::positionOverlays(const QRect&) {
+  placeBadges();
   if (!m_legend || m_legend->isHidden()) return;
   const QWidget* view = services().viewport();
   m_legend->move(16, std::max(8, view->height() - m_legend->height() - 56));
@@ -580,6 +586,7 @@ void Simulate::selectionChanged(const SelectionContext& selection) {
   for (const auto& id : now)
     if (std::find(kept.begin(), kept.end(), id) == kept.end()) kept.push_back(id);
   m_picked = kept;
+  lightRows(m_picked);  // what the rows stand for, lit in the view by nature
   if (m_panel && m_panel->isVisible() && now.size() == 1 && now[0].rfind("sim:j:", 0) == 0) chooseJoint(now[0].substr(6));
   if (m_panel && m_panel->isVisible() && now.size() == 1 && now[0].rfind("sim:s:", 0) == 0) chooseStudy(now[0].substr(6));  // its row picked
 }
@@ -602,6 +609,7 @@ void Simulate::documentChanged(bool replaced) {
   }
   if (resultShown() && hiddenResultBodies() != m_mapHidden) showResults(true);
   if (m_panel && m_panel->isVisible()) refresh();
+  if (!m_picked.empty() || !m_lit.empty()) QTimer::singleShot(0, this, [this] { lightRows(m_picked); });  // the rows' targets may have moved or gone
 }
 
 std::vector<std::string> Simulate::hiddenResultBodies() const {
@@ -827,6 +835,9 @@ void Simulate::openCooling(int step) {
       json out;
       services().guarded([&] { out = write(command, args, label); });
       return out;
+    };
+    hooks.batch = [this](const QString& label, const std::function<void()>& writes) {
+      services().guarded([&] { services().document()->batch(label, writes); });
     };
     hooks.run = [this](const std::string& id) {
       services().guarded([&] {
@@ -1350,6 +1361,7 @@ std::vector<browser::Item> Simulate::folderItems() const {
   for (const auto& st : s.studies) {
     browser::Item item{"sim:s:" + st.id, QString::fromStdString(st.name), iconForStudy(st.kind), kindLabel(st.kind) + " · " + tr("double-click to run and show it"), {}};
     item.error = !st.error.empty();
+    if (st.kind == "thermal") item.children = setupRows(st);  // the box, the boards, the heatsinks, the air (Thermal setup's)
     rows.push_back(item);
   }
   return rows;

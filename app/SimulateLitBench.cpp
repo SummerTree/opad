@@ -1,0 +1,225 @@
+// Thermal setup writes as it goes, and the Simulation folder's rows light what they stand for; case in
+// tools/bench_cases/simulate.py.
+#include <QAction>
+#include <QCoreApplication>
+#include <QPainter>
+#include <QPushButton>
+#include <QRadioButton>
+#include <QTableWidget>
+#include <QTimer>
+
+#include <memory>
+
+#include "AppDocument.hpp"
+#include "BenchRegistry.hpp"
+#include "BrowserPanel.hpp"
+#include "MainWindow.hpp"
+#include "SimulateArea.hpp"
+#include "SimulateCooling.hpp"
+#include "Tracking.hpp"
+#include "Viewport.hpp"
+
+// OPAD_BENCH_SIMLIT=<prefix> on an empty document (a box, a board, a chip, a heatsink and a fan block built here): Thermal setup
+// driven through its Add buttons, each addition a row of the browser's Simulation folder a moment later, as the manual
+// commands' are (the box, the chip's heat source, the board, the fan, its heatsink, the air); a power typed changes the same
+// load in place; natural convection takes the fan's load out. Then each row picked in the browser lights its target by its
+// nature: the heat source red with its flame badge, the fan, the heatsink, the board, the box; a hidden chip is not lit;
+// nothing picked, nothing lit. Frames: <prefix>.heat.png, .case.png (the view with its badges).
+OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
+  struct State {
+    int phase = 0, ticks = 0;
+    bool all = true;
+    std::string box, board, chip, sink, fan, study, heat, fanLoad;
+  };
+  auto st = std::make_shared<State>();
+  const QString prefix = value;
+  auto* timer = new QTimer(&w);
+  timer->setInterval(100);
+  QObject::connect(timer, &QTimer::timeout, &w, [&w, st, timer, prefix] {
+    AppDocument* doc = w.m_doc;
+    Simulate* area = w.findChild<Simulate*>();
+    CoolingAssistant* c = w.findChild<CoolingAssistant*>();
+    auto require = [st](bool ok, const QString& what) {
+      trace::log(QString("bench: simulate lit: %1 %2").arg(what, ok ? "PASS" : "FAIL"));
+      st->all = st->all && ok;
+      return ok;
+    };
+    auto finish = [timer, st] {
+      timer->stop();
+      QCoreApplication::exit(st->all ? 0 : 2);
+    };
+    if (++st->ticks > 600) {
+      require(false, QString("timed out in phase %1").arg(st->phase));
+      return finish();
+    }
+    if (doc->loading || doc->designBusy) return;
+    auto make = [doc](const char* name, opad::Vec3 at, double l, double wd, double h) {
+      const opad::json r = doc->run("feature", {{"kind", "box"}, {"name", name},
+                                                {"inputs", {{"plane", {{"origin", at}, {"normal", {0, 0, 1}}}}, {"length", l}, {"width", wd}, {"height", h}, {"centered", false}}}});
+      return r["body_ids"][0].get<std::string>();
+    };
+    auto pick = [area](const std::vector<std::string>& ids) {
+      std::vector<opad::Ref> refs;
+      for (const auto& id : ids) {
+        opad::Ref r;
+        r.body = id;
+        refs.push_back(r);
+      }
+      area->services().select(refs);
+    };
+    auto row = [&w](const std::string& id) { return w.m_browser->isProvided(id); };
+    auto caseLoad = [doc](const char* kind) -> const opad::Load* {
+      for (const auto& l : doc->scene.loads)
+        if (l.kind == kind && l.load_case == CoolingAssistant::kCase) return &l;
+      return nullptr;
+    };
+    auto studyId = [doc] {
+      for (const auto& s : doc->scene.studies)
+        if (QString::fromStdString(s.name) == CoolingAssistant::studyName()) return s.id;
+      return std::string();
+    };
+    auto lights = [area](const std::string& rowId, const std::string& nature, const std::string& body) {
+      for (const auto& l : area->lit())
+        if (l.row == rowId && l.nature == nature && l.target.body == body && l.shown) return true;
+      return false;
+    };
+    auto badges = [&w] {
+      int n = 0;
+      for (QWidget* b : w.findChildren<QWidget*>("simBadge")) n += b->isVisible();
+      return n;
+    };
+    auto shot = [&w, prefix](const char* name) {  // the view, its badges painted where they float
+      QImage image = w.m_viewport->grabImage();
+      if (image.isNull()) return;
+      QPainter p(&image);
+      const qreal dpr = image.width() / qreal(std::max(1, w.m_viewport->width()));
+      p.scale(dpr, dpr);
+      for (QWidget* b : w.findChildren<QWidget*>("simBadge"))
+        if (b->isVisible()) p.drawPixmap(b->pos(), b->grab());
+      p.end();
+      image.save(prefix + "." + name + ".png");
+    };
+    switch (st->phase) {
+      case 0: {
+        st->box = make("Box", {0, 0, 0}, 100, 80, 40);
+        st->board = make("Board", {10, 10, 50}, 60, 50, 1.6);
+        st->chip = make("Chip", {30, 30, 51.6}, 10, 10, 2);
+        st->sink = make("Heatsink", {28, 28, 53.6}, 14, 14, 10);
+        st->fan = make("Fan", {120, 30, 50}, 10, 20, 20);
+        w.action("simulate.cooling")->trigger();
+        st->phase = 1;
+        return;
+      }
+      case 1: {
+        if (!c || !c->isVisible()) return;
+        c->boxAdd()->click();
+        pick({st->box});
+        st->phase = 2;
+        return;
+      }
+      case 2: {  // the box: the study, its box row (once written, a moment later)
+        st->study = studyId();
+        if (st->study.empty() || !row("sim:x:" + st->study + ":box")) return;
+        require(row("sim:s:" + st->study), "the box added: the study and its Box row are in the browser at once");
+        c->boxAdd()->click();
+        c->open(1);
+        c->partAdd()->click();
+        pick({st->chip});
+        st->phase = 3;
+        return;
+      }
+      case 3: {
+        const opad::Load* l = caseLoad("heat");
+        if (!l || !row("sim:l:" + l->id)) return;
+        st->heat = l->id;
+        require(l->refs.size() == 1 && l->refs[0].body == st->chip, "the chip added: its heat source is a row of the case: " + QString::fromStdString(l->name));
+        for (int r = 0; r < c->heatTable()->rowCount(); ++r)
+          if (c->heatTable()->item(r, 0)->data(Qt::UserRole).toString().toStdString() == st->chip) c->heatTable()->item(r, 1)->setData(Qt::EditRole, 3.0);
+        pick({st->chip, st->board});
+        st->phase = 4;
+        return;
+      }
+      case 4: {
+        const opad::Load* l = caseLoad("heat");
+        int boardRow = -1;
+        for (int r = 0; r < c->heatTable()->rowCount(); ++r)
+          if (c->heatTable()->item(r, 0)->data(Qt::UserRole).toString().toStdString() == st->board) boardRow = r;
+        if (!l || l->def.value("value", 0.0) != 3.0 || boardRow < 0) return;
+        require(l->id == st->heat, "the power typed: the same load changed in place (3 W)");
+        c->heatTable()->item(boardRow, 1)->setData(Qt::EditRole, 0.0);
+        c->heatTable()->item(boardRow, 2)->setCheckState(Qt::Checked);
+        st->phase = 5;
+        return;
+      }
+      case 5: {
+        if (!row("sim:x:" + st->study + ":board:" + st->board)) return;
+        int heats = 0;
+        for (const auto& l : doc->scene.loads) heats += l.kind == "heat" && l.load_case == CoolingAssistant::kCase;
+        require(heats == 1, "the board ticked: its Board row, and no heat source for it (0 W)");
+        c->partAdd()->click();
+        c->open(2);
+        for (auto* b : c->findChildren<QPushButton*>())
+          if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
+        pick({st->fan});
+        st->phase = 6;
+        return;
+      }
+      case 6: {
+        if (c->fans().empty() || c->fans()[0].on.empty()) return;
+        c->findChild<PickBox*>("coolingSinkPick")->click();
+        pick({st->sink});
+        st->phase = 7;
+        return;
+      }
+      case 7: {
+        const opad::Load* f = caseLoad("fan");
+        if (!f || !row("sim:x:" + st->study + ":sink:" + st->sink)) return;
+        st->fanLoad = f->id;
+        require(row("sim:l:" + f->id) && row("sim:x:" + st->study + ":air"), "the fan and its heatsink: the fan's load, the Heatsink and Air rows");
+        c->close();
+        w.action("view.fit")->trigger();
+        w.m_browser->selectIds({"sim:l:" + st->heat});
+        st->phase = 8;
+        return;
+      }
+      case 8: {  // the rows light their targets
+        require(lights("sim:l:" + st->heat, "heat", st->chip) && area->lit().size() == 1 && badges() == 1, "the heat source's row: the chip lit, with its badge");
+        require(Simulate::natureColor("heat") == QColor("#e5484d") && Simulate::natureIcon("heat") == "simHeat", "a heat source is red, its badge a flame");
+        shot("heat");
+        w.m_browser->selectIds({"sim:l:" + st->fanLoad});
+        require(lights("sim:l:" + st->fanLoad, "fan", st->fan) && badges() == 1, "the fan's row: the fan block lit as a fan");
+        w.m_browser->selectIds({"sim:x:" + st->study + ":sink:" + st->sink});
+        require(lights("sim:x:" + st->study + ":sink:" + st->sink, "heatsink", st->sink), "the Heatsink row: the heatsink lit as one");
+        w.m_browser->selectIds({"sim:x:" + st->study + ":board:" + st->board});
+        require(lights("sim:x:" + st->study + ":board:" + st->board, "board", st->board), "the Board row: the board lit as one");
+        w.m_browser->selectIds({"sim:x:" + st->study + ":box"});
+        require(lights("sim:x:" + st->study + ":box", "box", st->box), "the Box row: the box lit");
+        w.m_browser->selectIds({"sim:c:" + std::string(CoolingAssistant::kCase)});
+        require(lights("sim:c:Cooling", "heat", st->chip) && lights("sim:c:Cooling", "fan", st->fan) && badges() == 2, "the case's row: each of its loads lit by its nature");
+        shot("case");
+        doc->run("appearance", {{"target", st->chip}, {"visible", false}});
+        st->phase = 9;
+        return;
+      }
+      case 9: {
+        w.m_browser->selectIds({"sim:l:" + st->heat});
+        require(!area->lit().empty() && !area->lit()[0].shown && badges() == 0, "the chip hidden: its heat source lights nothing, no badge");
+        doc->run("appearance", {{"target", st->chip}, {"visible", true}});
+        w.m_browser->selectIds({});
+        require(area->lit().empty() && badges() == 0, "nothing picked: nothing lit");
+        c->open(2);
+        c->findChild<QRadioButton*>("coolingNatural")->setChecked(true);
+        st->phase = 10;
+        return;
+      }
+      case 10: {
+        if (caseLoad("fan")) return;
+        require(row("sim:x:" + st->study + ":air") && !row("sim:l:" + st->fanLoad), "natural convection: the fan's load gone from the browser, the Air row kept");
+        c->close();
+        return finish();
+      }
+    }
+  });
+  timer->start();
+  return true;
+}
