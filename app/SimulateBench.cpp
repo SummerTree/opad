@@ -249,27 +249,32 @@ OPAD_BENCH(OPAD_BENCH_SIMULATE, simulate) {
                     require(j && std::fabs(j->values[0] - 45) < 0.5, QString("letting go writes the joint at 45 deg (got %1)").arg(j ? j->values[0] : -1));
                     doc->run("joint_set", {{"values", {{(*state)["joint"], {0}}}}});  // back to horizontal for the drop
                   }});
-  // ---- a dynamic study from the ribbon: the arm falls from horizontal and swings to the other side
-  list.push_back({idle, [=](bool) { action("simulate.dynamic")->trigger(); }});
-  list.push_back({[area] { return area->shownRun() && !area->running() && area->shownRun()->kind == "dynamic"; },
-                  [=](bool ok) {
-                    require(ok, "the dynamic study runs from the ribbon");
-                    if (!ok) return;
-                    const auto run = area->shownRun();
-                    require(area->playing(), "it plays when it finishes");
-                    double swing = 0;
-                    for (const auto& s : run->series)
-                      if (s.group == "value" && s.name.find("rotation") != std::string::npos)
-                        for (double x : s.v) swing = std::max(swing, std::fabs(x));
-                    require(std::fabs(swing - 180) < 3, QString("the arm swings to the other side (energy kept): %1 deg of 180").arg(swing));
-                    require(area->form()->plot()->curves() == 1, "the chart shows a series");
-                  },
-                  180000});
-  list.push_back({[area] { return area->frame() > 20; }, [=](bool ok) {
-                    require(ok, "playback advances the frames");
-                    require(v->previewMovedCount() > 0, "the arm is shown where the frame has it");
-                    shot("dynamic");
-                  }});
+  // ---- a dynamic study from the ribbon: the arm falls from horizontal and swings to the other side (a build without Chrono
+  // has none: skipped)
+  const bool dynamic = opad::sim::engines().value("dynamic", false);
+  if (!dynamic) trace::log("bench: simulate: no Chrono in this build: the dynamic study skipped");
+  if (dynamic) {
+    list.push_back({idle, [=](bool) { action("simulate.dynamic")->trigger(); }});
+    list.push_back({[area] { return area->shownRun() && !area->running() && area->shownRun()->kind == "dynamic"; },
+                    [=](bool ok) {
+                      require(ok, "the dynamic study runs from the ribbon");
+                      if (!ok) return;
+                      const auto run = area->shownRun();
+                      require(area->playing(), "it plays when it finishes");
+                      double swing = 0;
+                      for (const auto& s : run->series)
+                        if (s.group == "value" && s.name.find("rotation") != std::string::npos)
+                          for (double x : s.v) swing = std::max(swing, std::fabs(x));
+                      require(std::fabs(swing - 180) < 3, QString("the arm swings to the other side (energy kept): %1 deg of 180").arg(swing));
+                      require(area->form()->plot()->curves() == 1, "the chart shows a series");
+                    },
+                    180000});
+    list.push_back({[area] { return area->frame() > 20; }, [=](bool ok) {
+                      require(ok, "playback advances the frames");
+                      require(v->previewMovedCount() > 0, "the arm is shown where the frame has it");
+                      shot("dynamic");
+                    }});
+  }
   // ---- a motion study: the joint driven a full turn
   list.push_back({nullptr, [=](bool) { action("simulate.motion")->trigger(); }});
   list.push_back({[area] { return area->shownRun() && !area->running() && area->shownRun()->kind == "motion"; },

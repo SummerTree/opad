@@ -425,6 +425,7 @@ void Simulate::ribbon(RibbonLayout& layout) {
   add("simulate.structure.studies", "simulate.static");
   add("simulate.structure.studies", "simulate.modal");
   add("simulate.structure.studies", "simulate.print");
+  add("simulate.structure.studies", "simulate.panel", Size::Small);
   layout.addGroup("simulate.structure", "simulate.structure.results", tr("Results"));
   add("simulate.structure.results", "simulate.run");
   add("simulate.structure.results", "simulate.results");
@@ -439,6 +440,7 @@ void Simulate::ribbon(RibbonLayout& layout) {
   layout.addGroup("simulate.thermal", "simulate.thermal.studies", tr("Studies"));
   add("simulate.thermal.studies", "simulate.cooling");
   add("simulate.thermal.studies", "simulate.thermal");
+  add("simulate.thermal.studies", "simulate.panel", Size::Small);
   layout.addGroup("simulate.thermal", "simulate.thermal.results", tr("Results"));
   add("simulate.thermal.results", "simulate.run");
   add("simulate.thermal.results", "simulate.results");
@@ -475,10 +477,12 @@ void Simulate::ready() {
   connect(m_form, &SimulatePanel::newStudyRequested, this, [this](const QString& kind) { services().guarded([&] { newStudy(kind); }); });
   connect(m_form, &SimulatePanel::runRequested, this, [this] { services().guarded([&] { runStudy(); }); });
   connect(m_form, &SimulatePanel::guideRequested, this, [this] {
-    // Where the document is: nothing yet, the hinge; joints, their motion; loads, the stress study.
+    // The tab's use cases: the mechanism's (nothing yet, the hinge; joints, their motion), the stress study, cooling.
     const opad::Scene& s = services().document()->scene;
-    openGuide(!s.loads.empty() ? 4 : !s.joints.empty() ? 1 : 0);
+    const SimulatePanel::Mode mode = m_form->mode();
+    openGuide(mode == SimulatePanel::Mode::Thermal ? 8 : mode == SimulatePanel::Mode::Structure ? 4 : !s.joints.empty() ? 1 : 0);
   });
+  connect(m_form, &SimulatePanel::coolingRequested, this, [this] { openCooling(); });
   connect(m_form, &SimulatePanel::playRequested, this, &Simulate::play);
   connect(m_form, &SimulatePanel::frameChosen, this, [this](int f) {
     pause();
@@ -501,14 +505,52 @@ void Simulate::ready() {
   folder.activated = [this](const std::string& id) {
     services().guarded([&] {
       open();
-      if (id.rfind("sim:j:", 0) == 0) chooseJoint(id.substr(6));
-      else if (id.rfind("sim:s:", 0) == 0) {
+      if (id.rfind("sim:j:", 0) == 0) {
+        if (services().workspace() != "simulate" || !services().setRibbonTab("simulate.mechanism")) showMode(SimulatePanel::Mode::Mechanism);
+        chooseJoint(id.substr(6));
+      } else if (id.rfind("sim:s:", 0) == 0) {
+        followStudy(id.substr(6));
         chooseStudy(id.substr(6));
         if (!m_run) runStudy();
       }
     });
   };
   services().browser()->addFolder(folder);
+  tabChanged(services().ribbonTab());
+}
+
+void Simulate::tabChanged(const QString& tabId) {
+  if (!m_form || !tabId.startsWith("simulate.")) return;
+  const QString tab = tabId.mid(9);
+  showMode(tab == "thermal" ? SimulatePanel::Mode::Thermal : tab == "structure" ? SimulatePanel::Mode::Structure : SimulatePanel::Mode::Mechanism);
+}
+
+void Simulate::showMode(SimulatePanel::Mode mode) {
+  if (!m_form || (mode == m_form->mode() && m_modeShown)) return;
+  m_modeShown = true;
+  m_form->setMode(mode);
+  m_panel->setHeader("simulate", mode == SimulatePanel::Mode::Mechanism   ? tr("Mechanism simulation (beta)")
+                                 : mode == SimulatePanel::Mode::Structure ? tr("Structural simulation (beta)")
+                                                                           : tr("Thermal simulation (beta)"));
+  if (m_panel->isVisible()) refresh();
+}
+
+SimulatePanel::Mode Simulate::studyMode(const opad::Study& st) const {
+  if (st.kind != "sweep") return SimulatePanel::modeOf(st.kind);
+  const opad::Scene& s = services().document()->scene;
+  const std::string inner = st.def.value("settings", json::object()).value("study", std::string());  // its id or name
+  for (const auto& o : s.studies)
+    if (o.kind != "sweep" && (o.id == inner || o.name == inner)) return SimulatePanel::modeOf(o.kind);
+  return SimulatePanel::Mode::Structure;
+}
+
+void Simulate::followStudy(const std::string& id) {
+  const opad::Study* st = services().document()->scene.study(id);
+  if (!st || !m_form) return;
+  const SimulatePanel::Mode mode = studyMode(*st);
+  if (mode == m_form->mode()) return;
+  const QString tab = mode == SimulatePanel::Mode::Mechanism ? "simulate.mechanism" : mode == SimulatePanel::Mode::Structure ? "simulate.structure" : "simulate.thermal";
+  if (services().workspace() != "simulate" || !services().setRibbonTab(tab)) showMode(mode);  // the tab's change shows it
 }
 
 void Simulate::workspaceChanged(const QString& id) {
@@ -625,13 +667,12 @@ void Simulate::refresh() {
     }
   }
   chooseJoint(m_joint);
+  // The tab's studies only: a motion study is not among the thermal ones.
   SimulatePanel::Entries studies;
-  for (const auto& st : s.studies) studies.push_back({QString::fromStdString(st.id), QString::fromStdString(st.name) + "  ·  " + kindLabel(st.kind)});
-  if (!m_study.empty() && !s.study(m_study)) {
-    m_study.clear();
-    m_run.reset();
-    showResults(false);
-  }
+  for (const auto& st : s.studies)
+    if (studyMode(st) == m_form->mode()) studies.push_back({QString::fromStdString(st.id), QString::fromStdString(st.name) + "  ·  " + kindLabel(st.kind)});
+  const bool listed = std::any_of(studies.begin(), studies.end(), [this](const auto& e) { return e.first.toStdString() == m_study; });
+  if (!m_study.empty() && !listed && !m_job) chooseStudy(std::string());  // another tab's (or gone): its results put away
   if (m_study.empty() && !studies.empty()) m_study = studies.back().first.toStdString();
   m_form->setStudies(studies, QString::fromStdString(m_study));
   showRun();
@@ -771,6 +812,7 @@ void Simulate::newStudy(const QString& kind) {
   const json out = write("study", {{"kind", k}, {"settings", settings}, {"run", false}}, tr("New study"));
   m_study = out.value("id", "");
   m_run.reset();
+  followStudy(m_study);
   refresh();
   runStudy();
 }
@@ -790,6 +832,7 @@ void Simulate::openCooling(int step) {
       services().guarded([&] {
         if (services().workspace() != "simulate") services().setWorkspace("simulate");
         open();
+        followStudy(id);
         chooseStudy(id);
         runStudy();
       });

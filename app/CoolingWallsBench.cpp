@@ -1,21 +1,23 @@
 // OPAD_BENCH_COOLING_WALLS=<prefix>: Thermal setup on an enclosure of two bodies, a tray and the cover on it (built here on an
-// empty document: a board, a 3 W chip, a heatsink standing up past the tray's rim with a fin (the component Cooler), a fan
-// block with a hub (the component Fan unit), a desk under it). Everything is picked through the app's selection (what clicks
-// in the view and rows of the browser make). The box's page: the tray and the cover picked, shown selected; the parts inside
-// are those within both; the cover taken out, the heatsink is no longer inside; the cover and the desk picked, a box of three.
-// The Heat page picks the parts that make heat (a click ticks or unticks one), then faces (the Faces filter on): a face of the
-// board (a chip joined into it) becomes a heat row with its power, kept when the filter is switched by hand and shown selected
-// again when it is back. The Air page picks the fan (a component, one part), the face its air goes through (Flip turns it
-// round), a custom fan with its numbers under its choice, the heatsink (a component) and its material. The Run page picks
-// nothing and has no Next. Apply writes the enclosure, the heat loads, the fan load and the heatsink's material; closed, the
-// view selects again with its filter as before; opened again, everything is picked from the study.
-// Frames: <prefix>.box.png, .heat.png, .air.png.
+// empty document: a board, a 3 W chip, a heatsink with a fin (the component Cooler), a fan block with a hub (the component Fan
+// unit), a desk under it). Everything is picked through the app's selection (what clicks in the view and rows of the browser
+// make). Nothing is guessed: the box's list opens empty, the heat table holds only the chip the case already heats, the Air
+// page no fan. Each list grows by its Add button, which picks while it is on (it says Done): the tray and the cover added; a
+// click that would toggle one out keeps it; Remove takes out the row chosen; Done stops. The Heat page: the board added
+// (no power, ticked Board), a face of it added through Add face (the Faces filter on) with its power, kept when the filter is
+// switched by hand; a part added and removed. The Air page: Apply refuses fans with none; a fan added (a component, one part),
+// the face its air goes through (Flip turns it round), a custom fan, the heatsink (a component) and its material. Apply
+// writes the enclosure, the heat loads, the fan load, the board and the heatsink's material; opened again, everything is as it
+// was set. Natural convection: no fan load, the air rising (buoyancy); opened again, it is chosen. Frames: <prefix>.box.png,
+// .heat.png, .air.png.
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QListWidget>
+#include <QPushButton>
+#include <QRadioButton>
 #include <QTableWidget>
 #include <QTimer>
 
@@ -67,12 +69,6 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
       const opad::json r = doc->run("feature", args);
       return cutFrom.empty() && r.contains("body_ids") && !r["body_ids"].empty() ? r["body_ids"][0].get<std::string>() : cutFrom;
     };
-    // The bodies the heat table lists: what the assistant takes as inside the box.
-    auto inside = [c] {
-      std::vector<std::string> out;
-      for (int r = 0; r < c->heatTable()->rowCount(); ++r) out.push_back(c->heatTable()->item(r, 0)->data(Qt::UserRole).toString().toStdString());
-      return out;
-    };
     auto has = [](const std::vector<std::string>& v, const std::string& id) { return std::find(v.begin(), v.end(), id) != v.end(); };
     auto pick = [area](const std::vector<std::string>& ids) {  // as clicks in the view or rows of the browser select them
       std::vector<opad::Ref> refs;
@@ -96,20 +92,14 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
       r.index = index;
       return r;
     };
-    auto ticked = [c] {  // the heat table's parts ticked as making heat
-      std::vector<std::string> out;
+    auto row = [c](const std::string& id) {  // the heat table's row of a part
       for (int r = 0; r < c->heatTable()->rowCount(); ++r)
-        if (const QString id = c->heatTable()->item(r, 0)->data(Qt::UserRole).toString(); !id.isEmpty() && c->heatTable()->item(r, 0)->checkState() == Qt::Checked)
-          out.push_back(id.toStdString());
-      return out;
+        if (c->heatTable()->item(r, 0)->data(Qt::UserRole).toString().toStdString() == id) return r;
+      return -1;
     };
     auto pickBox = [c](const char* name) { return c->findChild<PickBox*>(name); };
+    auto button = [c](const char* name) { return c->findChild<QPushButton*>(name); };
     using Pick = CoolingAssistant::Pick;
-    auto wall = [c](const std::string& id) -> QListWidgetItem* {
-      for (int i = 0; i < c->wallChoice()->count(); ++i)
-        if (c->wallChoice()->item(i)->data(Qt::UserRole).toString().toStdString() == id) return c->wallChoice()->item(i);
-      return nullptr;
-    };
     switch (st->phase) {
       case 0: {  // the model
         if (!require(area && doc->hasDocument, "an empty document and the Simulate area")) return finish();
@@ -121,7 +111,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         doc->run("rename", {{"target", st->cover}, {"name", "Cover"}});
         st->board = box("Board", {10, 10, 8}, 60, 50, 1.6);
         st->chip = box("Chip", {30, 30, 9.6}, 10, 10, 2);
-        st->sink = box("Heatsink", {28, 28, 11.6}, 14, 14, 20);  // up to z 31.6: past the tray's rim, under the cover
+        st->sink = box("Heatsink", {28, 28, 11.6}, 14, 14, 20);
         st->fan = box("Fan", {3, 30, 5}, 10, 20, 20);
         st->desk = box("Desk", {-50, -50, -10}, 200, 180, 10);
         st->hub = box("Hub", {5, 38, 13}, 4, 4, 4);
@@ -138,67 +128,88 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
       }
       case 1: {
         QAction* a = area->services().action("simulate.cooling");
-        if (!require(a && a->isEnabled(), "Cooling assistant is enabled")) return finish();
+        if (!require(a && a->isEnabled(), "Thermal setup is enabled")) return finish();
         a->trigger();
         st->phase = 2;
         return;
       }
-      case 2: {  // the box found (by a worker): the tray and the cover picked, shown selected, the page picking
-        if (!c || !c->isVisible() || !c->settled()) return;
-        require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover}, QString("the box's bodies picked: the tray and the cover (%1 picked)").arg(c->pickedBodies().size()));
-        require(c->picking(), "the box's page picks in the view and the browser");
-        const auto sel = area->services().selection().ids;
-        require(has(sel, st->tray) && has(sel, st->cover) && sel.size() == 2, QString("they are what is selected (%1 selected)").arg(sel.size()));
-        const auto in = inside();
-        require(has(in, st->board) && has(in, st->chip) && has(in, st->sink) && has(in, st->fan) && !has(in, st->cover) && !has(in, st->desk),
-                QString("inside both: the board, the chip, the heatsink, the fan block (%1 parts)").arg(in.size()));
-        c->grab().save(prefix + ".box.png");
-        pick({st->tray});  // the cover clicked again: out
+      case 2: {  // nothing guessed: an empty box, the chip the case heats already, no picking until Add
+        if (!c || !c->isVisible()) return;
+        require(c->pickedBodies().empty() && c->wallChoice()->count() == 0, "the box's list opens empty (nothing guessed)");
+        require(c->heatBodies() == std::vector<std::string>{st->chip}, "the heat table holds the chip its load already heats, nothing more");
+        require(!c->picking() && !c->boxAdd()->isChecked() && c->boxAdd()->text() == CoolingAssistant::tr("Add"), "nothing picks until Add is clicked");
+        require(!c->findChild<PickBox*>("coolingBoxPick") && !c->findChild<QListWidget*>("coolingInside"), "no pick box of names, no list of what is inside");
+        c->boxAdd()->click();
+        require(c->pickingWhat() == Pick::Box && c->boxAdd()->isChecked() && c->boxAdd()->text() == CoolingAssistant::tr("Done") &&
+                    w.action("select.bodies")->isChecked(),
+                "Add picks (it says Done) with the Bodies filter");
+        pick({st->tray});
         st->phase = 3;
         return;
       }
       case 3: {
         if (c->pickedBodies() != std::vector<std::string>{st->tray}) return;
-        require(!has(inside(), st->sink), "the cover taken out: the heatsink, standing past the tray's rim, is no longer inside");
-        pick({st->tray, st->cover, st->desk});  // the cover and the desk picked (as rows of the browser with Ctrl)
+        pick({st->tray, st->cover});  // the cover clicked: added
         st->phase = 4;
         return;
       }
       case 4: {
-        if (c->pickedBodies().size() != 3) return;
-        require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover, st->desk} && has(inside(), st->sink) && has(inside(), st->board),
-                "the cover and the desk picked: a box of three bodies, the parts inside");
-        pick({st->tray, st->cover});
+        if (c->pickedBodies().size() != 2) return;
+        require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover} && c->wallChoice()->count() == 2, "the tray and the cover added, two rows");
+        c->grab().save(prefix + ".box.png");
+        pick({st->cover});  // a click that toggled the tray out of the selection: the list only grows
         st->phase = 5;
         return;
       }
-      case 5: {  // the Heat page picks the parts that make heat (bodies), then faces: a chip joined into the board has no body
-        if (c->pickedBodies().size() != 2) return;
-        c->open(1);
-        require(c->pickingWhat() == Pick::Parts && w.action("select.bodies")->isChecked(), "the Heat page picks the parts that make heat (the Bodies filter)");
+      case 5: {  // the tray kept, and selected again
         const auto sel = area->services().selection().ids;
-        require(sel == std::vector<std::string>{st->chip}, QString("the chip, making heat, shown selected (%1 selected)").arg(sel.size()));
+        if (sel.size() != 2) return;
+        require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover} && has(sel, st->tray), "a click never takes a body out: the tray kept, shown selected again");
+        c->wallChoice()->item(1)->setSelected(true);  // the cover's row chosen
+        require(button("coolingBoxRemove")->isEnabled(), "Remove enabled with a row chosen");
+        button("coolingBoxRemove")->click();
+        require(c->pickedBodies() == std::vector<std::string>{st->tray}, "Remove takes out the row chosen");
+        pick({st->tray, st->cover});
+        st->phase = 6;
+        return;
+      }
+      case 6: {
+        if (c->pickedBodies().size() != 2) return;
+        c->boxAdd()->click();  // Done
+        require(!c->picking() && !c->boxAdd()->isChecked() && c->boxAdd()->text() == CoolingAssistant::tr("Add"), "Done: it picks no more");
+        c->open(1);
+        require(!c->picking(), "the Heat page picks nothing until an Add button");
+        c->partAdd()->click();
+        require(c->pickingWhat() == Pick::Parts && w.action("select.bodies")->isChecked(), "Add part picks bodies");
         pick({st->chip, st->board});  // the board clicked
-        st->phase = 50;
+        st->phase = 7;
         return;
       }
-      case 50: {
-        if (ticked().size() != 2) return;
-        require(has(ticked(), st->board), "the board clicked: ticked as making heat");
-        pick({st->chip});  // clicked again: out
-        st->phase = 501;
+      case 7: {
+        if (row(st->board) < 0) return;
+        require(c->heatBodies() == std::vector<std::string>{st->chip, st->board}, "the board added after the chip");
+        const int b = row(st->board);
+        c->heatTable()->item(b, 1)->setData(Qt::EditRole, 0.0);  // a board making no heat
+        c->heatTable()->item(b, 2)->setCheckState(Qt::Checked);
+        c->heatTable()->item(b, 3)->setData(Qt::EditRole, 6);
+        pick({st->chip, st->board, st->desk});  // the desk added, then removed
+        st->phase = 8;
         return;
       }
-      case 501: {
-        if (ticked() != std::vector<std::string>{st->chip}) return;
-        pickBox("coolingHeatFaces")->click();
-        require(c->pickingFaces() && w.action("select.faces")->isChecked(), "Faces that make heat clicked: it picks faces (the Faces filter on)");
+      case 8: {
+        if (row(st->desk) < 0) return;
+        c->heatTable()->clearSelection();
+        c->heatTable()->selectRow(row(st->desk));
+        button("coolingHeatRemove")->click();
+        require(row(st->desk) < 0 && c->heatBodies().size() == 2, "Remove takes the desk's row out");
+        c->faceAdd()->click();
+        require(c->pickingFaces() && w.action("select.faces")->isChecked() && !c->partAdd()->isChecked(), "Add face picks faces (the Faces filter on)");
         require(c->pickedBodies().size() == 2, "the box's bodies kept through the filter's switch");
         area->services().select({face(st->board, 5)});
-        st->phase = 51;
+        st->phase = 9;
         return;
       }
-      case 51: {
+      case 9: {
         if (c->heatFaces().empty()) {  // the faces' pick targets come once the filter is on (a sliced job): clicked then
           area->services().select({face(st->board, 5)});
           return;
@@ -208,27 +219,31 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
                 "the face a row of the heat table, named after its body, no board tick: " + c->heatTable()->item(r, 0)->text());
         c->heatTable()->item(r, 1)->setData(Qt::EditRole, 2.5);
         w.action("select.bodies")->trigger();  // the filter switched by hand: the selection cleared, the face kept
-        require(c->heatFaces().size() == 1, "the Bodies filter switched to by hand: the face picked kept");
+        require(c->heatFaces().size() == 1, "the Bodies filter switched to by hand: the face kept");
         w.action("select.faces")->trigger();
-        st->phase = 52;
+        st->phase = 10;
         return;
       }
-      case 52: {  // back in the Faces filter, the face is shown selected again (a moment later)
+      case 10: {  // back in the Faces filter, the face is shown selected again (a moment later)
         const auto refs = area->services().selection().refs;
         if (refs.size() != 1) return;
         require(refs[0].kind == opad::Ref::Kind::Face && refs[0].body == st->board && refs[0].index == 5 && c->heatFaces().size() == 1,
                 "back in the Faces filter: the face shown selected again");
-        require(c->heatTable()->item(c->heatTable()->rowCount() - 1, 1)->data(Qt::EditRole).toDouble() == 2.5, "its power kept");
         c->grab().save(prefix + ".heat.png");
-        c->open(0);
-        require(c->pickingWhat() == Pick::Box && w.action("select.bodies")->isChecked() && c->pickedBodies().size() == 2, "the box's page picks bodies again");
         c->open(2);
-        require(c->pickingWhat() == Pick::Fan && w.action("select.bodies")->isChecked(), "the Air page picks the fan (the Bodies filter)");
-        require(c->fans().size() == 1 && c->fans()[0].on == std::vector<std::string>{st->fan}, "a first guess: the body called Fan");
-        st->phase = 53;
+        require(!c->picking() && w.action("select.bodies")->isChecked(), "the Air page picks nothing until asked; the filter as it was");
+        require(c->fans().empty(), "no fan guessed");
+        auto* fans = c->findChild<QRadioButton*>("coolingFans");
+        auto* natural = c->findChild<QRadioButton*>("coolingNatural");
+        require(fans && natural && fans->isChecked() && !natural->isChecked(), "how the air moves: Fans or Natural convection, Fans chosen");
+        require(!c->apply() && c->step() == 2, "Apply with fans but none added: refused, on the Air page");
+        for (auto* b : c->findChildren<QPushButton*>())
+          if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
+        require(c->pickingWhat() == Pick::Fan && c->fans().size() == 1, "Add a fan: a fan, picking it");
+        st->phase = 11;
         return;
       }
-      case 53: {  // the fan a component: one part (its row in the browser clicked, once the filter is applied)
+      case 11: {  // the fan a component: one part (its row in the browser clicked, once the filter is applied)
         if (c->fans()[0].on != std::vector<std::string>{st->fanUnit}) {
           area->services().select({body(st->fanUnit)});
           return;
@@ -236,10 +251,10 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         require(pickBox("coolingFanPick")->what().contains("component"), "the fan is the component Fan unit, one part: " + pickBox("coolingFanPick")->what());
         pickBox("coolingWayPick")->click();
         require(c->pickingWhat() == Pick::Way && w.action("select.faces")->isChecked(), "Air goes through clicked: it picks a face");
-        st->phase = 54;
+        st->phase = 12;
         return;
       }
-      case 54: {  // a face of the fan block, once the faces are pickable
+      case 12: {  // a face of the fan block, once the faces are pickable
         if (c->fans()[0].across.body.empty()) {
           area->services().select({face(st->fan, 0)});
           return;
@@ -253,76 +268,89 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         require(f[0] == -v[0] && f[1] == -v[1] && f[2] == -v[2], "Flip turns the way round");
         auto* model = c->findChild<QComboBox*>("coolingFanModel");
         auto* flow = c->findChild<QDoubleSpinBox*>("coolingFanFlow");
-        require(model->isEditable() && !flow->isVisibleTo(c), "the fan model a drop list to search; a library fan hides the custom numbers");
         model->setCurrentIndex(model->count() - 1);  // Custom
         require(flow->isVisibleTo(c) && flow->isEnabled(), "Custom shows its free flow and shut-off pressure under it");
         flow->setValue(12);
         c->findChild<QDoubleSpinBox*>("coolingFanPressure")->setValue(30);
         pickBox("coolingSinkPick")->click();
         require(c->pickingWhat() == Pick::Sink && w.action("select.bodies")->isChecked(), "Heatsink clicked: it picks bodies or a component");
-        st->phase = 55;
+        st->phase = 13;
         return;
       }
-      case 55: {
+      case 13: {
         if (c->fans()[0].sink != std::vector<std::string>{st->sinkUnit}) {
           area->services().select({body(st->sinkUnit)});
           return;
         }
         auto* material = c->findChild<QComboBox*>("coolingSinkMaterial");
-        require(material->isEnabled() && material->isEditable(), "the heatsink's material: a drop list to search, once a heatsink is picked");
         material->setCurrentIndex(material->findData("copper"));
         require(c->fans()[0].material == "copper", "copper chosen for the whole heatsink");
         c->grab().save(prefix + ".air.png");
         c->open(3);
         require(!c->picking() && w.action("select.bodies")->isChecked() && !c->findChild<QPushButton*>("coolingNext")->isVisible(),
                 "the Run page picks nothing, the view's filter as it was; no Next on the last page");
-        c->open(0);
         require(c->apply(), "Apply writes the case");
-        st->phase = 6;
+        st->phase = 14;
         return;
       }
-      case 6: {  // the study names both walls, the face makes its heat; opened again, they are picked from it
-        opad::json enclosure;
-        for (const auto& study : doc->scene.studies)
-          if (study.name == CoolingAssistant::studyName().toStdString()) enclosure = study.def.value("settings", opad::json::object()).value("cfd", opad::json::object()).value("enclosure", opad::json());
-        require(enclosure == opad::json::array({st->tray, st->cover}), "the study's enclosure is the tray and the cover: " + QString::fromStdString(enclosure.dump()));
-        int onFace = 0, onChip = 0;
+      case 14: {  // what Apply wrote; opened again, the same
+        const opad::Study* study = nullptr;
+        for (const auto& s : doc->scene.studies)
+          if (s.name == CoolingAssistant::studyName().toStdString()) study = &s;
+        const opad::json settings = study ? study->def.value("settings", opad::json::object()) : opad::json::object();
+        require(settings.value("cfd", opad::json::object()).value("enclosure", opad::json()) == opad::json::array({st->tray, st->cover}),
+                "the study's enclosure is the tray and the cover");
+        int onFace = 0, onChip = 0, onBoard = 0;
         for (const auto& l : doc->scene.loads)
           if (l.kind == "heat" && l.load_case == CoolingAssistant::kCase && l.refs.size() == 1) {
             const auto& r = l.refs.front();
             onFace += r.kind == opad::Ref::Kind::Face && r.body == st->board && r.index == 5 && l.def.value("value", 0.0) == 2.5;
             onChip += r.kind == opad::Ref::Kind::Body && r.body == st->chip && l.def.value("value", 0.0) == 3;
+            onBoard += r.kind == opad::Ref::Kind::Body && r.body == st->board;
           }
-        require(onFace == 1 && onChip == 1, QString("heat loads: 2.5 W on the board's face, 3 W in the chip (%1, %2)").arg(onFace).arg(onChip));
+        require(onFace == 1 && onChip == 1 && onBoard == 0, QString("heat loads: 2.5 W on the board's face, 3 W in the chip, none in the board (%1, %2, %3)").arg(onFace).arg(onChip).arg(onBoard));
+        const opad::json mats = settings.value("materials", opad::json::object());
+        require(mats.value(st->board, opad::json()).value("pcb", opad::json()).value("layers", 0) == 6, "the board a PCB of 6 copper layers");
+        require(mats.value(st->sink, opad::json()).value("material", "") == "copper" && mats.value(st->fin, opad::json()).value("material", "") == "copper",
+                "the heatsink's two bodies both copper");
         const opad::Load* fan = nullptr;
         for (const auto& l : doc->scene.loads)
           if (l.kind == "fan" && l.load_case == CoolingAssistant::kCase) fan = &l;
         require(fan && fan->refs.size() == 1 && fan->refs[0].body == st->fanUnit && fan->def.value("heatsink", opad::json()) == opad::json::array({st->sinkUnit}) &&
-                    fan->def.value("fan", opad::json()) == opad::json{{"flow", 12.0}, {"pressure", 30.0}} && fan->def.contains("across") &&
-                    fan->def.value("vector", opad::Vec3{}) == opad::Vec3{-st->way[0], -st->way[1], -st->way[2]},
-                "the fan load: on the component, through the heatsink component, custom 12 m3/h at 30 Pa, the way flipped: " +
-                    QString::fromStdString(fan ? fan->def.dump() : std::string()));
-        opad::json mats;
-        for (const auto& study : doc->scene.studies)
-          if (study.name == CoolingAssistant::studyName().toStdString()) mats = study.def.value("settings", opad::json::object()).value("materials", opad::json::object());
-        require(mats.value(st->sink, opad::json()).value("material", "") == "copper" && mats.value(st->fin, opad::json()).value("material", "") == "copper",
-                "the heatsink's two bodies both copper in the study");
+                    fan->def.value("fan", opad::json()) == opad::json{{"flow", 12.0}, {"pressure", 30.0}} &&
+                    fan->def.value("vector", opad::Vec3{}) == opad::Vec3{-st->way[0], -st->way[1], -st->way[2]} &&
+                    !settings.value("cfd", opad::json::object()).value("buoyancy", true),
+                "the fan load: on the component, through the heatsink, custom 12 m3/h at 30 Pa, the way flipped; no buoyancy");
         c->close();
         require(!c->picking(), "closed: the view selects again");
         c->open(1);
-        st->phase = 7;
+        require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover}, "opened again: the tray and the cover");
+        const int b = row(st->board);
+        require(c->heatBodies() == std::vector<std::string>{st->chip, st->board} && b >= 0 && c->heatTable()->item(b, 2)->checkState() == Qt::Checked &&
+                    c->heatTable()->item(b, 3)->data(Qt::EditRole).toInt() == 6 && c->heatFaces().size() == 1,
+                "opened again: the chip, the board (a PCB of 6 layers) and the face");
+        const auto& f = c->fans();
+        require(f.size() == 1 && f[0].on == std::vector<std::string>{st->fanUnit} && f[0].sink == std::vector<std::string>{st->sinkUnit} && f[0].material == "copper",
+                "opened again: the fan as set");
+        // Natural convection: no fans, the air rising
+        c->open(2);
+        c->findChild<QRadioButton*>("coolingNatural")->setChecked(true);
+        require(!c->fanList()->isEnabled() && c->naturalConvection(), "Natural convection: the fans set aside");
+        require(c->apply(), "Apply with natural convection");
+        st->phase = 15;
         return;
       }
-      case 7: {
-        if (!c->settled()) return;
-        require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover}, "opened again: the tray and the cover picked");
-        const int r = c->heatTable()->rowCount() - 1;
-        require(c->heatFaces().size() == 1 && c->pickingFaces() && c->heatTable()->item(r, 1)->data(Qt::EditRole).toDouble() == 2.5,
-                "opened again on the Heat page: the face picked, with its 2.5 W");
-        const auto& f = c->fans();
-        require(f.size() == 1 && f[0].on == std::vector<std::string>{st->fanUnit} && f[0].sink == std::vector<std::string>{st->sinkUnit} && f[0].material == "copper" &&
-                    f[0].model.isEmpty() && f[0].flow == 12 && !f[0].across.body.empty() && f[0].vector() == opad::Vec3{-st->way[0], -st->way[1], -st->way[2]},
-                "opened again: the fan as set (its component, the face and way, custom numbers, the heatsink and its copper)");
+      case 15: {
+        int fans = 0;
+        for (const auto& l : doc->scene.loads) fans += l.kind == "fan" && l.load_case == CoolingAssistant::kCase;
+        bool buoyant = false;
+        for (const auto& s : doc->scene.studies)
+          if (s.name == CoolingAssistant::studyName().toStdString())
+            buoyant = s.def.value("settings", opad::json::object()).value("cfd", opad::json::object()).value("buoyancy", false);
+        require(fans == 0 && buoyant, "natural convection written: no fan load, the air rising (buoyancy)");
+        c->close();
+        c->open(2);
+        require(c->findChild<QRadioButton*>("coolingNatural")->isChecked(), "opened again: Natural convection chosen");
         c->close();
         require(w.action("select.bodies")->isChecked(), "closed: the Bodies filter as before");
         return finish();
@@ -334,9 +362,8 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
 }
 
 // OPAD_BENCH_COOLING_PERF=<prefix>, meant for the Engine (or any big model): once its bodies are on screen (unhidden in memory,
-// never saved), Thermal setup opened from its command: the command returns at once and nothing stalls the UI over 250 ms while
-// the bodies' boxes are measured and the box is found (a worker); then a body picked and taken out takes a few milliseconds
-// (from the boxes kept). Opening it used to measure every body's shape again per candidate box on the UI thread: a minute.
+// never saved), Thermal setup opened from its command: the command returns at once and nothing stalls the UI over 250 ms; a
+// body added takes a few milliseconds. (It once measured every body's shape per candidate box on the UI thread: a minute.)
 OPAD_BENCH(OPAD_BENCH_COOLING_PERF, coolingPerf) {
   struct State {
     int phase = 0, ticks = 0, settled = 0;
@@ -387,24 +414,22 @@ OPAD_BENCH(OPAD_BENCH_COOLING_PERF, coolingPerf) {
         st->phase = 1;
         return;
       }
-      case 1: {  // the box found on a worker, the UI never held
-        if (!c || !c->settled()) return;
+      case 1: {  // opened at once, the UI never held; a body added and removed quickly
+        if (!c || !c->isVisible()) return;
         const trace::Stalls stalls = trace::stalls();
-        require(stalls.longest < 250, QString("the box found in %1 ms, the longest stall meanwhile %2 ms").arg(st->clock.elapsed()).arg(stalls.longest));
-        require(c->picking() && !c->pickedBodies().empty(), QString("the box's page picks, %1 bodies picked").arg(c->pickedBodies().size()));
-        // One more body picked, then taken out again (what the app's selection hands it): what is inside follows from the boxes.
-        std::vector<std::string> more = c->pickedBodies();
+        require(stalls.longest < 250, QString("opened in %1 ms, the longest stall meanwhile %2 ms").arg(st->clock.elapsed()).arg(stalls.longest));
+        c->boxAdd()->click();
+        require(c->picking() && c->pickedBodies().empty(), "the box's list opens empty and Add picks");
+        std::string first;
         for (const auto& id : doc->scene.all_bodies())
-          if (std::find(more.begin(), more.end(), id) == more.end()) {
-            more.push_back(id);
+          if (doc->scene.effectively_visible(id)) {
+            first = id;
             break;
           }
         QElapsedTimer t;
         t.start();
-        const std::vector<std::string> before = c->pickedBodies();
-        c->selectionChanged(more, {});
-        c->selectionChanged(before, {});
-        require(t.elapsed() < 250 && c->pickedBodies() == before, QString("a body picked and taken out in %1 ms (what is inside follows from the boxes)").arg(t.elapsed()));
+        c->selectionChanged({first}, {});
+        require(t.elapsed() < 250 && c->pickedBodies() == std::vector<std::string>{first}, QString("a body added in %1 ms").arg(t.elapsed()));
         c->close();
         return finish();
       }

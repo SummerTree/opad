@@ -124,6 +124,10 @@ class AreaServices {
   // this way too (it is not remembered at exit).
   QString workspace() const;
   void setWorkspace(const QString& id);
+  // The ribbon's current tab, by RibbonLayout id ("simulate.thermal"), and making one of the current workspace's current
+  // (false: it is not in the row); from ready on.
+  QString ribbonTab() const;
+  bool setRibbonTab(const QString& id);
   // Shows a contextual tab the area added (RibbonLayout::addContextualTab) first in its workspace's row, current, in its
   // accent; hidden again, the tab that was current comes back. False: no such contextual tab.
   bool setContextualTab(const QString& id, bool shown);
@@ -162,6 +166,8 @@ class AreaController : public QObject {
   // Another workspace is shown (services().workspace()): the user switched, or a sketch opened ("sketch") or closed. The
   // one the window starts in is not reported: read it in ready(). An area's own workspace swaps its panels or pages here.
   virtual void workspaceChanged(const QString& id) {}
+  // Another ribbon tab is current (services().ribbonTab()): clicked, or the workspace's switched. From ready on.
+  virtual void tabChanged(const QString& tabId) {}
   // Before the document is replaced (open, new, close) or the window closes: false keeps it, e.g. when the user cancels
   // giving up unfinished work. Asked first, also in benches (which answer no other question).
   virtual bool maybeClose() { return true; }

@@ -98,8 +98,47 @@ bool Viewport::detectedPoint(gp_Pnt& p) const {
 // The pick tolerance reaches past what is drawn both ways: a vertex's through a thin wall, and a face's to the face of a
 // silhouette edge seen edge-on, nearer than that edge or vertex though both are in sight. So the pointer takes the first
 // owner in pick order that is not an occluder and whose point is in sight, else nothing.
+// A selected body is drawn raised (the Top layer, or Topmost for the X-ray), and OCCT's picker ranks layers before depth: a
+// click on a body in front of a selected one took the selected one behind it, and where a click adds or takes out (a tool's
+// picks, Thermal setup) took it out. What the pointer is on is the nearest body under it; a body raised by its selection
+// only counts at its own depth (unless the view selects through).
+void Viewport::preferNearest() {
+  if (m_selectThrough) return;
+  const auto& selector = m_ctx->MainSelector();
+  auto bodyOf = [this](const Handle(SelectMgr_EntityOwner)& owner) -> const Item* {
+    if (owner.IsNull() || !Handle(OccluderOwner)::DownCast(owner).IsNull()) return nullptr;
+    const auto node = m_nodeOf.find(Handle(AIS_InteractiveObject)::DownCast(owner->Selectable()).get());
+    if (node == m_nodeOf.end()) return nullptr;
+    const auto item = m_items.find(node->second);
+    return item == m_items.end() ? nullptr : &item->second;
+  };
+  auto raised = [this](const Item* item) { return item && !item->ais.IsNull() && item->ais->ZLayer() != item->look.layer && m_ctx->IsSelected(item->ais); };
+  const auto first = m_ctx->DetectedOwner();
+  const Item* firstItem = bodyOf(first);
+  if (!raised(firstItem)) return;
+  int at = 0;
+  for (int i = 1; i <= selector->NbPicked() && !at; ++i)
+    if (selector->Picked(i) == first) at = i;
+  if (!at) return;
+  const SelectMgr_SortCriterion& was = selector->PickedData(at);
+  Handle(SelectMgr_EntityOwner) take;
+  double nearest = was.Depth - was.Tolerance;
+  for (int i = 1; i <= selector->NbPicked(); ++i) {
+    const auto owner = selector->Picked(i);
+    const Item* item = bodyOf(owner);
+    if (!item || item == firstItem || raised(item)) continue;
+    const SelectMgr_SortCriterion& c = selector->PickedData(i);
+    if (c.Depth + c.Tolerance < nearest) nearest = c.Depth, take = owner;
+  }
+  if (take.IsNull()) return;
+  for (int i = 0; i < 64 && m_ctx->DetectedOwner() != take; ++i) m_ctx->HilightNextDetected(m_view, Standard_False);
+  if (m_ctx->DetectedOwner() != take) return;
+  if (trace::enabled()) trace::log("pick: the nearest body under the pointer, not the selected one behind it");
+}
+
 bool Viewport::dropOccluded() {
   if (!m_initialised || !m_ctx->HasDetected() || m_hoverCycled) return false;
+  preferNearest();
   const bool subShapes = m_filter == SelFilter::Edge || m_filter == SelFilter::Vertex;
   const auto& selector = m_ctx->MainSelector();
   auto hidden = [&](const Handle(SelectMgr_EntityOwner)& owner) {

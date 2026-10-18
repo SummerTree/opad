@@ -18,6 +18,7 @@ def engine():
 CASES = [
     ("simulate", "empty", {"OPAD_BENCH_SIMULATE": "{prefix}"}),
     ("simulate-rtl", "empty", {"OPAD_BENCH_SIMULATE": "{prefix}", "OPAD_LANG": "ar"}),
+    ("simulate-tabs", "empty", {"OPAD_BENCH_SIMTABS": "1"}),  # the Simulation panel follows the ribbon's tab (app/SimulateTabsBench.cpp)
     # Thermal setup (the cooling assistant): its example built, the pages filled, the case written (app/CoolingBench.cpp).
     ("cooling", "empty", {"OPAD_BENCH_COOLING": "{prefix}"}),
     ("cooling-rtl", "empty", {"OPAD_BENCH_COOLING": "{prefix}", "OPAD_LANG": "ar"}),

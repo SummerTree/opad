@@ -14,6 +14,7 @@
 
 #include <AIS_InteractiveObject.hxx>
 
+#include "SimulatePanel.hpp"
 #include "AreaController.hpp"
 #include "BrowserDelegate.hpp"
 #include "opad/sim/kinematics.hpp"
@@ -21,7 +22,6 @@
 
 class Job;
 class SimLegend;
-class SimulatePanel;
 class ToolPanel;
 
 class Simulate : public AreaController {
@@ -35,6 +35,7 @@ class Simulate : public AreaController {
   void selectionChanged(const SelectionContext& selection) override;
   void documentChanged(bool replaced) override;
   void workspaceChanged(const QString& id) override;
+  void tabChanged(const QString& tabId) override;  // the panel follows the tab: Mechanism, Structure or Thermal
   void positionOverlays(const QRect& viewport) override;
 
   // For benches: what is shown.
@@ -63,6 +64,9 @@ class Simulate : public AreaController {
   void addJoint(const QString& kind);
   void newStudy(const QString& kind);
   void chooseStudy(const std::string& id);
+  void showMode(SimulatePanel::Mode mode);  // the panel's sections and studies for a tab
+  void followStudy(const std::string& id);  // the tab (and the panel) of that study's kind
+  SimulatePanel::Mode studyMode(const opad::Study& study) const;
   void showRun();
   void showSeries(int index);
   void play();
@@ -78,6 +82,7 @@ class Simulate : public AreaController {
   std::vector<std::string> pickedJoints() const;  // joints chosen in the browser's Simulation folder, in order
 
   SimulatePanel* m_form = nullptr;
+  bool m_modeShown = false;
   ToolPanel* m_panel = nullptr;
   SimLegend* m_legend = nullptr;
   std::unique_ptr<opad::sim::Mechanism> m_mech;  // the document's mechanism, for the slider's preview

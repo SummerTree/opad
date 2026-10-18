@@ -826,6 +826,7 @@ class Viewport : public QWidget, protected AIS_ViewController {
   bool detectedPoint(gp_Pnt& p) const;  // where the pointer met the detected owner
   // A detected occluder, or a detected edge or vertex whose point is behind a face (Edge and Vertex modes): cleared.
   bool dropOccluded();
+  void preferNearest();  // a body in front taken over a selected one behind it (raised by its selection's layer)
   // select other (ViewportSelectOther.cpp)
   bool selectOtherOwner(const Handle(SelectMgr_EntityOwner)& owner, opad::Ref& ref, std::string& candidate) const;
   bool detectOwner(const Handle(SelectMgr_EntityOwner)& owner);

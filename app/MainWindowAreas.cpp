@@ -124,6 +124,8 @@ QString AreaServices::activeCommand() const {
 void AreaServices::positionOverlays() { m_window->positionOverlays(); }
 QString AreaServices::workspace() const { return m_window->workspaceId(); }
 void AreaServices::setWorkspace(const QString& id) { m_window->setWorkspace(id); }
+QString AreaServices::ribbonTab() const { return m_window->m_ribbon->currentTabId(); }
+bool AreaServices::setRibbonTab(const QString& id) { return m_window->m_ribbon->setCurrentTabId(id); }
 bool AreaServices::setContextualTab(const QString& id, bool shown) { return m_window->setContextualTab(id, shown); }
 void AreaServices::addTabRowWidget(QWidget* widget) { m_window->m_ribbon->addTabRowWidget(widget); }
 void AreaServices::setCentralPage(QWidget* page) {

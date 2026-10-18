@@ -633,6 +633,8 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
   const OpenFoam foam = openfoam();
   if (!foam.found())
     throw Error("the CFD air needs OpenFOAM: install it (Ubuntu: apt install openfoam; or OpenCFD's packages) or set OPAD_OPENFOAM to its directory");
+  // The parts' heat is solved in CalculiX on a Netgen mesh: said now, not after the air has taken its minutes.
+  if (const json e = engines(); !e.value("thermal", false)) throw Error(e.value("note", std::string("thermal studies need Netgen and CalculiX")));
   const double ambient = st.value("ambient", 25.0);
   const double T0 = ambient + 273.15;
   // quality: quick (screening a sweep), normal, fine: the box's cells, the flow's iterations, how settled the heat must be;
@@ -976,7 +978,9 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
   run.summary["case_dir"] = dir.keep ? json(path_to_utf8(dir.p)) : json(nullptr);
   // Programs: run with the project directory known (its etc files), or through a full install's wrapper.
   const int timeout = int(st.value("timeout", 7200.0) * 1000);
-  auto foam_run = [&](const std::string& app, const std::vector<std::string>& args, const fs::path& where, double at) {
+  // `at`: where the run is when the program starts; `to`: where it is once it is done (its share of the bar, followed through
+  // its log: the mesher's phases, a solver's iterations); a program of seconds keeps `at`.
+  auto foam_run = [&](const std::string& app, const std::vector<std::string>& args, const fs::path& where, double at, double to = -1) {
     report(at, "OpenFOAM: " + app);
     if (!foam.project.empty()) {
 #ifdef _WIN32
@@ -989,7 +993,51 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     detail::RunOptions ro;
     ro.output = where / ("log." + app);
     ro.timeout_ms = timeout;
-    ro.cancelled = [&] { return progress && !progress(at, "OpenFOAM: " + app); };
+    // The program's log read as it grows (once a second): a run of minutes is seen to move. The mesher says its phase and the
+    // iteration in it; a solver its time, against the end time of its controlDict.
+    double end_time = 0;
+    try {
+      const std::string control = read_text_file(where / "system" / "controlDict");
+      if (const size_t e = control.find("endTime "); e != std::string::npos) end_time = std::atof(control.c_str() + e + 8);
+    } catch (...) {
+    }
+    double shown = at;
+    std::string phase = "OpenFOAM: " + app;
+    auto read_at = std::chrono::steady_clock::now();
+    double first_time = -1;
+    ro.cancelled = [&] {
+      const auto now = std::chrono::steady_clock::now();
+      if (to > at && now - read_at > std::chrono::seconds(1)) {
+        read_at = now;
+        std::string tail;
+        if (std::ifstream in(ro.output, std::ios::binary | std::ios::ate); in) {
+          const std::streamoff size = in.tellg(), take = std::min<std::streamoff>(size, 65536);
+          in.seekg(size - take);
+          tail.resize(size_t(take));
+          in.read(tail.data(), take);
+        }
+        auto last = [&](const char* word) {
+          const size_t i = tail.rfind(word);
+          return i == std::string::npos ? -1.0 : std::atof(tail.c_str() + i + std::strlen(word));
+        };
+        if (app == "snappyHexMesh") {
+          // three phases: castellating (refinement), snapping to the parts (morph iterations), adding layers
+          const size_t refine = tail.rfind("Refinement phase"), snap = tail.rfind("Morphing phase"), layer = tail.rfind("layer addition phase");
+          const double morph = last("Morph iteration "), layers = last("Layer addition iteration ");
+          double sub = 0.05;
+          if (layer != std::string::npos || layers >= 0) sub = 0.7 + 0.25 * std::min(1.0, (layers + 1) / 10.0), phase = "Meshing the air: adding layers along the parts";
+          else if (snap != std::string::npos || morph >= 0) sub = 0.3 + 0.4 * std::min(1.0, (morph + 1) / 10.0), phase = "Meshing the air: fitting it to the parts";
+          else if (refine != std::string::npos) sub = 0.15, phase = "Meshing the air: refining around the parts";
+          shown = std::max(shown, at + (to - at) * sub);
+        } else if (const double t = last("\nTime = "); t > 0 && end_time > 0) {
+          if (first_time < 0) first_time = t - 1;
+          const double sub = std::clamp((t - first_time) / std::max(1.0, end_time - first_time), 0.0, 1.0);
+          shown = std::max(shown, at + (to - at) * sub);
+          phase = "OpenFOAM: " + app + ", iteration " + std::to_string(int(t)) + " of " + std::to_string(int(end_time));
+        }
+      }
+      return progress && !progress(shown, phase);
+    };
     std::vector<fs::path> a;
     fs::path program;
     if (!foam.wrapper.empty()) program = foam.wrapper, a.push_back(app);
@@ -1146,7 +1194,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
   const auto t_mesh = std::chrono::steady_clock::now();
   foam_run("blockMesh", {}, cas, 0.05);
   report(0.08, "Meshing the air around the parts (snappyHexMesh)");
-  foam_run("snappyHexMesh", {"-overwrite"}, cas, 0.08);
+  foam_run("snappyHexMesh", {"-overwrite"}, cas, 0.08, 0.3);
   // The air: in a duct, the cells in no part's zone, which splitMeshRegions names domain0; in an enclosure, the whole mesh.
   const std::string fluid = "domain0";
   std::vector<std::string> solids;
@@ -1381,7 +1429,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
             "internalField uniform 0;\nboundaryField\n{\n  \".*\" { type calculated; value uniform 0; }\n}\n";
     } else if (!buoyant) {
       report(0.32, "Solving the air's flow (simpleFoam)");
-      const std::string log = foam_run("simpleFoam", {}, flow, 0.32);
+      const std::string log = foam_run("simpleFoam", {}, flow, 0.32, 0.45);
       last = latest_time(flow);
       if (last.empty() || last == "0") throw Error("cfd: simpleFoam wrote no flow");
       const bool converged = log.find("SIMPLE solution converged") != std::string::npos;
@@ -1961,7 +2009,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         "application chtMultiRegionSimpleFoam; startFrom latestTime; startTime 0; stopAt endTime; endTime " + std::to_string(done) +
             "; deltaT 1; writeControl timeStep; writeInterval " + std::to_string(chunk) +
             "; purgeWrite 1; writeFormat ascii; writePrecision 10; writeCompression off; timeFormat general; timePrecision 8; runTimeModifiable false;\n");
-    const std::string log = foam_run("chtMultiRegionSimpleFoam", {}, cas, 0.45 + 0.5 * double(done) / most);
+    const std::string log = foam_run("chtMultiRegionSimpleFoam", {}, cas, 0.45 + 0.5 * double(done) / most, 0.45 + 0.5 * double(std::min(done + 1, most)) / most);
     // The hottest the parts got in the chunk's last iteration: each solid region's "Min/max T".
     double hot = -1e300;
     const size_t last_it = log.rfind("\nTime = ");
