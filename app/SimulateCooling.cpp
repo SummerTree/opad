@@ -206,14 +206,7 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     });
     connect(m_walls, &QListWidget::itemSelectionChanged, this, [this] {
       m_boxRemove->setEnabled(!m_walls->selectedItems().isEmpty());
-      if (m_picking != Pick::None || !m_hooks.select || m_walls->selectedItems().isEmpty()) return;
-      std::vector<opad::Ref> refs;  // the bodies chosen in the list, shown in the view
-      for (const QListWidgetItem* item : m_walls->selectedItems()) {
-        opad::Ref r;
-        r.body = item->data(Qt::UserRole).toString().toStdString();
-        refs.push_back(r);
-      }
-      m_hooks.select(refs);
+      lightChosen();  // which body a row is: lit in the view
     });
     m_example = new QPushButton(tr("Build the example: a board in a vented box"), this);
     m_example->setObjectName("coolingExample");
@@ -261,8 +254,14 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       if (m_picking == Pick::Parts || m_picking == Pick::Faces) reselect();
       scheduleSync();
     });
-    connect(m_heat, &QTableWidget::itemChanged, this, [this] { scheduleSync(); });  // a power, a board's tick or layers
-    connect(m_heat, &QTableWidget::itemSelectionChanged, this, [this] { m_heatRemove->setEnabled(m_heat->selectionModel()->hasSelection()); });
+    connect(m_heat, &QTableWidget::itemChanged, this, [this] {  // a power, a board's tick or layers
+      scheduleSync();
+      lightChosen();  // a board ticked is lit as one
+    });
+    connect(m_heat, &QTableWidget::itemSelectionChanged, this, [this] {
+      m_heatRemove->setEnabled(m_heat->selectionModel()->hasSelection());
+      lightChosen();  // which part or face a row is: lit in the view (a face too, whatever the filter)
+    });
   }
   // ---- 3. air
   {
@@ -371,6 +370,7 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       if (m_fanLoading || row < 0 || row == m_fan) return;
       m_fan = row;
       showFan();
+      lightChosen();
       if (m_picking == Pick::Fan || m_picking == Pick::Way || m_picking == Pick::Sink) reselect();  // this fan's picks shown
     });
     connect(m_fanPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Fan); });
@@ -487,6 +487,7 @@ void CoolingAssistant::open(int at) {
 void CoolingAssistant::hideEvent(QHideEvent* e) {
   if (m_syncTimer->isActive()) sync();  // a change still to write
   stopPicking();  // the view's clicks select again
+  if (m_hooks.light) m_hooks.light({});  // what its rows lit goes
   QWidget::hideEvent(e);
 }
 
@@ -500,17 +501,10 @@ void CoolingAssistant::showStep(int i) {
   if (i >= 0 && i < m_pages->count()) m_pages->setCurrentIndex(i);
   m_back->setEnabled(i > 0);
   m_next->setVisible(i < steps() - 1);  // the last page runs (its Run button)
-  // A page picks only while one of its Add buttons (or a fan's pick boxes) is on; on arriving, what it holds is shown selected.
+  // A page picks only while one of its Add buttons (or a fan's pick boxes) is on; the rows chosen in its list are lit in the
+  // view in the colour of what they are (a selection's blue over them would turn a heat source's red purple).
   stopPicking();
-  if (!isVisible() || !m_hooks.select) return;
-  std::vector<std::string> ids = i == 0 ? m_picked : i == 1 ? heatBodies() : std::vector<std::string>{};
-  std::vector<opad::Ref> refs;
-  for (const auto& id : ids) {
-    opad::Ref r;
-    r.body = id;
-    refs.push_back(r);
-  }
-  if (i <= 1) m_hooks.select(refs);
+  lightChosen();
 }
 
 // ---------------------------------------------------------------- the pages from the document
@@ -581,6 +575,35 @@ void CoolingAssistant::reload() {
   showStep(step());
 }
 
+// The rows chosen on the page shown, lit in the view in the colour of what they are: the box's bodies, a part that makes heat
+// (a board as one), a face (a chip joined into its board), the current fan with its heatsink. Choosing a row says which is which.
+void CoolingAssistant::lightChosen() {
+  if (!m_hooks.light || !isVisible()) return;  // closed: hideEvent put its lights out, and the browser's rows may light now
+  std::vector<std::pair<opad::Ref, std::string>> lit;
+  auto body = [](const std::string& id) {
+    opad::Ref r;
+    r.body = id;
+    return r;
+  };
+  if (step() == 0) {
+    for (const QListWidgetItem* item : m_walls->selectedItems()) lit.push_back({body(item->data(Qt::UserRole).toString().toStdString()), "box"});
+  } else if (step() == 1) {
+    for (const QModelIndex& i : m_heat->selectionModel()->selectedRows()) {
+      const QTableWidgetItem* part = m_heat->item(i.row(), 0);
+      if (!part) continue;
+      if (const QString face = part->data(kFaceRole).toString(); !face.isEmpty()) lit.push_back({opad::Ref::parse(face.toStdString()), "heat"});
+      else
+        lit.push_back({body(part->data(Qt::UserRole).toString().toStdString()),
+                       m_heat->item(i.row(), 2) && m_heat->item(i.row(), 2)->checkState() == Qt::Checked ? "board" : "heat"});
+    }
+  } else if (step() == 2 && !naturalConvection() && m_fan >= 0 && m_fan < int(m_fanSpecs.size())) {
+    const FanSpec& f = m_fanSpecs[size_t(m_fan)];
+    for (const auto& id : f.on) lit.push_back({body(id), "fan"});
+    for (const auto& id : f.sink) lit.push_back({body(id), "heatsink"});
+  }
+  m_hooks.light(lit);
+}
+
 std::vector<std::string> CoolingAssistant::walls() const { return m_picked; }
 
 bool CoolingAssistant::pickable(const std::string& id) const {
@@ -627,6 +650,7 @@ void CoolingAssistant::stopPicking() {
   if (m_hooks.accumulate) m_hooks.accumulate(false);
   if (m_hooks.filter && !m_filterBefore.isEmpty()) m_hooks.filter(m_filterBefore);  // the filter the view had
   m_filterBefore.clear();
+  if (m_hooks.select) m_hooks.select({});  // the picks were shown selected; now the rows chosen say which is which, in their colour
   syncAdd();
   showFan();
 }
@@ -876,6 +900,7 @@ void CoolingAssistant::showFans() {
   m_fanLoading = false;
   showFan();
   scheduleSync();
+  if (step() == 2) lightChosen();  // the current fan and its heatsink as picked now
 }
 
 void CoolingAssistant::showFan() {

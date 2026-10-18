@@ -14,6 +14,7 @@
 #include "Icons.hpp"
 #include "Jobs.hpp"
 #include "SimulateArea.hpp"
+#include "Tracking.hpp"
 #include "Viewport.hpp"
 #include "opad/materials.hpp"
 
@@ -120,22 +121,25 @@ std::vector<browser::Item> Simulate::setupRows(const opad::Study& st) const {
   return rows;
 }
 
+void Simulate::addTarget(std::vector<Lit>& out, const std::string& row, const opad::Ref& r, const std::string& nature) const {
+  if (r.body.empty()) return;
+  const opad::Scene& s = services().document()->scene;
+  const opad::Node* n = s.node(r.body);
+  if (n && n->kind != opad::Node::Kind::Body) {  // a component (a fan's own model): each of its bodies
+    for (const auto& b : s.bodies_under(r.body)) {
+      opad::Ref body;
+      body.body = b;
+      out.push_back({row, nature, body});
+    }
+    return;
+  }
+  out.push_back({row, nature, r});
+}
+
 std::vector<Simulate::Lit> Simulate::rowTargets(const std::string& row) const {
   std::vector<Lit> out;
   const opad::Scene& s = services().document()->scene;
-  auto add = [&](const opad::Ref& r, const std::string& nature) {
-    if (r.body.empty()) return;
-    const opad::Node* n = s.node(r.body);
-    if (n && n->kind != opad::Node::Kind::Body) {  // a component (a fan's own model): each of its bodies
-      for (const auto& b : s.bodies_under(r.body)) {
-        opad::Ref body;
-        body.body = b;
-        out.push_back({row, nature, body});
-      }
-      return;
-    }
-    out.push_back({row, nature, r});
-  };
+  auto add = [&](const opad::Ref& r, const std::string& nature) { addTarget(out, row, r, nature); };
   auto body = [](const std::string& id) {
     opad::Ref r;
     r.body = id;
@@ -170,18 +174,34 @@ std::vector<Simulate::Lit> Simulate::rowTargets(const std::string& row) const {
 }
 
 void Simulate::lightRows(const std::vector<std::string>& rows) {
+  m_litRefs.clear();
+  std::vector<Lit> targets;
+  for (const auto& row : rows) {
+    const auto more = rowTargets(row);
+    targets.insert(targets.end(), more.begin(), more.end());
+  }
+  lightTargets(std::move(targets));
+}
+
+void Simulate::lightRefs(const std::vector<std::pair<opad::Ref, std::string>>& refs) {
+  m_litRefs = refs;
+  std::vector<Lit> targets;
+  for (const auto& [r, nature] : refs) addTarget(targets, "setup", r, nature);
+  lightTargets(std::move(targets));
+}
+
+void Simulate::lightTargets(std::vector<Lit> targets) {
   Viewport* view = services().viewport();
   if (!view) return;
   view->clearSimTargets();
   for (auto& [at, badge] : std::exchange(m_badges, {})) delete badge;
   m_lit.clear();
-  for (const auto& row : rows)
-    for (Lit t : rowTargets(row)) {
-      opad::Vec3 centre{0, 0, 0};
-      t.shown = view->showSimTarget(t.target, natureColor(t.nature), &centre);
-      if (t.shown && m_badges.size() < kMaxBadges) m_badges.push_back({centre, new Badge(view, natureColor(t.nature), natureIcon(t.nature))});
-      m_lit.push_back(t);
-    }
+  for (Lit t : targets) {
+    opad::Vec3 centre{0, 0, 0};
+    t.shown = view->showSimTarget(t.target, natureColor(t.nature), &centre);
+    if (t.shown && m_badges.size() < kMaxBadges) m_badges.push_back({centre, new Badge(view, natureColor(t.nature), natureIcon(t.nature))});
+    m_lit.push_back(t);
+  }
   placeBadges();
 }
 

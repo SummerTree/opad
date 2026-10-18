@@ -586,7 +586,7 @@ void Simulate::selectionChanged(const SelectionContext& selection) {
   for (const auto& id : now)
     if (std::find(kept.begin(), kept.end(), id) == kept.end()) kept.push_back(id);
   m_picked = kept;
-  lightRows(m_picked);  // what the rows stand for, lit in the view by nature
+  if (!now.empty() || m_litRefs.empty()) lightRows(m_picked);  // what the rows stand for, lit by nature (Thermal setup's rows keep theirs)
   if (m_panel && m_panel->isVisible() && now.size() == 1 && now[0].rfind("sim:j:", 0) == 0) chooseJoint(now[0].substr(6));
   if (m_panel && m_panel->isVisible() && now.size() == 1 && now[0].rfind("sim:s:", 0) == 0) chooseStudy(now[0].substr(6));  // its row picked
 }
@@ -609,7 +609,8 @@ void Simulate::documentChanged(bool replaced) {
   }
   if (resultShown() && hiddenResultBodies() != m_mapHidden) showResults(true);
   if (m_panel && m_panel->isVisible()) refresh();
-  if (!m_picked.empty() || !m_lit.empty()) QTimer::singleShot(0, this, [this] { lightRows(m_picked); });  // the rows' targets may have moved or gone
+  if (!m_picked.empty() || !m_lit.empty())  // the targets may have moved or gone: lit again from what lit them (the browser, Thermal setup)
+    QTimer::singleShot(0, this, [this] { m_litRefs.empty() ? lightRows(m_picked) : lightRefs(std::vector<std::pair<opad::Ref, std::string>>(m_litRefs)); });
 }
 
 std::vector<std::string> Simulate::hiddenResultBodies() const {
@@ -872,6 +873,7 @@ void Simulate::openCooling(int step) {
       showRun();
       showResults(true);
     };
+    hooks.light = [this](const std::vector<std::pair<opad::Ref, std::string>>& refs) { lightRefs(refs); };
     hooks.setVisible = [this](const std::string& id, bool on) {
       services().guarded([&] { write("appearance", {{"target", id}, {"visible", on}}, on ? tr("Show the box") : tr("See inside the box")); });
     };

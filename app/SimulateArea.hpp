@@ -64,6 +64,7 @@ class Simulate : public AreaController {
   const std::vector<Lit>& lit() const { return m_lit; }
   static QColor natureColor(const std::string& nature);
   static QString natureIcon(const std::string& nature);
+  void lightRefs(const std::vector<std::pair<opad::Ref, std::string>>& refs);  // those (a nature each) lit; none: nothing lit
 
  private:
   opad::json write(const std::string& command, const opad::json& args, const QString& label);  // doc->run once it is free
@@ -93,8 +94,11 @@ class Simulate : public AreaController {
   std::vector<browser::Item> setupRows(const opad::Study& study) const;  // a thermal study's box, boards, heatsinks and air
   std::vector<Lit> rowTargets(const std::string& row) const;
   void lightRows(const std::vector<std::string>& rows);  // the rows' targets lit (none: what was lit goes)
+  void lightTargets(std::vector<Lit> targets);
+  void addTarget(std::vector<Lit>& out, const std::string& row, const opad::Ref& r, const std::string& nature) const;  // a component: its bodies
   void placeBadges();  // over their targets, after every camera move
   std::vector<Lit> m_lit;
+  std::vector<std::pair<opad::Ref, std::string>> m_litRefs;  // what Thermal setup's rows lit last (empty: the browser's rows)
   std::vector<std::pair<opad::Vec3, QWidget*>> m_badges;
 
   SimulatePanel* m_form = nullptr;

@@ -48,6 +48,9 @@ class CoolingAssistant : public QWidget {
     std::function<void(const std::string&, bool)> setVisible;  // a body shown or hidden
     std::function<JobRunner*()> jobs;                      // where the fan's face is read (a worker)
     std::function<void(const std::vector<opad::Ref>&)> select;  // bodies or faces selected in the view and the browser
+    // The rows chosen in a list lit in the view by what they are ("heat", "board", "box", "fan", "heatsink"): a face too,
+    // whatever the selection filter; none: nothing lit.
+    std::function<void(const std::vector<std::pair<opad::Ref, std::string>>&)> light;
     std::function<void(bool)> accumulate;                  // the view's clicks add and take out (picking) or select
     std::function<QString(const QString&)> filter;         // the view's selection filter set to that action (empty: kept); the one before
     std::function<bool()> filterSwitching;                 // a filter switch is being applied (its cleared selection is no pick)
@@ -107,6 +110,7 @@ class CoolingAssistant : public QWidget {
   void reload();      // the pages from the document as it is now
   void scheduleSync();  // a change of the pages: written a moment later (typing a power writes once)
   void showStep(int i);
+  void lightChosen();  // the rows chosen on the page shown (the box's, the heat table's, the current fan) lit in the view
   std::vector<std::string> walls() const;  // the box's bodies
  public:
   // What the view and the browser pick: the box's bodies, the parts or faces that make heat, a fan, the face its air crosses,
