@@ -43,6 +43,19 @@ def primitive_parts(root, document):
                     ("sketch", "--name", "Marks", "--plane", '{"base":"xy"}', "--geometry", '{"shapes":[{"kind":"circle","picks":[[25,18],[30,18]]}]}'))
 
 
+def extrude_curved(root, document):
+    """A cylinder (d 30, z 20..30), a sphere (d 30 about (-40, 0, 30)), a box (x 30..60, z 20..30) and a sketch "Low" on XY with a
+    rectangle under each: Extrude To face's targets that are curved or planar."""
+    path = root / "extrude-curved.opad"
+    if path.exists():
+        return path
+    return document("extrude-curved", ("feature", "--kind", "cylinder", "--inputs", '{"plane":{"origin":[0,0,20],"normal":[0,0,1]},"diameter":"30 mm","height":"10 mm"}'),
+                    ("feature", "--kind", "sphere", "--inputs", '{"plane":{"origin":[-40,0,30],"normal":[0,0,1]},"diameter":"30 mm"}'),
+                    ("feature", "--kind", "box", "--inputs", '{"plane":{"origin":[30,-10,20],"normal":[0,0,1]},"length":"30 mm","width":"20 mm","height":"10 mm"}'),
+                    ("sketch", "--name", "Low", "--plane", '{"base":"xy"}', "--geometry",
+                     '{"shapes":[{"kind":"rect2","picks":[[-5,-4],[5,4]]},{"kind":"rect2","picks":[[-45,-4],[-35,4]]},{"kind":"rect2","picks":[[40,-4],[50,4]]}]}'))
+
+
 def extrude_parts(root, document):
     """A 30 x 20 x 10 box centred on the origin (z 0..10) and a sketch "Low" on XY under it: a 10 x 8 rectangle about the
     origin, extruded into the box, out of it, up to its top face and through all by the extrude case; a 5 mm slab tilted about
@@ -86,4 +99,5 @@ CASES = [
     # sticks), Extent To face handing the clicks to Up to face at once (the face is not taken as a profile) and To all ending
     # at the last body in the way; Enter commits the cut, written as "cut".
     ("extrude", extrude_parts, {"OPAD_BENCH_EXTRUDE": "{prefix}"}),
+    ("extrude-to-face", extrude_curved, {"OPAD_BENCH_EXTRUDE_TOFACE": "1"}),  # Extent To face from its combo, clicks on what it takes
 ]
