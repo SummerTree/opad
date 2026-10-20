@@ -24,7 +24,8 @@
 // commands' are (the box, the chip's heat source, the board, the fan, its heatsink, the air); a power typed changes the same
 // load in place; natural convection takes the fan's load out. Then each row picked in the browser lights its target by its
 // nature: the heat source red with its flame badge, the fan, the heatsink, the board, the box; a hidden chip is not lit;
-// nothing picked, nothing lit. In Thermal setup itself, a row chosen in a list lights which part or face it is: the heat
+// nothing picked, nothing lit. Del on a row deletes it: a heat source (Undo brings it back), the Board row (the board no PCB),
+// the whole case, the study. In Thermal setup itself, a row chosen in a list lights which part or face it is: the heat
 // table's chip (red), board, and a face of the board (that face alone); the box's row; the current fan with its heatsink.
 // Frames: <prefix>.heat.png, .case.png, .face-row.png (the view with its badges).
 OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
@@ -266,6 +267,26 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         if (caseLoad("fan")) return;
         require(row("sim:x:" + st->study + ":air") && !row("sim:l:" + st->fanLoad), "natural convection: the fan's load gone from the browser, the Air row kept");
         c->close();
+        // Del on the folder's rows deletes what they stand for (it once only lit them).
+        w.m_browser->selectIds({"sim:l:" + st->heat});
+        w.action("edit.delete")->trigger();
+        require(!doc->scene.load(st->heat) && !row("sim:l:" + st->heat), "Del on the chip's heat source row: the load and its row gone");
+        w.action("edit.undo")->trigger();
+        require(doc->scene.load(st->heat) && row("sim:l:" + st->heat), "Undo: the heat source back");
+        w.m_browser->selectIds({"sim:x:" + st->study + ":board:" + st->board});
+        w.action("edit.delete")->trigger();
+        const opad::Study* s = doc->scene.study(st->study);
+        require(s && !row("sim:x:" + st->study + ":board:" + st->board) &&
+                    !s->def["settings"].value("materials", opad::json::object()).value(st->board, opad::json::object()).contains("pcb"),
+                "Del on the Board row: the board is no PCB any more, the study kept");
+        w.m_browser->selectIds({"sim:c:" + std::string(CoolingAssistant::kCase)});
+        w.action("edit.delete")->trigger();
+        int left = 0;
+        for (const auto& l : doc->scene.loads) left += l.load_case == CoolingAssistant::kCase;
+        require(left == 0 && !row("sim:c:Cooling") && row("sim:s:" + st->study), "Del on the case's row: every load of it gone, the study kept");
+        w.m_browser->selectIds({"sim:s:" + st->study});
+        w.action("edit.delete")->trigger();
+        require(!doc->scene.study(st->study) && !row("sim:s:" + st->study), "Del on the study's row: the study gone");
         return finish();
       }
     }

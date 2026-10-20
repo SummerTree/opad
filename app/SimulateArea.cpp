@@ -31,6 +31,7 @@
 #include "I18n.hpp"
 #include "Icons.hpp"
 #include "Jobs.hpp"
+#include "KeyText.hpp"
 #include "PanelFooter.hpp"
 #include "Ribbon.hpp"
 #include "SimPlot.hpp"
@@ -507,6 +508,11 @@ void Simulate::ready() {
   folder.startsClosed = true;  // the parts stay the browser's first rows
   folder.items = [this] { return folderItems(); };
   folder.contextMenu = [this](const std::string& id, QMenu& menu) { folderMenu(id, menu); };
+  folder.remove = [this](const std::vector<std::string>& ids) {
+    bool taken = false;
+    services().guarded([&] { taken = removeRows(ids); });
+    return taken;
+  };
   folder.activated = [this](const std::string& id) {
     services().guarded([&] {
       open();
@@ -1370,6 +1376,16 @@ std::vector<browser::Item> Simulate::folderItems() const {
 }
 
 void Simulate::folderMenu(const std::string& id, QMenu& menu) {
+  // Delete: the rows picked when this one is among them, else this one (Del is edit.delete's).
+  const bool air = id.rfind("sim:x:", 0) == 0 && id.size() > 4 && id.compare(id.size() - 4, 4, ":air") == 0;  // nothing to delete
+  if (!id.empty() && !air) {
+    std::vector<std::string> rows = std::find(m_picked.begin(), m_picked.end(), id) != m_picked.end() ? m_picked : std::vector<std::string>{id};
+    const QString what = rows.size() == 1 ? tr("Delete") : tr("Delete %n item(s)", "", int(rows.size()));
+    menu.addAction(icons::themed("delete", 16), keys::menuText(what, QStringLiteral("edit.delete")), this, [this, rows] {
+      services().guarded([&] { removeRows(rows); });
+    });
+    menu.addSeparator();
+  }
   if (id.rfind("sim:s:", 0) == 0) {
     const std::string st = id.substr(6);
     menu.addAction(icons::themed("simRun", 16), tr("Run study"), this, [this, st] {

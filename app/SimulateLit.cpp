@@ -7,6 +7,7 @@
 #include <QLabel>
 #include <QPainter>
 
+#include <map>
 #include <set>
 
 #include "AppDocument.hpp"
@@ -214,4 +215,67 @@ void Simulate::placeBadges() {
     badge->setVisible(in);
     if (in) badge->raise();
   }
+}
+
+bool Simulate::removeRows(const std::vector<std::string>& rows) {
+  AppDocument* doc = services().document();
+  const opad::Scene& s = doc->scene;
+  std::vector<std::string> deleted;  // op ids: loads, studies, joints
+  auto drop = [&](const std::string& id) {
+    if (std::find(deleted.begin(), deleted.end(), id) == deleted.end()) deleted.push_back(id);
+  };
+  std::map<std::string, json> settings;        // a study's settings as its setup rows leave them
+  std::map<std::string, json> heatsinks;       // a fan load's heatsink list without the heatsink deleted
+  for (const auto& row : rows) {
+    if (row.rfind("sim:l:", 0) == 0 && s.load(row.substr(6))) drop(row.substr(6));
+    else if (row.rfind("sim:s:", 0) == 0 && s.study(row.substr(6))) drop(row.substr(6));
+    else if (row.rfind("sim:j:", 0) == 0 && s.joint(row.substr(6))) drop(row.substr(6));
+    else if (row.rfind("sim:c:", 0) == 0) {
+      for (const auto& l : s.loads)
+        if (l.load_case == row.substr(6)) drop(l.id);
+    } else if (row.rfind("sim:x:", 0) == 0) {
+      const std::string rest = row.substr(6);
+      const size_t colon = rest.find(':');
+      const opad::Study* st = colon == std::string::npos ? nullptr : s.study(rest.substr(0, colon));
+      if (!st) continue;
+      const std::string what = rest.substr(colon + 1);
+      json& set = settings.try_emplace(st->id, st->def.value("settings", json::object())).first->second;
+      if (what == "box") {
+        if (set.contains("cfd")) set["cfd"].erase("enclosure");
+      } else if (what.rfind("board:", 0) == 0) {
+        const std::string id = what.substr(6);
+        if (set.contains("materials") && set["materials"].contains(id)) {
+          set["materials"][id].erase("pcb");
+          if (set["materials"][id].empty()) set["materials"].erase(id);
+        }
+      } else if (what.rfind("sink:", 0) == 0) {
+        const std::string id = what.substr(5);
+        for (const auto& l : s.loads) {  // off the fans that blow through it
+          if (l.load_case != set.value("case", std::string()) || l.kind != "fan") continue;
+          json& list = heatsinks.try_emplace(l.id, l.def.value("heatsink", json::array())).first->second;
+          for (auto it = list.begin(); it != list.end();) it = *it == id ? list.erase(it) : it + 1;
+        }
+        std::vector<std::string> bodies{id};  // its material, set for it as one part
+        if (const opad::Node* n = s.node(id); n && n->kind != opad::Node::Kind::Body) bodies = s.bodies_under(id);
+        for (const auto& b : bodies)
+          if (set.contains("materials") && set["materials"].contains(b) && set["materials"][b].contains("material")) set["materials"].erase(b);
+      }
+    }
+  }
+  std::vector<std::pair<std::string, json>> writes;
+  for (const auto& id : deleted) writes.push_back({"delete", {{"target", id}}});
+  for (const auto& [id, set] : settings)
+    if (std::find(deleted.begin(), deleted.end(), id) == deleted.end() && set != s.study(id)->def.value("settings", json::object()))
+      writes.push_back({"study", {{"id", id}, {"settings", set}, {"run", false}}});
+  for (const auto& [id, list] : heatsinks)
+    if (std::find(deleted.begin(), deleted.end(), id) == deleted.end() && list != s.load(id)->def.value("heatsink", json::array()))
+      writes.push_back({"load", {{"id", id}, {"heatsink", list}}});
+  if (writes.empty()) return false;
+  if (std::find(deleted.begin(), deleted.end(), m_study) != deleted.end()) chooseStudy(std::string());  // its results put away
+  doc->batch(rows.size() == 1 ? tr("Delete") : tr("Delete %n item(s)", "", int(rows.size())), [&] {
+    for (const auto& [command, args] : writes) doc->run(command, args);
+  });
+  lightRows({});
+  m_picked.clear();
+  return true;
 }

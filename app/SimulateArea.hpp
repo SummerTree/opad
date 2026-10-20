@@ -92,6 +92,9 @@ class Simulate : public AreaController {
   void folderMenu(const std::string& id, QMenu& menu);
   std::vector<std::string> pickedJoints() const;  // joints chosen in the browser's Simulation folder, in order
   std::vector<browser::Item> setupRows(const opad::Study& study) const;  // a thermal study's box, boards, heatsinks and air
+  // Del (and Delete in the menu) on the folder's rows: loads, a whole case, studies, joints, a study's box, board or heatsink
+  // (its settings changed); one step to undo. False: nothing there could be deleted (the Air row).
+  bool removeRows(const std::vector<std::string>& rows);
   std::vector<Lit> rowTargets(const std::string& row) const;
   void lightRows(const std::vector<std::string>& rows);  // the rows' targets lit (none: what was lit goes)
   void lightTargets(std::vector<Lit> targets);
