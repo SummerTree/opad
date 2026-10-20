@@ -7,7 +7,9 @@
 #include <QPointer>
 #include <QTimer>
 
+#include <map>
 #include <memory>
+#include <set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -106,6 +108,12 @@ class Simulate : public AreaController {
   std::vector<Lit> m_lit;
   std::vector<std::pair<opad::Ref, std::string>> m_litRefs;  // what Thermal setup's rows lit last (empty: the browser's rows)
   std::vector<opad::json> m_glyphFans;                       // the fans drawn with their plane and way
+  class Job* m_profileJob = nullptr;                         // the sketches' regions found for a fan's opening
+  std::map<std::string, opad::json> m_openings;              // a drawn opening's outline, centre and normal, by its reference (read on a worker)
+  std::set<std::string> m_reading;                           // openings being read
+  unsigned long long m_openingsRevision = ~0ull;             // the document's revision they were read at
+  void showProfiles(bool on);                                // they offered in the view to pick (Thermal setup), or not
+  void drawOpening(int fan, bool inlet);                     // a sketch made on the fan's face, its region the opening
   std::vector<std::pair<opad::Vec3, QWidget*>> m_badges;
 
   SimulatePanel* m_form = nullptr;

@@ -71,6 +71,25 @@ std::vector<std::string> likely_enclosure(const BodyBoxes& boxes);
 // A group of walls as the summary names it: "Base + Lid".
 std::string enclosure_name(const Scene& scene, const std::vector<std::string>& walls);
 
+// A fan's opening as drawn (a fan load's "outlet", a blower's "inlet"): a closed region of a sketch ({"sketch", "at" or
+// "boundary"}, as extrude takes profiles) or a planar face (a reference). Its outline (closed loops, world mm), its normal (the
+// sketch's, or the face's out of its body), its centre and area (mm2). Throws when the reference names no closed region.
+struct FanProfile {
+  std::vector<std::vector<std::array<double, 3>>> loops;
+  std::array<double, 3> normal{0, 0, 1}, centre{0, 0, 0};
+  double area = 0;
+};
+FanProfile fan_profile(const Document& doc, const Scene& scene, const json& ref);
+
+// Whether the box's vents let its fans blow what they can, before a run. Its vents are the holes through its walls (a face's
+// inner loops, on the faces that look out of the box); those ahead of the fans' air are exhausts, the others intakes, a hole a
+// fan's own opening sits in is that fan's (it blows straight through it). Each side a sharp-edged orifice (discharge 0.6):
+// dp = rho/2 (Q / (0.6 A))^2, both in series, met by the fans' curves together (their flows at that pressure added): the flow
+// they give, against the free flow, which side holds them back, and the flow the heat needs for a 10 K rise of the air.
+// fans: fan loads' definitions (fan, type, outlet, inlet, vector, refs); watts: the heat all told.
+json vent_estimate(const Document& doc, const Scene& scene, const std::vector<std::string>& walls, const std::vector<json>& fans, double watts,
+                   double ambient_C = 25);
+
 StudyRun run_cfd(const Document& doc, const Scene& scene, const json& settings, const Progress& progress);
 
 }  // namespace opad::sim

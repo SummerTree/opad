@@ -206,18 +206,26 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         c->open(2);
         for (auto* b : c->findChildren<QPushButton*>())
           if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
-        pick({st->fan});
         st->phase = 6;
         return;
       }
       case 6: {
         if (c->fans().empty()) return;
-        if (c->fans()[0].on.empty()) {  // the Bodies filter back from Faces first (a sliced job): clicked again then
-          pick({st->fan});
+        if (c->fans()[0].outlet.is_null()) {  // its opening: a face of the fan block, once the faces' pick targets are built
+          opad::Ref r;
+          r.body = st->fan, r.kind = opad::Ref::Kind::Face, r.index = 0;
+          area->services().select({r});
           return;
         }
         c->findChild<PickBox*>("coolingSinkPick")->click();
-        pick({st->sink});
+        st->phase = 61;
+        return;
+      }
+      case 61: {  // the heatsink, once the Bodies filter is back from Faces (a sliced job)
+        if (c->fans()[0].sink.empty()) {
+          pick({st->sink});
+          return;
+        }
         st->phase = 7;
         return;
       }

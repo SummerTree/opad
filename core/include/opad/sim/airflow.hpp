@@ -84,6 +84,7 @@ Channel channel(const FinArray& f, double Q, double T);
 // A fan: its curve, pressure (Pa) against flow (m3/s), from a few points or from its free-flow and shut-off values.
 struct Fan {
   std::string id, name;
+  std::string kind = "axial";  // "axial" (the air through it) or "blower" (in on its axis, out of its side)
   double size = 0;            // mm
   double rpm = 0;
   double Qmax = 0, Pmax = 0;  // m3/s at no pressure, Pa at no flow
@@ -93,8 +94,15 @@ struct Fan {
 };
 const std::vector<Fan>& fans();
 const Fan* fan(const std::string& id);
-// A fan from a load's `fan`: a library id, or {"flow" m3/h | "cfm", "pressure" Pa | "mmH2O", "curve": [[m3/h, Pa], ...]}.
+// A fan from a load's `fan`: a library id (or {"model": id, "speed": %}), or its datasheet: max airflow ("flow" m3/h | "cfm" |
+// "m3min" | "ls"), max static pressure ("pressure" Pa | "inH2O" | "mmH2O"), optionally its P-Q curve read off the datasheet's
+// chart ("curve": [[flow, pressure], ...] in "curve_units" {"flow": "m3h"|"cfm"|"m3min"|"ls", "pressure": "Pa"|"inH2O"|"mmH2O"},
+// m3/h and Pa by default) and the speed it runs at in % of its rated speed ("speed": PWM, a lower voltage), the curve scaled by
+// the fan laws (flow with the speed, pressure with its square). Without a curve: a straight line between the two maxima.
 Fan fan_from(const json& spec);
+double flow_unit(const std::string& unit);      // m3/s per one of the unit ("m3h", "cfm", "m3min", "ls"); throws for another
+double pressure_unit(const std::string& unit);  // Pa per one of the unit ("Pa", "inH2O", "mmH2O"); throws for another
+double flow_at(const Fan& fan, double pressure);  // the flow the fan gives against that static pressure (its curve inverted), m3/s
 // Where the fan's curve meets the system's (Pa against m3/s, rising with flow): the flow; 0 when the fan cannot move air.
 double operating_point(const Fan& fan, const std::function<double(double)>& system, int fans_in_parallel = 1);
 

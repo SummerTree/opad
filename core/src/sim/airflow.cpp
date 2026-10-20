@@ -19,6 +19,7 @@ namespace opad::sim::air {
 namespace {
 constexpr double kCfm = 4.719474e-4;    // m3/s
 constexpr double kMmH2O = 9.80665;      // Pa
+constexpr double kInH2O = 249.08891;    // Pa
 double dotv(const Vec3& a, const Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 Vec3 scaled(const Vec3& a, double s) { return {a[0] * s, a[1] * s, a[2] * s}; }
 Vec3 minus(const Vec3& a, const Vec3& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
@@ -280,21 +281,23 @@ Channel channel(const FinArray& f, double Q, double T) {
 }
 
 double Fan::pressure(double Q) const {
-  if (Q <= 0) return curve.empty() ? Pmax : curve.back()[1];
   if (curve.size() >= 2) {
-    // Points from free flow to shut-off, or the other way: by flow.
+    // Points from free flow to shut-off, or the other way: by flow. Below the first point, its pressure (a chart read from
+    // a little past shut-off); past the last, none.
     auto pts = curve;
     std::sort(pts.begin(), pts.end(), [](const auto& a, const auto& b) { return a[0] < b[0]; });
+    if (Q <= pts.front()[0]) return pts.front()[1];
     if (Q >= pts.back()[0]) return 0;
     for (size_t i = 1; i < pts.size(); ++i)
       if (Q <= pts[i][0]) return pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * (Q - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]);
     return 0;
   }
+  if (Q <= 0) return Pmax;
   return std::max(0.0, Pmax * (1 - Q / Qmax));  // a straight line between shut-off and free flow
 }
 
 json Fan::to_json() const {
-  json j = {{"id", id}, {"name", name}, {"free_flow_m3h", Qmax * 3600}, {"free_flow_cfm", Qmax / kCfm}, {"shut_off_Pa", Pmax}};
+  json j = {{"id", id}, {"name", name}, {"kind", kind}, {"free_flow_m3h", Qmax * 3600}, {"free_flow_cfm", Qmax / kCfm}, {"shut_off_Pa", Pmax}};
   if (size > 0) j["size_mm"] = size;
   if (rpm > 0) j["rpm"] = rpm;
   return j;
@@ -317,6 +320,9 @@ const std::vector<Fan>& fans() {
     add("120x25", "120 mm fan, 1500 rpm", 120, 1500, 102, 22.9);
     add("120x25-high", "120 mm fan, 3000 rpm", 120, 3000, 200, 80);
     add("140x25", "140 mm fan, 1500 rpm", 140, 1500, 140, 20);
+    // Blowers (in on their axis, out of a side): Same Sky (CUI) CBM-3507CF-085-295, 35 x 35 x 7 mm, 5 V: 1.11 CFM, 0.50 inH2O.
+    add("cbm-3507cf-085-295", "35 mm blower CBM-3507CF-085-295, 8500 rpm", 35, 8500, 1.11 * kCfm * 3600, 0.50 * kInH2O);
+    v.back().kind = "blower";
     return v;
   }();
   return list;
@@ -328,6 +334,21 @@ const Fan* fan(const std::string& id) {
   return nullptr;
 }
 
+double flow_unit(const std::string& u) {
+  if (u == "m3h") return 1.0 / 3600;
+  if (u == "cfm") return kCfm;
+  if (u == "m3min") return 1.0 / 60;
+  if (u == "ls") return 1e-3;
+  throw Error("fan: a flow unit is m3h, cfm, m3min or ls, not \"" + u + "\"");
+}
+
+double pressure_unit(const std::string& u) {
+  if (u == "Pa") return 1.0;
+  if (u == "inH2O") return kInH2O;
+  if (u == "mmH2O") return kMmH2O;
+  throw Error("fan: a pressure unit is Pa, inH2O or mmH2O, not \"" + u + "\"");
+}
+
 Fan fan_from(const json& spec) {
   if (spec.is_string()) {
     if (const Fan* f = fan(spec.get<std::string>())) return *f;
@@ -337,19 +358,49 @@ Fan fan_from(const json& spec) {
   }
   if (!spec.is_object()) throw Error("fan: a library id or {\"flow\": m3/h, \"pressure\": Pa, \"curve\": [[m3/h, Pa], ...]}");
   Fan f;
-  f.id = "custom";
-  f.name = spec.value("name", std::string("Fan"));
-  if (spec.contains("flow")) f.Qmax = spec["flow"].get<double>() / 3600;
-  if (spec.contains("cfm")) f.Qmax = spec["cfm"].get<double>() * kCfm;
-  if (spec.contains("pressure")) f.Pmax = spec["pressure"].get<double>();
-  if (spec.contains("mmH2O")) f.Pmax = spec["mmH2O"].get<double>() * kMmH2O;
-  if (spec.contains("curve")) {
-    for (const auto& p : spec["curve"]) f.curve.push_back({p.at(0).get<double>() / 3600, p.at(1).get<double>()});
-    if (f.curve.size() < 2) throw Error("fan: a curve needs two points or more ([m3/h, Pa])");
-    for (const auto& p : f.curve) f.Qmax = std::max(f.Qmax, p[0]), f.Pmax = std::max(f.Pmax, p[1]);
+  if (spec.contains("model")) {  // a library fan, at its speed
+    f = fan_from(spec["model"]);
+  } else {
+    f.id = "custom";
+    f.name = spec.value("name", std::string("Fan"));
+    f.kind = spec.value("kind", std::string("axial"));
+    if (spec.contains("flow")) f.Qmax = spec["flow"].get<double>() / 3600;
+    if (spec.contains("cfm")) f.Qmax = spec["cfm"].get<double>() * kCfm;
+    if (spec.contains("m3min")) f.Qmax = spec["m3min"].get<double>() / 60;
+    if (spec.contains("ls")) f.Qmax = spec["ls"].get<double>() * 1e-3;
+    if (spec.contains("pressure")) f.Pmax = spec["pressure"].get<double>();
+    if (spec.contains("inH2O")) f.Pmax = spec["inH2O"].get<double>() * kInH2O;
+    if (spec.contains("mmH2O")) f.Pmax = spec["mmH2O"].get<double>() * kMmH2O;
+    if (spec.contains("rpm")) f.rpm = spec["rpm"].get<double>();
+    if (spec.contains("curve")) {
+      const json units = spec.value("curve_units", json::object());
+      const double qu = flow_unit(units.value("flow", std::string("m3h"))), pu = pressure_unit(units.value("pressure", std::string("Pa")));
+      for (const auto& p : spec["curve"]) f.curve.push_back({p.at(0).get<double>() * qu, p.at(1).get<double>() * pu});
+      if (f.curve.size() < 2) throw Error("fan: a curve needs two points or more ([flow, pressure])");
+      for (const auto& p : f.curve) f.Qmax = std::max(f.Qmax, p[0]), f.Pmax = std::max(f.Pmax, p[1]);
+    }
+    if (!(f.Qmax > 0) || !(f.Pmax > 0))
+      throw Error("fan: give its max airflow (flow m3/h, cfm, m3min or ls) and its max static pressure (pressure Pa, inH2O or mmH2O), or its curve");
   }
-  if (!(f.Qmax > 0) || !(f.Pmax > 0)) throw Error("fan: give its free flow (flow m3/h or cfm) and shut-off pressure (pressure Pa or mmH2O), or its curve");
+  // The fan laws: run slower (PWM, a lower voltage), its flow falls with the speed and its pressure with the speed squared.
+  if (const double speed = spec.value("speed", 100.0); speed != 100.0) {
+    if (!(speed > 0) || speed > 150) throw Error("fan: speed is a percentage of its rated speed (above 0, up to 150)");
+    const double s = speed / 100;
+    f.Qmax *= s, f.Pmax *= s * s, f.rpm *= s;
+    for (auto& p : f.curve) p[0] *= s, p[1] *= s * s;
+  }
   return f;
+}
+
+double flow_at(const Fan& fan, double pressure) {
+  if (pressure <= 0) return fan.Qmax;
+  if (pressure >= fan.pressure(0)) return 0;
+  double lo = 0, hi = fan.Qmax;  // the pressure falls with the flow
+  for (int i = 0; i < 100; ++i) {
+    const double m = 0.5 * (lo + hi);
+    (fan.pressure(m) > pressure ? lo : hi) = m;
+  }
+  return 0.5 * (lo + hi);
 }
 
 double operating_point(const Fan& fan, const std::function<double(double)>& system, int n) {

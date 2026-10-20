@@ -11,6 +11,7 @@
 
 #include "check.hpp"
 #include "opad/core.hpp"
+#include "opad/design/sketch.hpp"
 #include "opad/sim/airflow.hpp"
 #include "opad/sim/cfd.hpp"
 #include "opad/sim/fea.hpp"
@@ -262,3 +263,64 @@ TEST(enclosure_of_two_halves) {
 }
 
 CHECK_MAIN()
+
+// The vents before a run (sim::vent_estimate): the vented box's 30 mm intake behind its fan, its three 40 x 4 mm slots ahead
+// of it, each a sharp-edged orifice in series met by the fan's straight curve; with the fan's opening drawn in the intake's
+// hole, the fan draws straight through it and only the slots hold it back.
+TEST(vent_estimate_of_a_vented_box) {
+  std::string enclosure, fan, block;
+  Document doc = vented_box(enclosure, fan, block);
+  const Scene scene = resolve(doc);
+  const air::Air a = air::properties(25);
+  auto k = [&](double mm2) { return mm2 > 0 ? a.rho / (2 * std::pow(0.6 * mm2 * 1e-6, 2)) : 0.0; };
+  auto expected = [&](double K) {  // 30 Pa (1 - Q / 15 m3/h) = K Q^2
+    double lo = 0, hi = 15.0 / 3600;
+    for (int i = 0; i < 100; ++i) {
+      const double m = 0.5 * (lo + hi);
+      (30 * (1 - m * 3600 / 15) > K * m * m ? lo : hi) = m;
+    }
+    return 0.5 * (lo + hi) * 3600;
+  };
+  json load = {{"fan", {{"flow", 15}, {"pressure", 30}}}, {"vector", {1, 0, 0}}, {"refs", {fan}}};
+  json e = sim::vent_estimate(doc, scene, {enclosure}, {load}, 5);
+  if (std::getenv("OPAD_TEST_VERBOSE")) std::printf("%s\n", e.dump(1).c_str());
+  CHECK_NEAR(e["intake"]["area_mm2"].get<double>(), 900, 1);
+  CHECK_EQ(e["intake"]["openings"].get<int>(), 1);
+  CHECK_NEAR(e["exhaust"]["area_mm2"].get<double>(), 480, 1);
+  CHECK_EQ(e["exhaust"]["openings"].get<int>(), 3);
+  CHECK_NEAR(e["flow_m3h"].get<double>(), expected(k(900) + k(480)), 0.01);
+  CHECK_EQ(e["limited_by"].get<std::string>(), "exhaust");
+  CHECK_NEAR(e["needed_m3h"].get<double>(), 5 / (a.rho * a.cp * 10) * 3600, 1e-6);
+  // The fan's opening drawn: its block's face towards the intake (the face whose normal is -X).
+  for (int i = 0; i < 6; ++i) {
+    Ref r;
+    r.body = fan, r.kind = Ref::Kind::Face, r.index = i;
+    const sim::FanProfile p = sim::fan_profile(doc, scene, r.to_json());
+    if (p.normal[0] < -0.9) load["outlet"] = r.to_json();
+  }
+  CHECK(load.contains("outlet"));
+  load.erase("refs");
+  e = sim::vent_estimate(doc, scene, {enclosure}, {load}, 5);
+  CHECK(e["intake"].value("fan", false));
+  CHECK_EQ(e["intake"]["openings"].get<int>(), 0);
+  CHECK_NEAR(e["flow_m3h"].get<double>(), expected(k(480)), 0.01);
+}
+
+// A fan's opening drawn as Draw… draws it: the face's outline projected, the opening inside it; the sketch alone names its
+// smallest region (the opening), a point picks another.
+TEST(fan_profile_of_a_sketch_takes_its_smallest_region) {
+  Document doc = Document::create();
+  design::Sketch sk;
+  const int a = sk.add_point(-20, -20), b = sk.add_point(20, -20), c = sk.add_point(20, 20), d = sk.add_point(-20, 20);
+  sk.add_line(a, b), sk.add_line(b, c), sk.add_line(c, d), sk.add_line(d, a);
+  sk.add_circle(sk.add_point(0, 0), 10);
+  const std::string id = commands::run("sketch", {{"plane", {{"origin", {0, 0, 5}}, {"normal", {0, 0, 1}}, {"x", {1, 0, 0}}}}, {"geometry", sk.to_json()}}, &doc)["sketch_id"];
+  const Scene scene = resolve(doc);
+  const sim::FanProfile p = sim::fan_profile(doc, scene, {{"sketch", id}});
+  CHECK_NEAR(p.area, M_PI * 100, 0.5);
+  CHECK_NEAR(p.centre[2], 5, 1e-6);
+  CHECK_NEAR(std::fabs(p.normal[2]), 1, 1e-9);
+  CHECK_EQ(p.loops.size(), size_t(1));
+  const sim::FanProfile ring = sim::fan_profile(doc, scene, {{"sketch", id}, {"at", {15, 15}}});
+  CHECK_NEAR(ring.area, 1600 - M_PI * 100, 0.5);
+}

@@ -871,12 +871,12 @@ TEST(clips_load_cleanly) {
     CHECK(clips::stillTime(id) > 0 && clips::stillTime(id) <= clips::duration(id));
   }
   // Every clip is shown somewhere: a command's own (its help record), one a record adopts by its "clip" field (Insert canvas:
-  // insert.canvas), or a panel's own guide (the drawing placer's).
+  // insert.canvas), or a panel's own guide (the drawing placer's, Thermal setup's fan openings).
   help::load("en");
   QSet<QString> adopted;
   for (const CommandHelp& h : help::all()) adopted.insert(h.clip);
   for (const QString& id : clips::ids())
-    if (!help::find(id) && !adopted.contains(id) && id != "drawing.place")
+    if (!help::find(id) && !adopted.contains(id) && !QStringList{"drawing.place", "simulate.fanBlower", "simulate.fanAxial"}.contains(id))
       throw check::Failure(id.toStdString() + ": a clip for no command");
 }
 

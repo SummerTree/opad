@@ -660,6 +660,8 @@ class Viewport : public QWidget, protected AIS_ViewController {
     opad::Vec3 centre{0, 0, 0}, normal{0, 0, 1}, x{1, 0, 0};
     double width = 0, height = 0;  // a rectangle; round: width is the diameter
     bool round = false;
+    std::vector<std::vector<opad::Vec3>> loops;  // a drawn opening's outline (world mm): drawn instead of the rectangle
+    bool inward = false;                         // the arrow comes to it (the air going in) instead of leaving it
     QColor color;
   };
   void showSimGlyphs(const std::vector<SimGlyph>& glyphs);

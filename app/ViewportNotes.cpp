@@ -426,7 +426,18 @@ void Viewport::showSimGlyphs(const std::vector<SimGlyph>& glyphs) {
     x.Normalize();
     const gp_Vec y = n.Crossed(x);
     Handle(FanGlyph) glyph = new FanGlyph(g.color);
-    if (g.round)
+    double size = std::max({g.width, g.height, 1.0});
+    if (!g.loops.empty()) {  // the opening as drawn (its outer loop filled)
+      double lo[2] = {1e300, 1e300}, hi[2] = {-1e300, -1e300};
+      for (const auto& p : g.loops.front()) {
+        const gp_Pnt q(p[0], p[1], p[2]);
+        glyph->outline.push_back(q);
+        const gp_Vec d(c, q);
+        lo[0] = std::min(lo[0], d.Dot(x)), hi[0] = std::max(hi[0], d.Dot(x));
+        lo[1] = std::min(lo[1], d.Dot(y)), hi[1] = std::max(hi[1], d.Dot(y));
+      }
+      size = std::max({hi[0] - lo[0], hi[1] - lo[1], 1.0});
+    } else if (g.round)
       for (int i = 0; i < 32; ++i) {
         const double a = 2 * M_PI * i / 32;
         glyph->outline.push_back(c.Translated(x * (0.5 * g.width * std::cos(a)) + y * (0.5 * g.width * std::sin(a))));
@@ -434,9 +445,8 @@ void Viewport::showSimGlyphs(const std::vector<SimGlyph>& glyphs) {
     else
       for (const auto& [a, b] : {std::pair{-1, -1}, {1, -1}, {1, 1}, {-1, 1}})
         glyph->outline.push_back(c.Translated(x * (0.5 * a * g.width) + y * (0.5 * b * g.height)));
-    const double size = std::max({g.width, g.height, 1.0});
-    glyph->from = c;
-    glyph->to = c.Translated(n * (2.0 * size));
+    glyph->from = g.inward ? c.Translated(n * (-2.0 * size)) : c;
+    glyph->to = g.inward ? c : c.Translated(n * (2.0 * size));
     glyph->side = gp_Dir(y);
     glyph->SetZLayer(Graphic3d_ZLayerId_Topmost);
     glyph->SetInfiniteState(Standard_True);

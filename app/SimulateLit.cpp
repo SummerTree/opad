@@ -7,12 +7,15 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMainWindow>
 #include <QPainter>
 
 #include <map>
 #include <set>
 
 #include "AppDocument.hpp"
+#include "DesignController.hpp"
+#include "SimulateCooling.hpp"
 #include "I18n.hpp"
 #include "Icons.hpp"
 #include "Jobs.hpp"
@@ -21,6 +24,7 @@
 #include "Viewport.hpp"
 #include "opad/geometry.hpp"
 #include "opad/materials.hpp"
+#include "opad/sim/cfd.hpp"
 
 namespace {
 using opad::json;
@@ -151,6 +155,12 @@ std::vector<Simulate::Lit> Simulate::rowTargets(const std::string& row) const {
   };
   auto ofLoad = [&](const opad::Load& l) {
     for (const auto& r : l.refs) add(r, l.kind);
+    if (l.kind == "fan" && l.refs.empty())  // a fan by its openings: a face among them lit as the fan
+      for (const char* k : {"outlet", "inlet"})
+        if (const json o = l.def.value(k, json()); o.is_object() && o.contains("body")) try {
+            add(opad::Ref::from_json(o), "fan");
+          } catch (const std::exception&) {
+          }
   };
   if (row.rfind("sim:l:", 0) == 0) {
     if (const opad::Load* l = s.load(row.substr(6))) ofLoad(*l);
@@ -204,11 +214,63 @@ void Simulate::showFanGlyphs(const std::vector<json>& fans) {
     const double l = std::hypot(v[0], v[1], v[2]);
     return l > 1e-12 ? opad::Vec3{v[0] / l, v[1] / l, v[2] / l} : opad::Vec3{0, 0, 0};
   };
+  // A fan load drawn by its openings (an outlet, a blower's inlet: a sketch's region or a face): their outlines, read on a
+  // worker once (m_openings), drawn as the setup draws them.
+  std::vector<json> expanded;
+  std::vector<json> unread;
+  if (doc->revision != m_openingsRevision) m_openings.clear(), m_openingsRevision = doc->revision;  // a sketch changed: read again
   for (const json& f : fans) {
+    const json out = f.value("outlet", json());
+    if (f.contains("loops") || !(out.is_string() || (out.is_object() && !out.contains("centre")))) {
+      expanded.push_back(f);
+      continue;
+    }
+    const bool blower = f.value("type", std::string()) == "blower";
+    const json in = blower ? f.value("inlet", json()) : json();
+    auto known = [&](const json& ref) {
+      const auto it = m_openings.find(ref.dump());
+      if (it == m_openings.end() && !m_reading.count(ref.dump())) unread.push_back(ref);
+      return it == m_openings.end() ? json() : it->second;
+    };
+    const json o = known(out), i = in.is_null() ? json() : known(in);
+    if (o.is_null()) continue;
+    const opad::Vec3 oc = o["centre"], on = o["normal"];
+    opad::Vec3 way = f.value("vector", on);
+    if (blower && !i.is_null()) {  // out of its side, away from its inlet; in through its inlet
+      const opad::Vec3 ic = i["centre"];
+      opad::Vec3 in_n = i["normal"];
+      way = on;
+      if (way[0] * (oc[0] - ic[0]) + way[1] * (oc[1] - ic[1]) + way[2] * (oc[2] - ic[2]) < 0) way = {-way[0], -way[1], -way[2]};
+      if (in_n[0] * (ic[0] - oc[0]) + in_n[1] * (ic[1] - oc[1]) + in_n[2] * (ic[2] - oc[2]) < 0) in_n = {-in_n[0], -in_n[1], -in_n[2]};
+      expanded.push_back({{"loops", i["loops"]}, {"centre", ic}, {"vector", opad::Vec3{-in_n[0], -in_n[1], -in_n[2]}}, {"inward", true}});
+    }
+    expanded.push_back({{"loops", o["loops"]}, {"centre", oc}, {"vector", way}});
+  }
+  if (!unread.empty() && services().jobs()) {
+    for (const auto& r : unread) m_reading.insert(r.dump());
+    auto docCopy = std::make_shared<const opad::Document>(doc->doc);
+    auto scene = std::make_shared<const opad::Scene>(doc->scene);
+    auto read = std::make_shared<std::map<std::string, json>>();
+    services().jobs()->async(tr("Reading the fans' openings"), [docCopy, scene, unread, read](Progress) {
+      for (const auto& r : unread) try {
+          const opad::sim::FanProfile p = opad::sim::fan_profile(*docCopy, *scene, r);
+          (*read)[r.dump()] = {{"loops", p.loops}, {"centre", p.centre}, {"normal", p.normal}};
+        } catch (const std::exception&) {
+        }
+    }, [this, read, unread](bool, const QString&) {
+      for (const auto& r : unread) m_reading.erase(r.dump());
+      for (const auto& [k, v] : *read) m_openings[k] = v;
+      if (!read->empty()) showFanGlyphs(m_glyphFans);  // drawn now
+    });
+  }
+  for (const json& f : expanded) {
     Viewport::SimGlyph g;
     g.color = natureColor("convection");  // the air's cyan: apart from the fan body's blue under it
     const opad::Vec3 way = unit(f.value("vector", opad::Vec3{1, 0, 0}));
-    if (const json o = f.value("outlet", json()); o.is_object()) {
+    if (const json loops = f.value("loops", json()); loops.is_array() && !loops.empty()) {  // a drawn opening, the air through it
+      g.loops = loops.get<std::vector<std::vector<opad::Vec3>>>();
+      g.centre = f.value("centre", opad::Vec3{0, 0, 0}), g.normal = way, g.inward = f.value("inward", false);
+    } else if (const json o = f.value("outlet", json()); o.is_object()) {
       opad::Vec3 n = unit(o.value("normal", way));
       if (n[0] * way[0] + n[1] * way[1] + n[2] * way[2] < 0) n = {-n[0], -n[1], -n[2]};
       g.centre = o.value("centre", opad::Vec3{0, 0, 0}), g.normal = n, g.x = o.value("x", opad::Vec3{1, 0, 0});
@@ -236,6 +298,53 @@ void Simulate::showFanGlyphs(const std::vector<json>& fans) {
     glyphs.push_back(g);
   }
   view->showSimGlyphs(glyphs);
+}
+
+// A fan's openings are picked among the sketches' closed regions (found on a worker, as a feature's profiles input finds
+// them) or the faces under them.
+void Simulate::showProfiles(bool on) {
+  Viewport* view = services().viewport();
+  DesignController* design = services().design();
+  if (Job* j = std::exchange(m_profileJob, nullptr)) j->cancel();
+  if (!view) return;
+  if (!on || !design) return view->clearCandidates();
+  auto found = std::make_shared<std::vector<Viewport::Candidate>>();
+  m_profileJob = design->sketchCandidates("profiles", found, [this, found](bool ok) {
+    m_profileJob = nullptr;
+    trace::log(QString("simulate: fan openings: %1 sketch profile(s) offered").arg(found->size()));
+    auto* setup = services().window()->findChild<CoolingAssistant*>();
+    if (!ok || !setup || !setup->picking()) return;
+    if (Viewport* v = services().viewport()) v->showCandidates(*found);
+    setup->reselect();  // the opening already picked shown selected among them
+  });
+}
+
+// Draw…: Design's New sketch (its plane picked: the fan's face), drawn there (Project its edges, the opening inside them),
+// Finish; then back to the Thermal setup's Air page with that sketch's opening (its smallest region) taken.
+void Simulate::drawOpening(int fan, bool inlet) {
+  DesignController* design = services().design();
+  AppDocument* doc = services().document();
+  if (!design || !doc || !services().action("design.sketch")) return;
+  auto before = std::make_shared<std::set<std::string>>();
+  for (const auto& k : doc->scene.sketches) before->insert(k.id);
+  auto watch = std::make_shared<QMetaObject::Connection>();
+  *watch = connect(design, &DesignController::stateChanged, this, [this, design, doc, before, watch, fan, inlet] {
+    if (design->sketchActive() || design->pickingPlane()) return;  // still choosing its plane, or drawing
+    QObject::disconnect(*watch);
+    std::string made;
+    for (const auto& k : doc->scene.sketches)
+      if (!before->count(k.id)) made = k.id;
+    services().setWorkspace("simulate");
+    openCooling(2);
+    if (auto* setup = services().window()->findChild<CoolingAssistant*>(); setup && !made.empty()) setup->setProfile(fan, inlet, {{"sketch", made}});
+  });
+  services().setWorkspace("design");
+  services().action("design.sketch")->trigger();
+  if (!design->pickingPlane() && !design->sketchActive()) {  // it did not start
+    QObject::disconnect(*watch);
+    services().setWorkspace("simulate");
+    openCooling(2);
+  }
 }
 
 size_t Simulate::fanGlyphsShown() const { return services().viewport() ? services().viewport()->simGlyphCount() : 0; }
