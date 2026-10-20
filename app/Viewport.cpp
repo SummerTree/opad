@@ -1547,11 +1547,50 @@ void Viewport::OnSelectionChanged(const Handle(AIS_InteractiveContext)&, const H
 void Viewport::isolate(const std::vector<std::string>& ids, bool fit) {
   if (ids.empty() && m_isolated.empty()) return;  // not isolated (every document replacement asks): no full sync
   m_isolated.clear();
+  m_isolationSeen.clear();
   for (const auto& id : ids)
     {if(m_doc->scene.sketch(id))m_isolated.insert(id);for (const auto& b : m_doc->scene.bodies_under(id)) m_isolated.insert(b);}
+  if (!m_isolated.empty()) {
+    for (const auto& b : m_doc->scene.all_bodies()) m_isolationSeen.insert(b);
+    for (const auto& s : m_doc->scene.sketches) m_isolationSeen.insert(s.id);
+  }
   m_needFit = fit && !m_isolated.empty();
   sync();
   if (fit && !m_isolated.empty()) fitAll();
+  emit isolationChanged();
+}
+
+bool Viewport::adoptIntoIsolation() {
+  if (m_isolated.empty()) return false;
+  bool any = false;
+  auto adopt = [&](const std::string& id) {
+    if (m_isolationSeen.insert(id).second) m_isolated.insert(id), any = true;
+  };
+  for (const auto& b : m_doc->scene.all_bodies()) adopt(b);
+  for (const auto& s : m_doc->scene.sketches) adopt(s.id);
+  return any;
+}
+
+bool Viewport::inIsolation(const std::string& id) const {
+  if (m_isolated.count(id)) return true;
+  if (m_doc->scene.sketch(id)) return false;
+  const auto bodies = m_doc->scene.bodies_under(id);
+  return std::any_of(bodies.begin(), bodies.end(), [this](const std::string& b) { return m_isolated.count(b) > 0; });
+}
+
+void Viewport::setIsolated(const std::string& id, bool in) {
+  if (m_isolated.empty()) return;
+  std::vector<std::string> ids = m_doc->scene.sketch(id) ? std::vector<std::string>{id} : m_doc->scene.bodies_under(id);
+  for (const auto& b : ids) {
+    if (in) m_isolated.insert(b);
+    else m_isolated.erase(b);
+    m_isolationSeen.insert(b);
+  }
+  if (m_isolated.empty()) {  // the last one out: the mode ends, everything as its flags say
+    m_isolationSeen.clear();
+  }
+  sync();
+  syncSketches(false);
   emit isolationChanged();
 }
 
@@ -2396,6 +2435,7 @@ void Viewport::sync() {
     }
   }
   pruneSnapIndexes();
+  const bool adopted = adoptIntoIsolation();
   const AppDocument::Change& change = m_doc->lastChange();
   const bool partial = !fresh && !change.whole && m_doc->revision == m_syncedRevision + 1;
   m_syncedRevision = m_doc->revision;
@@ -2410,6 +2450,7 @@ void Viewport::sync() {
       emit isolationChanged();
     }
   }
+  if (adopted && !m_isolated.empty()) emit isolationChanged();
   std::vector<std::string> bodies, pending;
   if (partial) {
     std::unordered_set<std::string> seen;

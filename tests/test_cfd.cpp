@@ -304,6 +304,16 @@ TEST(vent_estimate_of_a_vented_box) {
   CHECK(e["intake"].value("fan", false));
   CHECK_EQ(e["intake"]["openings"].get<int>(), 0);
   CHECK_NEAR(e["flow_m3h"].get<double>(), expected(k(480)), 0.01);
+  // A boss on the lid (an inner loop of the top face, no hole), a connector in a cut-out of the -Y wall: neither a vent.
+  box(doc, {40, 20, 40}, 10, 10, 2, "Boss", enclosure);
+  cut(doc, enclosure, {60, -1, 10}, 10, 5, 8);
+  box(doc, {60, -1, 10}, 10, 6, 8, "Connector");
+  const json more = sim::vent_estimate(doc, resolve(doc), {enclosure}, {load}, 5);
+  if (std::getenv("OPAD_TEST_VERBOSE")) std::printf("%s\n", more.dump(1).c_str());
+  CHECK_EQ(more["exhaust"]["openings"].get<int>() + more["intake"]["openings"].get<int>(), 3);
+  CHECK_EQ(more["left_out"]["blind"].get<int>(), 1);
+  CHECK_EQ(more["left_out"]["filled"].get<int>(), 1);
+  CHECK_EQ(more["openings"].size(), size_t(4));  // the three slots and the fan's own
 }
 
 // A fan's opening drawn as Draw… draws it: the face's outline projected, the opening inside it; the sketch alone names its

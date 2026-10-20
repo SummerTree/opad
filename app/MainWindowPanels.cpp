@@ -17,6 +17,8 @@ void MainWindow::buildDocks() {
   setCorner(Qt::TopRightCorner, Qt::RightDockWidgetArea);
 
   m_browser = new BrowserPanel(m_doc, this);
+  m_browser->setIsolation({[this] { return m_viewport->isIsolated(); }, [this](const std::string& id) { return m_viewport->inIsolation(id); },
+                           [this](const std::string& id, bool in) { m_viewport->setIsolated(id, in); }});
   m_browserOverlay = new BrowserOverlay(m_browser, m_viewport);
   connect(m_browser,&BrowserPanel::autoHideChanged,m_browserOverlay,[this](bool on){m_browserOverlay->setAutoHide(on);});
   connect(m_doc,&AppDocument::changed,m_browserOverlay,[this] { m_browserOverlay->refresh(); });

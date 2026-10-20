@@ -270,7 +270,9 @@ BrowserPanel::BrowserPanel(AppDocument* doc, QWidget* parent) : QWidget(parent),
   m_tree = new BrowserTree(doc, this);
   m_tree->setLayoutDirection(Qt::LeftToRight);  // the delegate paints fixed left-to-right columns; names are model data
   m_tree->setStyleSheet("QTreeWidget { padding: 4px 0; }");
-  m_tree->setItemDelegate(new BrowserDelegate(doc, m_tree));
+  auto* delegate = new BrowserDelegate(doc, m_tree);
+  delegate->setIsolation(m_isolation);
+  m_tree->setItemDelegate(delegate);
   m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
   layout->addWidget(m_tree, 1);
   m_empty = new QLabel(tr("No document"), this);
@@ -311,6 +313,10 @@ BrowserPanel::BrowserPanel(AppDocument* doc, QWidget* parent) : QWidget(parent),
   connect(m_tree, &BrowserTree::eyeClicked, this, [this](const std::string& id) {
     if (m_doc->snapshotBusy()) return m_doc->afterCapture([this, id] { emit m_tree->eyeClicked(id); });  // a copy being taken: shortly
     if(!m_editedSketch.empty() && id==m_editedSketch){emit editedSketchVisibilityRequested();return;}
+    if (!id.empty() && m_isolation->on() && (m_doc->node(id) || m_doc->scene.sketch(id))) {  // in or out of the isolation
+      m_isolation->set(id, !m_isolation->contains(id));
+      return;
+    }
     try {  // the document refuses while it is busy (a save, a recovery capture, a regeneration): said, never thrown out of a click or a key
       if (id.empty()) {  // document row: toggle every root
         bool anyVisible = false;
@@ -370,8 +376,22 @@ void BrowserPanel::activate(QTreeWidgetItem* it) {
   else if (!id.empty()) emit fitRequested({id});
 }
 
+void BrowserPanel::setIsolation(browser::Isolation isolation) {
+  *m_isolation = std::move(isolation);
+  isolationChanged();
+}
+
+void BrowserPanel::isolationChanged() { m_tree->viewport()->update(); }
+
 void BrowserPanel::toggleVisibility(const std::vector<std::string>& ids) {
   if (ids.size() == 1) return emit m_tree->eyeClicked(ids.front());
+  if (m_isolation->on()) {  // all in the isolation when any is out, else all out
+    bool anyOut = false;
+    for (const auto& id : ids) anyOut = anyOut || !m_isolation->contains(id);
+    for (const auto& id : ids)
+      if (m_doc->node(id) || m_doc->scene.sketch(id)) m_isolation->set(id, anyOut);
+    return;
+  }
   std::vector<std::string> nodes;
   bool anyShown = false;
   for (const auto& id : ids)

@@ -184,6 +184,9 @@ class CoolingAssistant : public QWidget {
   QRadioButton* m_natural = nullptr;  // natural convection: no fans, the air rises where it is warm
   QRadioButton* m_mixed = nullptr;    // fans, and the air rising where it is warm (mixed convection)
   QLabel* m_airNote = nullptr;        // what the choice includes and what it costs
+  QString m_airChanged;               // why the choice shown is not the one made (the study changed outside the panel)
+  std::function<void()> m_showAirNote;
+  bool m_sameDocument = false;        // the last reload was of the document loaded before
   std::vector<FanSpec> m_fanSpecs;
   int m_fan = -1;
   bool m_fanLoading = false;  // the form being filled: its edits are not the user's
@@ -205,6 +208,8 @@ class CoolingAssistant : public QWidget {
   QComboBox* m_pressureUnit = nullptr;
   class QLineEdit* m_curve = nullptr;  // the P-Q points
   QLabel* m_ventText = nullptr;        // whether the box's vents let the fans blow what they can (sim::vent_estimate)
+  QCheckBox* m_ventsShown = nullptr;   // the vents it found drawn in the view (intakes in, exhausts out)
+  opad::json m_ventOpenings;           // their openings, as the estimate lists them
   int m_ventRun = 0;                   // the estimate asked last (an older one's answer is dropped)
   void estimateVents();
   QDoubleSpinBox* m_speed = nullptr;

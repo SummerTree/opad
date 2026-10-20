@@ -1626,5 +1626,7 @@
   "restore view": "استعادة المنظر",
   "Hold %1 to see the bodies without the preview and pick more on them.": "اضغط %1 مطوّلًا لترى الأجسام دون المعاينة وتختار منها المزيد.",
   "The bodies as they are, without the preview: %1+click picks more, releasing %1 shows the preview.": "الأجسام كما هي دون المعاينة: %1 مع النقر يختار المزيد، وإفلات %1 يُظهر المعاينة.",
-  "Type to search": "اكتب للبحث"
+  "Type to search": "اكتب للبحث",
+  "Shown in the isolation: click to take it out": "معروض في العزل: انقر لإخراجه",
+  "Not in the isolation: click to add it": "ليس في العزل: انقر لإضافته"
 }

@@ -314,6 +314,7 @@ void Simulate::showProfiles(bool on) {
     trace::log(QString("simulate: fan openings: %1 sketch profile(s) offered").arg(found->size()));
     auto* setup = services().window()->findChild<CoolingAssistant*>();
     if (!ok || !setup || !setup->picking()) return;
+    for (auto& c : *found) c.strong = true;  // drawn plainly: the openings to pick, not a faint hint
     if (Viewport* v = services().viewport()) v->showCandidates(*found);
     setup->reselect();  // the opening already picked shown selected among them
   });

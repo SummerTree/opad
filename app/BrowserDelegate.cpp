@@ -66,12 +66,14 @@ void BrowserDelegate::paint(QPainter* p, const QStyleOptionViewItem& opt, const 
   if (rowKind == "folder" || rowKind == "sketch" || rowKind == "provided") {
     const opad::SketchItem* sk = rowKind == "sketch" ? m_doc->scene.sketch(id) : nullptr;
     const bool editing=index.data(Qt::UserRole+8).toBool();
-    const bool off = editing?!index.data(Qt::UserRole+9).toBool():sk && !sk->visible;
+    const bool isolating = sk && !editing && m_isolation && m_isolation->on();  // the eye is the isolation's
+    const bool off = editing?!index.data(Qt::UserRole+9).toBool():isolating ? !m_isolation->contains(id) : sk && !sk->visible;
     const bool error = index.data(browser::kErrorRole).toBool();  // a provided row that is not drawn
     const bool grey = off || d.dim || error;
     const qreal ratio = p->device()->devicePixelRatioF();
     const QColor dim = onHighlight ? t.onsel : t.fg3, quiet = onHighlight ? t.onsel : t.fg2;
-    if (sk || editing) p->drawPixmap(r.left() + kEyeX, r.top() + 6 + dy, icons::pixmap(off ? "hide" : "eye", grey ? dim : quiet, 16, ratio));
+    if (isolating) p->drawPixmap(r.left() + kEyeX, r.top() + 6 + dy, icons::pixmap("isolate", off ? dim : onHighlight ? t.onsel : t.sel, 16, ratio));
+    else if (sk || editing) p->drawPixmap(r.left() + kEyeX, r.top() + 6 + dy, icons::pixmap(off ? "hide" : "eye", grey ? dim : quiet, 16, ratio));
     paintLead(p, d, r);
     const QString own = index.data(browser::kIconRole).toString();  // a provided folder's or row's
     const QString icon = !d.typeIcon.isEmpty() ? d.typeIcon : sk ? QString("sketch") : !own.isEmpty() ? own : QString("open");
@@ -83,12 +85,14 @@ void BrowserDelegate::paint(QPainter* p, const QStyleOptionViewItem& opt, const 
     return;
   }
   if (!n && !isDoc) { p->restore(); return; }
-  bool hidden = n && !n->visible;
+  const bool isolating = n && m_isolation && m_isolation->on();  // the eye is the isolation's: in it, or not
+  bool hidden = isolating ? !m_isolation->contains(id) : n && !n->visible;
   QColor text = onHighlight ? t.onsel : hidden || d.dim ? t.fg3 : t.fg;
   QColor iconColor = onHighlight ? t.onsel : hidden || d.dim ? t.fg3 : t.fg2;
   const qreal dpr = p->device()->devicePixelRatioF();
   int y = r.top() + 6 + dy;
-  p->drawPixmap(r.left() + kEyeX, y, icons::pixmap(hidden ? "hide" : "eye", iconColor, 16, dpr));
+  if (isolating) p->drawPixmap(r.left() + kEyeX, y, icons::pixmap("isolate", hidden ? t.fg3 : onHighlight ? t.onsel : t.sel, 16, dpr));
+  else p->drawPixmap(r.left() + kEyeX, y, icons::pixmap(hidden ? "hide" : "eye", iconColor, 16, dpr));
   const bool isBody = n && n->kind == opad::Node::Kind::Body;
   if (!d.lead.icon.isEmpty()) {
     paintLead(p, d, r);
@@ -260,6 +264,16 @@ const browser::Badge* BrowserDelegate::badgeAt(const browser::Decoration& d, con
 
 // Tooltips: a badge's own, else the row's with the decorators' line under it.
 bool BrowserDelegate::helpEvent(QHelpEvent* e, QAbstractItemView* view, const QStyleOptionViewItem& opt, const QModelIndex& index) {
+  if (e->type() == QEvent::ToolTip && index.isValid() && m_isolation && m_isolation->on() && e->pos().x() >= opt.rect.left() + kEyeX &&
+      e->pos().x() < opt.rect.left() + kEyeX + 18) {  // the eye in isolate mode says what it does now
+    const std::string id = index.data(kIdRole).toString().toStdString();
+    if (m_doc->node(id) || m_doc->scene.sketch(id)) {
+      QToolTip::showText(e->globalPos(), m_isolation->contains(id) ? tr("Shown in the isolation: click to take it out")
+                                                                    : tr("Not in the isolation: click to add it"),
+                         view->viewport(), opt.rect);
+      return true;
+    }
+  }
   if (e->type() == QEvent::ToolTip && index.isValid() && !m_decorators.empty()) {
     const browser::Decoration d = decoration(index);
     QString tip;

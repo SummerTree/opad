@@ -141,6 +141,7 @@ MainWindow::MainWindow() : m_doc(new AppDocument(this)) {
   connect(m_viewport, &Viewport::contextMenuRequested, this, [this](const QPoint& p) { showContextMenu(p, currentNodeIds()); });
   connect(m_viewport, &Viewport::isolationChanged, this, [this] {
     action("view.unisolate")->setEnabled(m_viewport->isIsolated());
+    if (m_browser) m_browser->isolationChanged();  // its eyes are the isolation's while it is on
     updateChips();
   });
   connect(m_viewport, &Viewport::meshingProgress, this, [this](int remaining) {
