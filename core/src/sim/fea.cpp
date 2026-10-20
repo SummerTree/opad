@@ -28,6 +28,7 @@
 #include <set>
 #include <unordered_map>
 #include <sstream>
+#include <iomanip>
 #include <thread>
 
 #include "../design/engine.hpp"
@@ -691,7 +692,55 @@ StudyRun run_structural(const Document& doc, const Scene& scene, const std::stri
   if (maxh <= 0) maxh = std::max(size / 25, 0.5);
   run.summary["mesh_size"] = maxh;
   report(0.1, "Meshing");
-  const VolumeMesh mesh = mesh_solids(solids, maxh, st.value("grading", 0.3), st.value("second_order", true), [&] { return progress && !progress(0.1, "Meshing"); });
+  const VolumeMesh mesh = [&] {
+    const double grading = st.value("grading", 0.3);
+    const bool second = st.value("second_order", true);
+    auto cancelled = [&] { return progress && !progress(0.1, "Meshing"); };
+    std::string why;
+    auto num = [](double v) {
+      std::ostringstream o;
+      o << std::setprecision(3) << v;
+      return o.str();
+    };
+    // Netgen gives up on a face it cannot mesh at that size (a sliver where bodies meet, a thin wall, a tiny edge): finer
+    // first, then each body alone, so that the error names the bodies it fails on.
+    for (const double h : {maxh, maxh / 2}) {
+      try {
+        if (h != maxh) report(0.1, "Meshing again, finer");
+        VolumeMesh m = mesh_solids(solids, h, grading, second, cancelled);
+        if (h != maxh) {
+          run.warnings.push_back("Netgen could not mesh the bodies at " + num(maxh) + " mm: meshed at " + num(h) + " mm");
+          run.summary["mesh_size"] = h;
+        }
+        return m;
+      } catch (const Error& e) {
+        if (cancelled()) throw;
+        why = e.what();
+      }
+    }
+    report(0.1, "Finding which body cannot be meshed");
+    std::vector<std::string> failed;
+    for (size_t i = 0; i < bodies.size() && failed.size() < 6; ++i) {
+      if (cancelled()) throw Error("cancelled");
+      TopoDS_Compound one;
+      bb.MakeCompound(one);
+      for (const auto& f : body_solids[i]) bb.Add(one, f);
+      try {
+        mesh_solids(one, maxh, grading, false, cancelled);
+      } catch (const Error&) {
+        if (cancelled()) throw;
+        failed.push_back("\"" + scene.node(bodies[i])->name + "\"");
+      }
+    }
+    std::string names;
+    for (const auto& n : failed) names += (names.empty() ? "" : ", ") + n;
+    if (!failed.empty())
+      throw Error("Netgen could not mesh " + names + " (a thin wall, a sliver or a broken face): repair or simplify " +
+                  (failed.size() == 1 ? "it" : "them") + ", give a smaller mesh size, or hide " + (failed.size() == 1 ? "it" : "them") +
+                  " to leave " + (failed.size() == 1 ? "it" : "them") + " out");
+    throw Error("Netgen could not mesh the bodies joined, though each meshes alone: where two of them touch they overlap a little or "
+                "nearly touch (a gap thinner than the mesh). Move them flush, or give a smaller mesh size (" + why + ")");
+  }();
   if (mesh.straightened)
     run.warnings.push_back(std::to_string(mesh.straightened) + " element(s) curved inside out on a tight curve were made straight-sided (a finer mesh_size there keeps them curved)");
   const int tn = mesh.tet_nodes;

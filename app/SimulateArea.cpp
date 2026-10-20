@@ -582,7 +582,8 @@ void Simulate::positionOverlays(const QRect&) {
 
 void Simulate::selectionChanged(const SelectionContext& selection) {
   // Thermal setup's box page picks the box's bodies from the selection (the view, the browser).
-  if (auto* setup = services().window()->findChild<CoolingAssistant*>(); setup && setup->picking()) setup->selectionChanged(selection.ids, selection.refs);
+  if (auto* setup = services().window()->findChild<CoolingAssistant*>(); setup && setup->picking())
+    setup->selectionChanged(selection.ids, selection.refs, services().viewport() ? services().viewport()->selectedCandidates() : std::vector<std::string>{});
   // Rows of the Simulation folder picked in the browser, in the order picked: the joints a relation couples.
   std::vector<std::string> now;
   for (const auto& id : selection.ids)
@@ -885,6 +886,11 @@ void Simulate::openCooling(int step) {
     };
     hooks.light = [this](const std::vector<std::pair<opad::Ref, std::string>>& refs) { lightRefs(refs); };
     hooks.fanGlyphs = [this](const std::vector<json>& fans) { showFanGlyphs(fans); };
+    hooks.profiles = [this](bool on) { showProfiles(on); };
+    hooks.selectCandidate = [this](const std::string& id) {
+      if (Viewport* view = services().viewport()) view->selectRefs({}, {id});
+    };
+    hooks.draw = [this](int fan, bool inlet) { drawOpening(fan, inlet); };
     hooks.panel = [this](bool shown) {
       if (!m_coolingPanel) return;
       if (shown) services().openPanel(m_coolingPanel);

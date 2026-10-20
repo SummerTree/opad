@@ -1096,5 +1096,12 @@
  "Press {fixed:enter}: the sketch moves there, and what is built on it follows": "اضغط {fixed:enter}: ينتقل الرسم إلى هناك، ويتبعه ما بُني عليه",
  "The camera itself moves in, up to the smallest detail": "الكاميرا نفسها تتقدم حتى أصغر التفاصيل",
  "Fly": "طيران",
- "{press:view.fly}": "{press:view.fly}"
+ "{press:view.fly}": "{press:view.fly}",
+ "Draw… the inlet: pick the blower's top face": "«ارسم…» للمدخل: اختر الوجه العلوي للنافخ",
+ "Project its edges, draw the inlet's circle in them, Finish": "أسقط حوافه، وارسم دائرة المدخل داخلها، ثم أنهِ",
+ "Draw… the outlet the same way, on its side face": "«ارسم…» للمخرج بالطريقة نفسها، على وجهه الجانبي",
+ "The air goes in at the inlet and out of the outlet; the housing stays solid": "يدخل الهواء من المدخل ويخرج من المخرج؛ ويبقى الغلاف صلبًا",
+ "Draw…: pick the fan's face (or a plane through it)": "«ارسم…»: اختر وجه المروحة (أو مستوى يمر بها)",
+ "Project its edges, draw the opening's circle on them, Finish": "أسقط حوافه، وارسم دائرة الفتحة عليها، ثم أنهِ",
+ "The air goes through the opening along its normal; Flip turns it round": "يعبر الهواء الفتحة على امتداد عمودها؛ و«عكس» تقلب اتجاهه"
 }

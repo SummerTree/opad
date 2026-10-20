@@ -5700,6 +5700,52 @@
     {"to": 3.2, "caption": "Follow changes shows its edits in the view"},
     {"to": 5.0, "caption": "Stop agent work ends what it started"}
    ]
+  },
+  {
+   "id": "simulate.fanBlower", "duration": 8.4, "view": "iso",
+   "items": [
+    {"el": "camera", "center": [2, 0]},
+    {"use": "isoScene", "args": {"area": [-20, -14, 20, 14]}},
+    {"el": "solid", "profile": {"rect": [0, 0, 20, 20], "round": 3}, "at": [0, 0, 0], "height": 7},
+    {"el": "shape", "profile": {"rect": [0, 0, 20, 20], "round": 3}, "at": [0, 0, 7], "color": "sel", "fill": "sel", "fillOpacity": 0.25, "from": 0.7, "to": 1.3, "fade": 0.15},
+    {"el": "shape", "profile": {"rect": [0, 0, 20, 20], "round": 3}, "at": [0, 0, 7], "color": "amber", "dash": true, "width": 2, "from": 1.4, "to": 4.4, "fade": 0.15},
+    {"el": "shape", "profile": {"circle": [0, 0, 6]}, "at": [0, 0, 7], "color": "amber", "width": 2, "fill": "sel", "fillOpacity": 0.3, "from": 2.2, "fade": 0.2},
+    {"el": "shape", "plane": "yz", "at": [10, 0, 0], "profile": {"rect": [0, 3.5, 20, 7]}, "color": "sel", "fill": "sel", "fillOpacity": 0.25, "from": 4.0, "to": 4.5, "fade": 0.15},
+    {"el": "shape", "plane": "yz", "at": [10, 0, 0], "profile": {"rect": [0, 3.5, 12, 3], "round": 1.5}, "color": "amber", "width": 2, "fill": "sel", "fillOpacity": 0.3, "from": 4.9, "fade": 0.2},
+    {"el": "arrow", "at": [0, 0, 15], "dir": [0, 0, -1], "len": 7, "color": "blue", "from": 6.0, "fade": 0.3},
+    {"el": "arrow", "at": [10, 0, 3.5], "dir": [1, 0, 0], "len": 9, "color": "blue", "from": 6.3, "fade": 0.3},
+    {"el": "chip", "screen": [0.03, 0.05], "icon": "sketch", "text": "Sketch", "dot": "sel", "from": 1.3, "to": 5.8},
+    {"el": "key", "command": "sketch.project", "press": 1.5, "from": 1.2, "to": 1.9},
+    {"el": "cursor", "keys": [[0, {"pos": [18, -14, 0]}], [0.6, {"pos": [3, -4, 7]}], [0.7, {"pos": [3, -4, 7], "click": 1}], [1.8, {"pos": [3, -4, 7]}], [2.1, {"pos": [0, 0, 7]}], [2.2, {"pos": [0, 0, 7], "click": 1}], [2.6, {"pos": [6, 0, 7]}], [2.7, {"pos": [6, 0, 7], "click": 1}], [3.8, {"pos": [10, 3, 3]}], [4.0, {"pos": [10, 3, 3], "click": 1}], [4.6, {"pos": [10, -6, 3.5]}], [4.9, {"pos": [10, 6, 3.5], "click": 1}], [5.6, {"pos": [16, -10, 8]}]]}
+   ],
+   "steps": [
+    {"to": 1.3, "caption": "Draw… the inlet: pick the blower's top face"},
+    {"to": 3.8, "caption": "Project its edges, draw the inlet's circle in them, Finish"},
+    {"to": 5.8, "caption": "Draw… the outlet the same way, on its side face"},
+    {"to": 8.4, "caption": "The air goes in at the inlet and out of the outlet; the housing stays solid"}
+   ]
+  },
+  {
+   "id": "simulate.fanAxial", "duration": 7.0, "view": "iso",
+   "items": [
+    {"el": "camera", "center": [0, 0]},
+    {"use": "isoScene", "args": {"area": [-20, -14, 20, 14]}},
+    {"el": "solid", "profile": {"rect": [0, 0, 22, 22], "round": 2}, "holes": [{"circle": [0, 0, 10]}], "at": [0, 0, 0], "height": 6},
+    {"el": "solid", "profile": {"circle": [0, 0, 4]}, "at": [0, 0, 0], "height": 6, "tone": "fg3", "toneAmount": 0.3},
+    {"el": "shape", "profile": {"rect": [0, 0, 22, 22], "round": 2}, "holes": [{"circle": [0, 0, 10]}], "at": [0, 0, 6], "color": "sel", "fill": "sel", "fillOpacity": 0.25, "from": 0.7, "to": 1.3, "fade": 0.15},
+    {"el": "shape", "profile": {"rect": [0, 0, 22, 22], "round": 2}, "at": [0, 0, 6], "color": "amber", "dash": true, "width": 2, "from": 1.4, "to": 4.0, "fade": 0.15},
+    {"el": "shape", "profile": {"circle": [0, 0, 10]}, "at": [0, 0, 6], "color": "amber", "dash": true, "width": 2, "from": 1.4, "to": 4.0, "fade": 0.15},
+    {"el": "shape", "profile": {"circle": [0, 0, 10]}, "at": [0, 0, 3], "color": "amber", "width": 2, "fill": "sel", "fillOpacity": 0.3, "from": 2.4, "fade": 0.2},
+    {"el": "arrow", "at": [0, 0, 3], "dir": [0, 0, 1], "len": 14, "color": "blue", "from": 4.3, "fade": 0.3},
+    {"el": "chip", "screen": [0.03, 0.05], "icon": "sketch", "text": "Sketch", "dot": "sel", "from": 1.3, "to": 4.2},
+    {"el": "key", "command": "sketch.project", "press": 1.5, "from": 1.2, "to": 1.9},
+    {"el": "cursor", "keys": [[0, {"pos": [18, -14, 0]}], [0.6, {"pos": [8, -8, 6]}], [0.7, {"pos": [8, -8, 6], "click": 1}], [2.2, {"pos": [0, 0, 6]}], [2.3, {"pos": [0, 0, 6], "click": 1}], [2.8, {"pos": [10, 0, 6]}], [2.9, {"pos": [10, 0, 6], "click": 1}], [4.0, {"pos": [16, -10, 8]}]]}
+   ],
+   "steps": [
+    {"to": 1.3, "caption": "Draw…: pick the fan's face (or a plane through it)"},
+    {"to": 4.2, "caption": "Project its edges, draw the opening's circle on them, Finish"},
+    {"to": 7.0, "caption": "The air goes through the opening along its normal; Flip turns it round"}
+   ]
   }
  ]
 }

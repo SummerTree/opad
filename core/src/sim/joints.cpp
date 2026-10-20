@@ -171,6 +171,7 @@ void validate_load_op(const json& op) {
   if (op.contains("emissivity") && !(op["emissivity"].is_number() && op["emissivity"].get<double>() >= 0 && op["emissivity"].get<double>() <= 1))
     throw Error("load: 'emissivity' is 0 to 1");
   if (op.contains("count") && !(op["count"].is_number_integer() && op["count"].get<int>() >= 1)) throw Error("load: 'count' is a whole number, 1 or more");
+  if (op.contains("type") && op["type"] != "axial" && op["type"] != "blower") throw Error("load: a fan's 'type' is axial or blower");
 }
 
 void validate_study_op(const json& op) {

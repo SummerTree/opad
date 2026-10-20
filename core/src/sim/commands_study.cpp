@@ -189,11 +189,12 @@ void register_study_commands(const std::function<void(const CommandInfo&, Handle
        {"ambient", "number degC - convection, radiation; fan: inlet air"},
        {"velocity", "number m/s - forced convection (vector: its way)"},
        {"emissivity", "number 0..1 - radiation"},
-       {"fan", {{"anyOf", {{{"type", "string"}}, {{"type", "object"}}}}, {"description", "library id or {flow m3/h, pressure Pa, curve}; vector: the air's way"}}},
+       {"fan", {{"anyOf", {{{"type", "string"}}, {{"type", "object"}}}}, {"description", "library id or datasheet {cfm|flow m3/h, inH2O|pressure Pa, curve, speed %}"}}},
        {"count", "int - fans side by side"},
        {"heatsink", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "fan: the heatsink it blows through, bodies or components (one part): its fins get fine cells"}}},
-       {"across", {{"type", "object"}, {"description", "fan: the flat face (a reference) its vector was taken across; kept for the setup"}}},
-       {"outlet", {{"type", "object"}, {"description", "fan, enclosure: the rectangle its air leaves by {centre, normal, x, width, height} mm"}}},
+       {"type", "axial|blower - fan; a blower's housing stays solid"},
+       {"outlet", {{"description", "fan opening: sketch region {sketch, at|boundary} or flat face; replaces on"}}},
+       {"inlet", {{"description", "blower: as outlet"}}},
        {"axis", "object - bolt_preload: the bolt's axis (default: its largest cylinder)"},
        {"id", "string - an existing load to change"},
        {"by", "string"}},
@@ -206,7 +207,7 @@ void register_study_commands(const std::function<void(const CommandInfo&, Handle
           const Load* l = s.load(a["id"].get<std::string>());
           if (!l) throw Error("no load " + a["id"].get<std::string>());
           json set = json::object();
-          for (const char* k : {"name", "case", "vector", "value", "axis", "h", "ambient", "velocity", "emissivity", "fan", "count", "heatsink", "across", "outlet"})
+          for (const char* k : {"name", "case", "vector", "value", "axis", "h", "ambient", "velocity", "emissivity", "fan", "count", "heatsink", "across", "outlet", "inlet", "type"})
             if (a.contains(k)) set[k] = a[k];
           if (a.contains("on")) set["refs"] = a["on"];
           if (set.empty()) throw Error("load: nothing to change");
@@ -224,7 +225,8 @@ void register_study_commands(const std::function<void(const CommandInfo&, Handle
         json refs = a.value("on", a.value("refs", json::array()));
         if (!refs.is_array()) refs = json::array({refs});
         for (const auto& r : refs) Ref::from_json(r.is_object() && r.contains("select") ? json(r["body"]) : r);
-        if (kind != "gravity" && refs.empty()) throw Error("load: a " + kind + " acts on faces (or a bolt body): give on");
+        const bool drawn = kind == "fan" && a.contains("outlet");  // a fan by its opening: on (its body) optional
+        if (kind != "gravity" && refs.empty() && !drawn) throw Error("load: a " + kind + " acts on faces (or a bolt body): give on");
         if ((kind == "force" || kind == "moment" || kind == "gravity" || kind == "displacement") && !a.contains("vector"))
           throw Error("load: a " + kind + " needs its vector [x, y, z]");
         if ((kind == "pressure" || kind == "bolt_preload") && !a.contains("value"))
@@ -234,14 +236,14 @@ void register_study_commands(const std::function<void(const CommandInfo&, Handle
         if (kind == "convection" && !a.contains("h")) throw Error("load: a convection needs h: a film coefficient in W/m2K, \"natural\" or \"forced\"");
         if (kind == "convection" && a.value("h", json()) == "forced" && !a.contains("velocity"))
           throw Error("load: forced convection needs the air's velocity (m/s) and its direction (vector)");
-        if (kind == "fan" && (!a.contains("fan") || !a.contains("vector")))
+        if (kind == "fan" && (!a.contains("fan") || (!a.contains("vector") && !drawn)))
           throw Error("load: a fan needs fan (a library id or {flow, pressure}) and vector, the way the air goes through the heatsink it is on");
         if (kind == "fan") sim::air::fan_from(a["fan"]);  // refused here rather than at the study
         std::vector<std::string> taken;
         for (const auto& l : s.loads) taken.push_back(l.name);
         json op = {{"op", "load"}, {"name", a.value("name", free_name(taken, capital(kind) + " "))}, {"kind", kind},
                    {"case", a.value("case", std::string("Load case 1"))}, {"refs", refs}};
-        for (const char* k : {"vector", "value", "axis", "h", "ambient", "velocity", "emissivity", "fan", "count", "heatsink", "across", "outlet"})
+        for (const char* k : {"vector", "value", "axis", "h", "ambient", "velocity", "emissivity", "fan", "count", "heatsink", "across", "outlet", "inlet", "type"})
           if (a.contains(k)) op[k] = a[k];
         const std::string id = doc.append(op, by).id;
         return json{{"id", id}, {"name", op["name"]}, {"kind", kind}, {"case", op["case"]}};

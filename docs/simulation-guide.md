@@ -269,18 +269,29 @@ Needs OpenFOAM.
 
 1. Model the box with its walls and the openings cut through them, as one solid or several (a base and its lid, a frame
    and its panels). Model the board, its chips and the heatsink inside it as bodies of their own (or the chips joined
-   into the board), and a block where each fan sits, as big as the fan (or the fan's own model). (On an empty document
-   Thermal setup builds an example: a board, a 4 W chip under a finned heatsink and a 0.5 W power chip in a
-   110 × 80 × 40 mm ABS box with a 30 mm fan and three exhaust slots.)
+   into the board), and each fan where it sits: a blower's housing as a solid (its inlet and outlet are drawn on it), an
+   axial fan as a block or its own model. (On an empty document Thermal setup builds an example: a board, a 4 W chip
+   under a finned heatsink and a 0.5 W power chip in a 110 × 80 × 40 mm ABS box with a 30 mm fan and three exhaust
+   slots.)
 2. Press **Thermal setup** on the **Thermal** tab. Its first page picks the bodies the box is made of: click bodies in the
    view or rows in the browser to add or take them out.
 3. **Heat**: tick each chip that makes heat and type its power. A chip joined into the board: click its face in the view
    and type that face's power. Tick **Board** for the circuit board and give its copper layers: copper spreads heat
    along a board about eighty times better than through it. A chip with no material is taken as silicon.
-4. **Air**: for each fan, pick it in the view or the browser (its own model as a component, or a block where it sits),
-   the flat face its air goes through (**Flip** turns it round), the fan (typical fans by size, or **Custom** with its
-   datasheet's free flow and shut-off pressure typed under it) and the heatsink it blows through, with its material.
-   Untick the fans for a box with vents only: the air then moves by rising where it is warm, so put vents low and high.
+4. **Air**: **Add a fan**, choose its type and set it up by its openings: an **axial fan**'s opening (the air goes
+   through it along its normal; **Flip** turns it round), a **blower**'s inlet (where it draws the air in, on its
+   axis) and outlet (its side), its housing staying solid. An opening is a closed profile of a sketch or a flat face:
+   click one in the view, or press **Draw…**, which starts a sketch on the fan's face (project its edges, draw the
+   opening's slot or circle in them, **Finish**) and takes it. Then the fan's datasheet: a library fan, or **From its
+   datasheet** with its **max airflow** and **max static pressure** in the units the datasheet gives (CFM, m³/h, m³/min,
+   l/s; inH₂O, mmH₂O, Pa), optionally points read off its P-Q chart (without them the curve is a straight line between
+   the two), and its **speed** as a percentage of the rated one (flow scales with speed, pressure with its square); and
+   the heatsink it blows through, with its material. Under the fans a line says whether the box's vents let them blow
+   what they can: the vents are the holes through the box's flat walls, intakes behind the fans' air and exhausts ahead
+   of it (a hole a fan's opening sits in is that fan's), each a sharp-edged orifice in series with the other side, met
+   by the fans' curves; it gives the flow they would deliver against their free flow, the side that holds them back,
+   and the flow the heat needs to warm the air by 10 K. Choose natural convection for a box with vents only: the air
+   then moves by rising where it is warm, so put vents low and high.
 5. **Run**: the room's temperature and the quality: **Quick** to compare designs, **Normal** for the answer, **Fine** to
    check it. It takes minutes; the status bar shows how far it is and you can keep working.
 6. The page lists each part's temperature (hottest first), each fan's flow and pressure, the air through the box and
@@ -288,8 +299,10 @@ Needs OpenFOAM.
    **Air speed** colour the map and the streamlines.
 
 **How it is worked out**: the air in the box and a margin of the room around it are meshed around every part in it
-(fine enough for each part's walls, fins and vents). Each fan is a disk across which its curve sets the pressure jump,
-so it finds its own operating point against the box's resistance. The heat goes back and forth: the parts in CalculiX
+(fine enough for each part's walls, fins and vents). An axial fan is its opening made a baffle across which its curve
+sets the pressure jump, so it finds its own operating point against the box's resistance; a blower takes the air out of
+the box at its inlet and puts it back at its outlet at one flow, which follows its curve against the pressure the air
+builds between the two, round by round. The heat goes back and forth: the parts in CalculiX
 as one bonded mesh (touching parts conduct as one, the board along and across its layers, radiation between the parts
 and to the room by view factors cast as rays once, each face's sink temperature from the others' at every pass), the air's temperature in OpenFOAM with the parts' surfaces as its walls; the heat each
 face gives the air is its film for the next CalculiX solve, until the temperatures settle. With fans the flow is solved
@@ -336,7 +349,7 @@ or ask an agent: *"Run the motion study for 5 seconds with the crank turning at 
 | Motion | `duration` s, `frames`, `drivers: [{joint, to \| speed \| expr \| table, profile}]`, `traces: [{part, point, name}]` |
 | Dynamic | `duration`, `frames`, `step`, `gravity` (true, false or [x, y, z] mm/s²), `contacts`, `friction`, `restitution`, `free`; on joints: `drive` (position, speed, torque, force), `spring`, `friction`, `limits` |
 | Static, modal | `case`, `bodies`, `mesh_size` mm, `modes`, `materials: {"all" \| body: {E, nu, density, yield}}` |
-| Thermal | `ambient` °C, `gravity` (down, for natural convection), `duration` s and `frames` (over time), `mesh_size`, `materials: {"all" \| body: {k, cp, emissivity}}`; on loads: `fan` (an id or `{flow, pressure, curve}`), `vector`, `count`, `ambient`; `materials: {body: {k, k_through, normal} or {pcb: {layers, copper_oz, coverage, thickness}}}`; `air: "cfd"` with `cfd: {enclosure (a body id, or false), quality (quick, normal, fine), buoyancy, radiation (true: by rays, `"calculix"`: CalculiX's cavity radiation, minutes per solve; false), radiation_rays (512 per face), cell_size, upstream, downstream, padding, flow_iterations, heat_iterations, passes, settle, streamlines}` |
+| Thermal | `ambient` °C, `gravity` (down, for natural convection), `duration` s and `frames` (over time), `mesh_size`, `materials: {"all" \| body: {k, cp, emissivity}}`; on loads: `fan` (an id, `{model, speed}`, or a datasheet's `{cfm or flow (m³/h) or m3min or ls, inH2O or mmH2O or pressure (Pa), curve, curve_units, speed, kind}`), `vector`, `count`, `ambient`, and for a fan by its openings `type` (axial, blower), `outlet` and a blower's `inlet` (a sketch's region `{sketch, at or boundary}`, the sketch alone its smallest region, or a flat face) instead of `on`; `materials: {body: {k, k_through, normal} or {pcb: {layers, copper_oz, coverage, thickness}}}`; `air: "cfd"` with `cfd: {enclosure (a body id, or false), quality (quick, normal, fine), buoyancy, radiation (true: by rays, `"calculix"`: CalculiX's cavity radiation, minutes per solve; false), radiation_rays (512 per face), cell_size, upstream, downstream, padding, flow_iterations, heat_iterations, passes, settle, streamlines}` |
 | Sweep | `study` (id or name), `params: [{name, values} or {name, from, to, steps}]`, `objective: {of, bodies, goal}`, `refine`, `screening` (settings merged into the study's for the points), `confirm`, `max_points` |
 | Printed part | `print: {profile, material (or {base, E, nu, kt, kz, X, Y, Z, S, C, density}), build_direction, layer_height, line_width, walls, top_layers, bottom_layers, infill, pattern, infill_angle, flow, bodies}` |
 

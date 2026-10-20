@@ -1,5 +1,14 @@
 #include "opad/sim/cfd.hpp"
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepClass_FaceClassifier.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <BRepTools.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <TopoDS_Wire.hxx>
 #include <BRepBndLib.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
@@ -27,6 +36,8 @@
 #include <unordered_map>
 
 #include "../import_common.hpp"
+#include "opad/design/sketch.hpp"
+#include "opad/design/sketch_geom.hpp"
 #include "opad/geometry.hpp"
 #include "opad/materials.hpp"
 #include "opad/sim/airflow.hpp"
@@ -205,6 +216,26 @@ std::vector<double> read_patch(const std::string& t, const std::string& patch) {
   double x = 0;
   s >> word >> x;
   return {x};
+}
+
+// A blower opening's flow in a velocity file: the volumetricFlowRate of its patch's entry (m3/s).
+std::string set_flow_rate(std::string U, const std::string& patch, double Q) {
+  const size_t bf = U.find("boundaryField");
+  size_t at = bf;
+  for (;;) {
+    at = U.find(patch, at + 1);
+    if (at == std::string::npos || bf == std::string::npos) return U;
+    const char before = U[at - 1], after = at + patch.size() < U.size() ? U[at + patch.size()] : ' ';
+    if (std::isspace(static_cast<unsigned char>(before)) && std::isspace(static_cast<unsigned char>(after))) break;
+  }
+  const size_t open = U.find('{', at), close = U.find('}', open);
+  const size_t key = U.find("volumetricFlowRate", open);
+  if (key == std::string::npos || key > close) return U;
+  const size_t end = U.find(';', key);
+  std::ostringstream v;
+  v.precision(10);
+  v << "volumetricFlowRate constant " << Q;
+  return U.replace(key, end - key, v.str());
 }
 
 // A region's mesh: its cells' centres and volumes (from its faces), mm.
@@ -434,6 +465,246 @@ BodyBoxes body_boxes(const Document& doc, const Scene& scene) {
       out.boxes.push_back(boxes[i]);
     }
   return out;
+}
+
+namespace {
+// A fan's opening as a face in the world and its normal (fan_profile, below).
+TopoDS_Face profile_face(const Document& doc, const Scene& scene, const json& ref, V& normal) {
+  if (ref.is_object() && ref.contains("sketch")) {
+    const std::string id = ref["sketch"].get<std::string>();
+    const SketchItem* item = nullptr;
+    for (const auto& k : scene.sketches)
+      if (k.id == id) item = &k;
+    if (!item) throw Error("a fan's opening names a sketch that is not there");
+    const auto regions = design::sketch_regions(design::Sketch::from_json(item->geometry), item->frame);
+    if (regions.empty()) throw Error("the sketch of a fan's opening has no closed profile");
+    int i = -1;
+    if (ref.contains("boundary")) {
+      auto key = [](std::vector<int> ids) {
+        for (int& v : ids) v = std::abs(v);
+        std::sort(ids.begin(), ids.end());
+        return ids;
+      };
+      const auto want = key(ref["boundary"].get<std::vector<int>>());
+      for (size_t k = 0; k < regions.size() && i < 0; ++k)
+        if (key(regions[k].boundary) == want) i = int(k);
+    }
+    if (i < 0 && ref.contains("at")) i = design::region_at(regions, item->frame, ref["at"][0].get<double>(), ref["at"][1].get<double>());
+    if (i < 0 && !ref.contains("at") && !ref.contains("boundary"))  // the sketch alone: its smallest region (an opening drawn
+      for (size_t k = 0; k < regions.size(); ++k)                    // inside its face's outline, projected)
+        if (i < 0 || regions[k].area < regions[size_t(i)].area) i = int(k);
+    if (i < 0) throw Error("a fan's opening is no longer a closed region of its sketch: pick it again");
+    normal = item->frame.normal();
+    return regions[size_t(i)].face;
+  }
+  const Ref r = Ref::from_json(ref);
+  const TopoDS_Shape f = subshape(node_world_shape(doc, scene, r.body), Ref::Kind::Face, r.index);
+  if (f.IsNull() || f.ShapeType() != TopAbs_FACE) throw Error("a fan's opening is a sketch's closed region or a flat face");
+  BRepAdaptor_Surface surface(TopoDS::Face(f));
+  if (surface.GetType() != GeomAbs_Plane) throw Error("a fan's opening must be flat: a sketch's closed region or a flat face");
+  gp_Dir n = surface.Plane().Axis().Direction();
+  if (!surface.Plane().Position().Direct()) n.Reverse();
+  if (f.Orientation() == TopAbs_REVERSED) n.Reverse();
+  normal = {n.X(), n.Y(), n.Z()};
+  return TopoDS::Face(f);
+}
+}  // namespace
+
+FanProfile fan_profile(const Document& doc, const Scene& scene, const json& ref) {
+  FanProfile out;
+  V n{0, 0, 1};
+  const TopoDS_Face face = profile_face(doc, scene, ref, n);
+  out.normal = n;
+  GProp_GProps g;
+  BRepGProp::SurfaceProperties(face, g);
+  out.area = g.Mass();
+  out.centre = {g.CentreOfMass().X(), g.CentreOfMass().Y(), g.CentreOfMass().Z()};
+  for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
+    std::vector<std::array<double, 3>> loop;
+    for (BRepTools_WireExplorer e(TopoDS::Wire(w.Current()), face); e.More(); e.Next()) {
+      BRepAdaptor_Curve c(e.Current());
+      const bool reversed = e.Orientation() == TopAbs_REVERSED;
+      const int n_pts = c.GetType() == GeomAbs_Line ? 1 : 24;
+      for (int k = 0; k < n_pts; ++k) {
+        const double t = double(k) / n_pts;
+        const double u = reversed ? c.LastParameter() - t * (c.LastParameter() - c.FirstParameter()) : c.FirstParameter() + t * (c.LastParameter() - c.FirstParameter());
+        const gp_Pnt p = c.Value(u);
+        loop.push_back({p.X(), p.Y(), p.Z()});
+      }
+    }
+    if (loop.size() >= 3) out.loops.push_back(loop);
+  }
+  return out;
+}
+
+json vent_estimate(const Document& doc, const Scene& scene, const std::vector<std::string>& walls, const std::vector<json>& fans, double watts,
+                   double ambient_C) {
+  using P = std::array<double, 3>;
+  auto dot3 = [](const P& a, const P& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+  auto minus = [](const P& a, const P& b) { return P{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
+  auto unit = [&](P v) {
+    const double l = std::sqrt(dot3(v, v));
+    return l > 1e-12 ? P{v[0] / l, v[1] / l, v[2] / l} : P{0, 0, 0};
+  };
+  // The box's holes: each inner loop of a face that looks out of the box (a through hole has one on each side; the inside one
+  // looks in).
+  struct Vent {
+    P centre, normal;
+    double area;
+    int fan = -1;  // the fan whose opening sits in it
+    bool out = false;
+  };
+  std::vector<Vent> vents;
+  std::vector<TopoDS_Shape> shapes;
+  Bnd_Box all;
+  for (const auto& w : walls) {
+    if (!scene.node(w)) continue;
+    shapes.push_back(node_world_shape(doc, scene, w));
+    BRepBndLib::Add(shapes.back(), all);
+  }
+  if (all.IsVoid()) throw Error("the box has no walls to find its vents in");
+  double x0, y0, z0, x1, y1, z1;
+  all.Get(x0, y0, z0, x1, y1, z1);
+  const P mid{0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)};
+  for (const auto& shape : shapes)
+    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
+      const TopoDS_Face face = TopoDS::Face(e.Current());
+      BRepAdaptor_Surface surface(face);
+      if (surface.GetType() != GeomAbs_Plane) continue;  // vents are cut through flat panels
+      gp_Dir n = surface.Plane().Axis().Direction();
+      if (!surface.Plane().Position().Direct()) n.Reverse();
+      if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+      const TopoDS_Wire outer = BRepTools::OuterWire(face);
+      for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
+        if (w.Current().IsSame(outer)) continue;
+        BRepBuilderAPI_MakeFace hole(surface.Plane(), TopoDS::Wire(w.Current()));
+        if (!hole.IsDone()) continue;
+        GProp_GProps g;
+        BRepGProp::SurfaceProperties(hole.Face(), g);
+        const P c{g.CentreOfMass().X(), g.CentreOfMass().Y(), g.CentreOfMass().Z()};
+        if (dot3({n.X(), n.Y(), n.Z()}, minus(c, mid)) <= 0) continue;  // the inside of a through hole
+        vents.push_back({c, {n.X(), n.Y(), n.Z()}, std::fabs(g.Mass())});
+      }
+    }
+  // The fans: their curves, where their air goes, their openings.
+  struct F {
+    air::Fan fan;
+    P way{0, 0, 0}, at{0, 0, 0};
+  };
+  std::vector<F> list;
+  double free_flow = 0;
+  P way_all{0, 0, 0}, at_all{0, 0, 0};
+  for (const json& d : fans) {
+    F f;
+    f.fan = air::fan_from(d.value("fan", json("80x25")));
+    std::vector<std::pair<FanProfile, bool>> openings;  // (profile, it lets the air out)
+    const bool blower = d.value("type", std::string("axial")) == "blower";
+    try {
+      if (d.contains("outlet") && (d["outlet"].is_string() || !d["outlet"].contains("centre"))) openings.push_back({fan_profile(doc, scene, d["outlet"]), true});
+      if (blower && d.contains("inlet")) openings.push_back({fan_profile(doc, scene, d["inlet"]), false});
+    } catch (const std::exception&) {
+      openings.clear();
+    }
+    if (!openings.empty()) {
+      f.at = openings.front().first.centre;
+      if (blower && openings.size() == 2) {  // out of the side, away from the inlet
+        f.way = unit(openings[0].first.normal);
+        if (dot3(f.way, minus(openings[0].first.centre, openings[1].first.centre)) < 0) f.way = {-f.way[0], -f.way[1], -f.way[2]};
+      } else {
+        f.way = unit(d.contains("vector") ? d["vector"].get<P>() : openings.front().first.normal);
+      }
+    } else {  // an older fan: its body's middle, its vector
+      Bnd_Box b;
+      for (const auto& r : d.value("refs", json::array()))
+        if (const std::string id = r.is_string() ? r.get<std::string>() : r.value("body", std::string()); scene.node(id)) BRepBndLib::Add(node_world_shape(doc, scene, id), b);
+      if (b.IsVoid()) continue;
+      double a0, b0, c0, a1, b1, c1;
+      b.Get(a0, b0, c0, a1, b1, c1);
+      f.at = {0.5 * (a0 + a1), 0.5 * (b0 + b1), 0.5 * (c0 + c1)};
+      f.way = unit(d.value("vector", P{1, 0, 0}));
+    }
+    // A vent its opening sits in is its own: it blows (or draws) straight through it.
+    for (const auto& [o, out] : openings)
+      for (auto& v : vents) {
+        const double reach = std::max(std::sqrt(o.area), std::sqrt(v.area));
+        const P d3 = minus(v.centre, o.centre);
+        if (v.fan < 0 && std::sqrt(dot3(d3, d3)) < reach) {
+          v.fan = int(list.size());
+          v.out = blower ? out : dot3(f.way, v.normal) > 0;
+        }
+      }
+    const double q = f.fan.Qmax;
+    free_flow += q;
+    for (int k = 0; k < 3; ++k) way_all[size_t(k)] += f.way[size_t(k)] * q, at_all[size_t(k)] += f.at[size_t(k)] * q;
+    list.push_back(f);
+  }
+  if (list.empty()) throw Error("no fan to estimate the vents for");
+  for (auto& c : at_all) c /= free_flow;
+  way_all = unit(way_all);
+  // Intakes behind the fans' air, exhausts ahead of it.
+  struct Side {
+    double area = 0;
+    int openings = 0;
+    bool fan = false;  // a fan blows straight through it
+  } in, out;
+  for (auto& v : vents) {
+    if (v.fan < 0) v.out = dot3(minus(v.centre, at_all), way_all) > 0;
+    Side& s = v.out ? out : in;
+    if (v.fan >= 0) s.fan = true;
+    else s.area += v.area, ++s.openings;
+  }
+  json notes = json::array();
+  if ((!in.fan && in.area <= 0) || (!out.fan && out.area <= 0)) {
+    if (in.area + out.area <= 0 && !in.fan && !out.fan) notes.push_back("no vents found: holes cut through the box's flat walls");
+    else notes.push_back(std::string("no ") + (in.area <= 0 && !in.fan ? "intake" : "exhaust") +
+                         " vents found on that side of the fans: the air comes in and goes out through the same vents, half each");
+    const double half = 0.5 * (in.area + out.area);
+    if (!in.fan) in.area = half;
+    if (!out.fan) out.area = half;
+  }
+  const air::Air a = air::properties(ambient_C);
+  constexpr double kCd = 0.6;
+  auto k = [&](const Side& s) { return s.fan || s.area <= 0 ? 0.0 : a.rho / (2 * std::pow(kCd * s.area * 1e-6, 2)); };  // dp = k Q^2
+  const double K = k(in) + k(out);
+  auto flow_at_dp = [&](double dp) {
+    double q = 0;
+    for (const auto& f : list) q += air::flow_at(f.fan, dp);
+    return q;
+  };
+  double dp = 0;
+  if (K > 0) {
+    double lo = 0, hi = 0;
+    for (const auto& f : list) hi = std::max(hi, f.fan.pressure(0));
+    for (int i = 0; i < 100; ++i) {
+      const double m = 0.5 * (lo + hi);
+      (flow_at_dp(m) > std::sqrt(m / K) ? lo : hi) = m;
+    }
+    dp = 0.5 * (lo + hi);
+  }
+  const double Q = flow_at_dp(dp);
+  auto side = [&](const Side& s) {
+    json j = {{"area_mm2", s.area}, {"openings", s.openings}, {"pressure_Pa", k(s) * Q * Q}};
+    if (s.fan) j["fan"] = true;
+    return j;
+  };
+  constexpr double kCfmM3s = 4.719474e-4;
+  json out_j = {{"intake", side(in)},
+                {"exhaust", side(out)},
+                {"free_flow_m3h", free_flow * 3600},
+                {"free_flow_cfm", free_flow / kCfmM3s},
+                {"flow_m3h", Q * 3600},
+                {"flow_cfm", Q / kCfmM3s},
+                {"fraction", free_flow > 0 ? Q / free_flow : 0.0},
+                {"pressure_Pa", dp},
+                {"limited_by", K <= 0 ? "fans" : k(in) >= k(out) ? "intake" : "exhaust"}};
+  if (watts > 0) {
+    const double need = watts / (a.rho * a.cp * 10);  // a 10 K rise of the air
+    out_j["needed_m3h"] = need * 3600;
+    out_j["needed_cfm"] = need / kCfmM3s;
+    if (Q > 0) out_j["rise_K"] = watts / (a.rho * a.cp * Q);
+  }
+  if (!notes.empty()) out_j["notes"] = notes;
+  return out_j;
 }
 
 namespace {
@@ -721,6 +992,19 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
       for (const auto& id : found.inside) add_body(id);
   }
   auto is_wall = [&](const std::string& id) { return std::find(box_walls.begin(), box_walls.end(), id) != box_walls.end(); };
+  // Before anything is meshed: whether the vents let the fans blow what they can (the summary's vents.estimate, beside the
+  // flows the run finds).
+  json vents_est;
+  if (!enclosure.empty() && !fan_loads.empty()) {
+    std::vector<json> defs;
+    for (const Load* l : fan_loads) defs.push_back(l->def);
+    double watts = 0;
+    for (const Load* l : heats) watts += l->def.value("value", 0.0);
+    try {
+      vents_est = vent_estimate(doc, scene, box_walls, defs, watts, ambient);
+    } catch (const std::exception&) {
+    }
+  }
   if (!enclosure.empty()) {
     if (fan_loads.empty() && !cfd.value("buoyancy", true) && !cfd.value("sealed", false))
       throw Error("the CFD air in an enclosure moves by fans (load kind fan) or by warm air rising (cfd.buoyancy): with neither it stands still "
@@ -906,12 +1190,111 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     bool plate = false;
     V x{1, 0, 0}, y{0, 1, 0};
     double width = 0, height = 0;
+    std::vector<V> tris;  // a profile's triangles (three points each, mm): the jump across its own outline
+    double area = 0;      // mm2
   };
   std::vector<Disk> disks;
+  // A blower (fan type "blower"): in through its inlet, out through its outlet, both openings drawn on its housing, which
+  // stays a solid wall. The air leaves the room's at the inlet and comes back at the outlet; the flow is the one its curve
+  // gives against the pressure between the two (found in rounds of the flow's solve).
+  struct Blower {
+    const Load* load;
+    air::Fan fan;
+    size_t housing;
+    TopoDS_Face in, out;
+    V in_n, out_n;  // out of the housing
+    double in_area = 0, out_area = 0;  // mm2
+    double Q = 0;   // m3/s
+    double dp = 0;  // Pa: the outlet's pressure over the inlet's, the last round
+  };
+  std::vector<Blower> blowers;
   std::vector<bool> is_air(bodies.size(), false);
+  // A profile's face as triangles (the jump's surface; the faces a blower's opening covers), points in mm.
+  auto triangles = [&](const TopoDS_Face& f) {
+    std::vector<V> out;
+    BRepMesh_IncrementalMesh(f, 0.05, false, 0.2, true);
+    TopLoc_Location loc;
+    const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(f, loc);
+    if (tri.IsNull()) return out;
+    for (int k = 1; k <= tri->NbTriangles(); ++k) {
+      int n1, n2, n3;
+      tri->Triangle(k).Get(n1, n2, n3);
+      for (int n : {n1, n2, n3}) {
+        const gp_Pnt p = tri->Node(n).Transformed(loc.Transformation());
+        out.push_back({p.X(), p.Y(), p.Z()});
+      }
+    }
+    return out;
+  };
+  auto is_profile = [](const json& o) { return o.is_string() || (o.is_object() && !o.contains("centre")); };
   if (!enclosure.empty())
     for (const Load* l : fan_loads) {
-      if (l->refs.empty()) throw Error("fan \"" + l->name + "\" is on nothing");
+      const json outlet = l->def.value("outlet", json());
+      if (is_profile(outlet) && !outlet.is_null()) {
+        // Drawn as a profile: its opening (a sketch's closed region or a flat face) is the fan, wherever its model is.
+        const air::Fan fan = air::fan_from(l->def.value("fan", json("80x25")));
+        V n_out{0, 0, 1};
+        const TopoDS_Face out_face = profile_face(doc, scene, outlet, n_out);
+        GProp_GProps g;
+        BRepGProp::SurfaceProperties(out_face, g);
+        const V out_centre{g.CentreOfMass().X(), g.CentreOfMass().Y(), g.CentreOfMass().Z()};
+        auto inside = [&](size_t i, const gp_Pnt& p) { return BRepClass3d_SolidClassifier(world[i], p, 1e-6).State() == TopAbs_IN; };
+        if (l->def.value("type", std::string("axial")) == "blower") {
+          const json inlet = l->def.value("inlet", json());
+          if (!is_profile(inlet) || inlet.is_null()) throw Error("blower \"" + l->name + "\": draw its inlet too (where its air comes in)");
+          Blower b{l, fan, 0, {}, out_face, {0, 0, 0}, n_out};
+          b.in = profile_face(doc, scene, inlet, b.in_n);
+          // Its housing: what it is on, else the body whose surface the outlet lies on.
+          json on = json::array();
+          for (const auto& r : l->refs) on.push_back(r.body);
+          std::vector<size_t> parts = parts_of(on);
+          if (parts.empty()) {
+            double best = 1e300;
+            const TopoDS_Vertex c = BRepBuilderAPI_MakeVertex(gp_Pnt(out_centre[0], out_centre[1], out_centre[2])).Vertex();
+            for (size_t i = 0; i < bodies.size(); ++i) {
+              if (is_wall(bodies[i])) continue;
+              const double d = BRepExtrema_DistShapeShape(world[i], c).Value();
+              if (d < best) best = d, parts = {i};
+            }
+            if (best > 0.5) throw Error("blower \"" + l->name + "\": its outlet is not on a body's surface: draw it on the blower's face");
+          }
+          b.housing = parts.front();
+          // Out of the housing: the opening's normal turned so that a step along it leaves the housing.
+          for (auto [face, normal] : {std::pair<const TopoDS_Face*, V*>{&b.out, &b.out_n}, {&b.in, &b.in_n}}) {
+            GProp_GProps p;
+            BRepGProp::SurfaceProperties(*face, p);
+            const gp_Pnt c = p.CentreOfMass();
+            const double step = std::max(0.05, 0.25 * fine);
+            if (inside(b.housing, c.Translated(gp_Vec((*normal)[0], (*normal)[1], (*normal)[2]) * step))) *normal = mul(*normal, -1.0);
+            (face == &b.out ? b.out_area : b.in_area) = p.Mass();
+          }
+          b.Q = 0.5 * fan.Qmax;  // a first guess: the rounds find where its curve meets the box
+          blowers.push_back(b);
+          continue;
+        }
+        // An axial fan: the jump across the profile, the air its way (its vector, else the profile's normal); the bodies the
+        // profile lies in (the fan's own model) are air.
+        Disk d{l, fan, out_centre, unit(l->def.value("vector", n_out)), 0};
+        if (norm(d.normal) < 0.5) throw Error("fan \"" + l->name + "\": its vector has no length");
+        d.plate = true;
+        d.tris = triangles(out_face);
+        d.area = g.Mass();
+        d.radius = std::sqrt(d.area / kPi);
+        if (d.tris.empty()) throw Error("fan \"" + l->name + "\": its opening could not be meshed");
+        for (size_t i = 0; i < bodies.size(); ++i) {
+          if (is_wall(bodies[i])) continue;
+          for (size_t k = 0; k < d.tris.size(); k += 3) {
+            const V c = mul(add(add(d.tris[k], d.tris[k + 1]), d.tris[k + 2]), 1.0 / 3);
+            if (inside(i, gp_Pnt(c[0], c[1], c[2]))) {
+              is_air[i] = true, level[i] = 0;
+              break;
+            }
+          }
+        }
+        disks.push_back(d);
+        continue;
+      }
+      if (l->refs.empty()) throw Error("fan \"" + l->name + "\" is on nothing: draw its opening (outlet) as a profile");
       // What it is on: a block or the fan's own model (a component: its frame, hub and blades as one), or a heatsink.
       json on = json::array();
       for (const auto& r : l->refs) on.push_back(r.body);
@@ -1243,8 +1626,10 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
               << "\n endloop\nendfacet\n";
         };
         stl << "solid " << f << "\n";
-        tri(c00, c10, c11);
-        tri(c00, c11, c01);
+        if (!d.tris.empty())  // a profile: its own triangles, in metres
+          for (size_t t = 0; t + 2 < d.tris.size(); t += 3) tri(mul(d.tris[t], 1e-3), mul(d.tris[t + 1], 1e-3), mul(d.tris[t + 2], 1e-3));
+        else
+          tri(c00, c10, c11), tri(c00, c11, c01);
         stl << "endsolid " << f << "\n";
         fs::create_directories(cas / "constant" / "triSurface");
         write_text_file(cas / "constant" / "triSurface" / (f + ".stl"), stl.str());
@@ -1271,6 +1656,59 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
       disk_faces.push_back(n);
     }
     foam_run("createBaffles", {"-overwrite"}, cas, 0.315);
+  }
+  // The blowers' openings: the faces of their housing's wall that each inlet and outlet covers (on its plane within a cell,
+  // inside its outline), made patches of their own: blowerK_in (the room's air leaves into the blower), blowerK_out (it comes
+  // back out). Their faces are then no wall of the housing.
+  std::vector<std::array<size_t, 2>> blower_faces;
+  if (!blowers.empty()) {
+    const auto P = read_points(read_text_file(air_mesh / "points"));
+    const auto F = read_faces(read_text_file(air_mesh / "faces"));
+    const auto walls0 = read_boundary(read_text_file(air_mesh / "boundary"));
+    std::ostringstream cp;
+    cp << "pointSync false;\npatches (\n";
+    fs::create_directories(air_mesh / "sets");
+    for (size_t k = 0; k < blowers.size(); ++k) {
+      const Blower& b = blowers[k];
+      const std::string wall = region[b.housing];
+      const double cell = coarse / std::pow(2.0, level[b.housing]);
+      std::array<size_t, 2> count{0, 0};
+      for (int side = 0; side < 2; ++side) {
+        const TopoDS_Face& face = side == 0 ? b.in : b.out;
+        const V n = side == 0 ? b.in_n : b.out_n;
+        GProp_GProps g;
+        BRepGProp::SurfaceProperties(face, g);
+        const V c0{g.CentreOfMass().X(), g.CentreOfMass().Y(), g.CentreOfMass().Z()};
+        std::vector<size_t> picked;
+        for (const auto& pt : walls0) {
+          if (wall.empty() || !(pt.name == wall || pt.name.rfind(wall + "_", 0) == 0)) continue;
+          for (size_t f = pt.start; f < pt.start + pt.faces; ++f) {
+            V c{0, 0, 0};
+            for (int q : F[f]) c = add(c, P[size_t(q)]);
+            c = mul(c, 1e3 / double(F[f].size()));  // mm
+            const double off = dot(sub(c, c0), n);
+            if (std::fabs(off) > (buoyant ? 1.0 : 0.6) * cell) continue;  // unsnapped (warm air rising): its cells stepped
+            BRepClass_FaceClassifier where(face, gp_Pnt(c[0] - off * n[0], c[1] - off * n[1], c[2] - off * n[2]), 1e-3);
+            if (where.State() == TopAbs_IN || where.State() == TopAbs_ON) picked.push_back(f);
+          }
+        }
+        if (picked.empty())
+          throw Error("blower \"" + b.load->name + "\": its " + (side == 0 ? "inlet" : "outlet") +
+                      " is not on its housing's surface: draw it on the blower's face (a sketch on that face)");
+        const std::string name = "blower" + std::to_string(k) + (side == 0 ? "_in" : "_out");
+        std::ostringstream set;
+        set << picked.size() << "\n(\n";
+        for (size_t f : picked) set << f << "\n";
+        set << ")\n";
+        write_text_file(air_mesh / "sets" / name, header("faceSet", name, "constant/polyMesh/sets") + set.str());
+        cp << " { name " << name << "; patchInfo { type patch; } constructFrom set; set " << name << "; }\n";
+        count[size_t(side)] = picked.size();
+      }
+      blower_faces.push_back(count);
+    }
+    cp << ");\n";
+    put(cas / "system" / "createPatchDict", "dictionary", "createPatchDict", cp.str());
+    foam_run("createPatch", {"-overwrite"}, cas, 0.318);
   }
   // Each fan's disk as the mesh has it: the area of the faces it crosses (the solver's mean speed through the fan is over
   // these, not the circle's area: a few percent apart).
@@ -1377,11 +1815,52 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         "relaxationFactors { fields { p 0.5; } equations { U 0.7; } }\n");
     put(flow / "constant" / "transportProperties", "dictionary", "transportProperties", "transportModel Newtonian; nu " + num(a.nu) + ";\n");
     put(flow / "constant" / "turbulenceProperties", "dictionary", "turbulenceProperties", "simulationType laminar;\n");
+    // The blowers' openings: the room's air out into each blower at its inlet, back at its outlet, at its flow now.
+    auto blower_u = [&] {
+      std::ostringstream u;
+      u.precision(10);
+      for (size_t k = 0; k < blowers.size(); ++k)
+        u << "\n  blower" << k << "_in { type flowRateOutletVelocity; volumetricFlowRate constant " << blowers[k].Q << "; value uniform (0 0 0); }"
+          << "\n  blower" << k << "_out { type flowRateInletVelocity; volumetricFlowRate constant " << blowers[k].Q << "; value uniform (0 0 0); }";
+      return u.str();
+    };
+    // Each blower's flow moved toward where its curve meets the pressure between its outlet and its inlet (the box's
+    // resistance at that flow), relaxed, and written into the velocity file the solver goes on from. True while one moves.
+    const auto own_air = read_labels(read_text_file(air_mesh / "owner"));
+    size_t n_cells = 0;
+    for (int o : own_air) n_cells = std::max(n_cells, size_t(o) + 1);
+    const auto patches_air = read_boundary(read_text_file(air_mesh / "boundary"));
+    auto cell_mean = [&](const std::vector<double>& cells, const std::string& patch) {
+      for (const auto& pt : patches_air)
+        if (pt.name == patch && pt.faces > 0) {
+          double sum = 0;
+          for (size_t f = pt.start; f < pt.start + pt.faces; ++f) sum += cells[size_t(own_air[f])];
+          return sum / double(pt.faces);
+        }
+      return 0.0;
+    };
+    auto blowers_step = [&](const fs::path& at_dir, const std::string& p_name) {
+      if (blowers.empty()) return false;
+      const auto pc = read_internal(read_text_file(at_dir / p_name), n_cells, 1);
+      std::string U = read_text_file(at_dir / "U");
+      bool moving = false;
+      for (size_t k = 0; k < blowers.size(); ++k) {
+        Blower& b = blowers[k];
+        const std::string name = "blower" + std::to_string(k);
+        b.dp = (cell_mean(pc, name + "_out") - cell_mean(pc, name + "_in")) * a.rho;
+        const double next = std::max(0.02 * b.fan.Qmax, b.Q + 0.6 * (air::flow_at(b.fan, b.dp) - b.Q));
+        moving = moving || std::fabs(next - b.Q) > 0.02 * b.Q;
+        b.Q = next;
+        U = set_flow_rate(set_flow_rate(U, name + "_in", b.Q), name + "_out", b.Q);
+      }
+      write_text_file(at_dir / "U", U);
+      return moving;
+    };
     std::string u_bc, p_bc;
     if (!enclosure.empty()) {
       // Open to the room on every side (its total pressure the room's), each fan a jump in pressure across its disk: its
       // curve against the mean speed through the disk, kinematic (Pa / rho).
-      u_bc = "open { type pressureInletOutletVelocity; value uniform (0 0 0); }\n  \"fan[0-9]+_(in|out)\" { type cyclic; }";
+      u_bc = "open { type pressureInletOutletVelocity; value uniform (0 0 0); }\n  \"fan[0-9]+_(in|out)\" { type cyclic; }" + blower_u();
       p_bc = "open { type totalPressure; p0 uniform 0; value uniform 0; }";
       for (size_t k = 0; k < disks.size(); ++k) {
         const air::Fan& fan = disks[k].fan;
@@ -1445,6 +1924,17 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
                                                                        : json{{"centre", disks[k].centre}, {"normal", disks[k].normal}, {"radius_mm", disks[k].radius},
                                                                               {"faces", disk_faces[k]}}}});
         }
+        for (size_t k = 0; k < blowers.size(); ++k) {
+          const Blower& b = blowers[k];
+          const double room = air::flow_at(b.fan, b.dp);  // what its curve gives at the pressure the last round found
+          if (std::fabs(room - b.Q) > 0.1 * std::max(b.Q, 1e-9))
+            run.warnings.push_back("blower \"" + b.load->name + "\": its flow had not settled on its curve (" + num(b.Q * 3600) + " m3/h, the curve " +
+                                   num(room * 3600) + " m3/h at " + num(b.dp) + " Pa): more flow iterations (Normal) settle it");
+          list.push_back({{"name", b.load->name}, {"type", "blower"}, {"fan", b.fan.to_json()}, {"flow_m3h", b.Q * 3600}, {"flow_cfm", b.Q / 4.719474e-4},
+                          {"pressure_Pa", b.dp}, {"inlet", {{"area_mm2", b.in_area}, {"faces", blower_faces[k][0]}, {"normal", b.in_n}}},
+                          {"outlet", {{"area_mm2", b.out_area}, {"faces", blower_faces[k][1]}, {"normal", b.out_n},
+                                      {"speed_m_s", b.out_area > 0 ? b.Q / (b.out_area * 1e-6) : 0.0}}}});
+        }
         double in = 0, out = 0;
         for (double v : read_patch(phi, "open")) (v > 0 ? out : in) += std::fabs(v);
         fan_json = {{"fans", list}, {"vents", {{"air_in_m3h", in * 3600}, {"air_out_m3h", out * 3600}}}, {"iterations", iterations}, {"converged", converged}};
@@ -1469,7 +1959,26 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
             "internalField uniform 0;\nboundaryField\n{\n  \".*\" { type calculated; value uniform 0; }\n}\n";
     } else if (!buoyant) {
       report(0.32, "Solving the air's flow (simpleFoam)");
-      const std::string log = foam_run("simpleFoam", {}, flow, 0.32, 0.45);
+      std::string log;
+      if (blowers.empty()) {
+        log = foam_run("simpleFoam", {}, flow, 0.32, 0.45);
+      } else {
+        // With blowers: in rounds, each blower's flow set again between them from its curve against the pressure it meets,
+        // until none moves (then the rest of the iterations at that flow).
+        const int rounds = std::max(2, cfd.value("blower_rounds", 8));
+        bool moving = true;
+        for (int r = 0, done = 0; r < rounds; ++r) {
+          const int upto = r + 1 == rounds || !moving ? iters : std::max(done + 1, iters * (r + 1) / rounds);
+          put(flow / "system" / "controlDict", "dictionary", "controlDict",
+              "application simpleFoam; startFrom latestTime; startTime 0; stopAt endTime; endTime " + std::to_string(upto) +
+                  "; deltaT 1; writeControl timeStep; writeInterval " + std::to_string(upto - done) +
+                  "; purgeWrite 1; writeFormat ascii; writePrecision 10; timeFormat general; runTimeModifiable false;\n");
+          log = foam_run("simpleFoam", {}, flow, 0.32 + 0.13 * done / iters, 0.32 + 0.13 * upto / iters);
+          done = upto;
+          if (done >= iters || log.find("SIMPLE solution converged") != std::string::npos) break;
+          moving = blowers_step(flow / latest_time(flow), "p");
+        }
+      }
       last = latest_time(flow);
       if (last.empty() || last == "0") throw Error("cfd: simpleFoam wrote no flow");
       const bool converged = log.find("SIMPLE solution converged") != std::string::npos;
@@ -1536,7 +2045,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         const std::string cyc = "  \"fan[0-9]+_(in|out)\" { type cyclic; }\n";
         put(flow / "0" / "U", "volVectorField", "U",
             "dimensions [0 1 -1 0 0 0 0];\ninternalField uniform (0 0 0);\nboundaryField\n{\n  \".*\" { type noSlip; }\n  open { type "
-            "pressureInletOutletVelocity; value uniform (0 0 0); }\n" + cyc + "}\n");
+            "pressureInletOutletVelocity; value uniform (0 0 0); }\n" + cyc + blower_u() + "\n}\n");
         put(flow / "0" / "p_rgh", "volScalarField", "p_rgh",
             "dimensions [0 2 -2 0 0 0 0];\ninternalField uniform 0;\nboundaryField\n{\n  \".*\" { type fixedFluxPressure; value uniform 0; }\n  open { type "
             "fixedValue; value uniform 0; }\n" + pfan + "}\n");
@@ -1681,6 +2190,12 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         std::ostringstream bc;
         bc.precision(10);
         bc << T_other;
+        // A blower gives back the air it took: at its outlet, the mean temperature of the air at its inlet (the last pass's).
+        for (size_t k = 0; k < blowers.size(); ++k) {
+          const std::string name = "blower" + std::to_string(k);
+          const double Tin = Tair.empty() ? T0 : cell_mean(Tair, name + "_in");
+          bc << "  " << name << "_out { type fixedValue; value uniform " << Tin << "; }\n";
+        }
         for (const auto& [name, ids] : wall_patches) {
           bc << "  " << name << " { type fixedValue; value nonuniform List<scalar> " << ids.size() << " (";
           for (size_t w : ids) bc << " " << Twall[w] + 273.15;
@@ -1714,11 +2229,12 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
                     "; purgeWrite 1; writeFormat ascii; writePrecision 10; timeFormat general; runTimeModifiable false;\n");
             foam_run("buoyantBoussinesqSimpleFoam", {}, flow, std::min(0.9, 0.45 + 0.02 * pass));
             const std::string now = latest_time(flow);
+            const bool blowing = blowers_step(flow / now, "p");  // the blowers' flows against the pressures now
             Tair = read_internal(read_text_file(flow / now / "T"), air_cells.centre.size(), 1);
             double given = 0;
             for (size_t w = 0; w < walls.size(); ++w) given += walls[w].k_d * (Twall[w] + 273.15 - Tair[walls[w].cell]) * walls[w].area;
             const double carried = air_leaving(read_text_file(flow / now / "phi"), Tair);
-            if (std::fabs(carried - given) <= 0.05 * std::fabs(given) + 1e-3) break;
+            if (std::fabs(carried - given) <= 0.05 * std::fabs(given) + 1e-3 && !blowing) break;
           }
         }
         // Each wall face's heat into the air, gathered onto the faces CalculiX has.
@@ -1874,6 +2390,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         summary["enclosure"] = enclosure_name(scene, box_walls);
         summary["fans"] = fan_json["fans"];
         summary["vents"] = fan_json["vents"];
+        if (!vents_est.is_null()) summary["vents"]["estimate"] = vents_est;
         summary["flow_iterations"] = fan_json["iterations"];
         summary["room_mm"] = {{"size", {d1 - d0, a1 - a0, b1 - b0}}, {"margin", margin}};
       } else {
@@ -2150,6 +2667,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     summary["enclosure"] = enclosure_name(scene, box_walls);
     summary["fans"] = fan_json["fans"];
     summary["vents"] = fan_json["vents"];
+    if (!vents_est.is_null()) summary["vents"]["estimate"] = vents_est;
     summary["flow_iterations"] = fan_json["iterations"];
     summary["room_mm"] = {{"size", {d1 - d0, a1 - a0, b1 - b0}}, {"margin", margin}};
   } else if (fan_load) {

@@ -17,6 +17,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QRadioButton>
@@ -27,6 +28,7 @@
 
 #include "AppDocument.hpp"
 #include "BenchRegistry.hpp"
+#include "DesignController.hpp"
 #include "DesignPanels.hpp"
 #include "Jobs.hpp"
 #include "MainWindow.hpp"
@@ -34,6 +36,7 @@
 #include "SimulateCooling.hpp"
 #include "Tracking.hpp"
 #include "Viewport.hpp"
+#include "opad/design/sketch_geom.hpp"
 
 OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
   struct State {
@@ -41,7 +44,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
     bool all = true;
     std::string tray, cover, board, chip, sink, fan, desk, hub, fin, fanUnit, sinkUnit;
     opad::Vec3 way{0, 0, 0};
-    double outletWidth = 0;
+    std::string sketch;
   };
   auto st = std::make_shared<State>();
   const QString prefix = value;
@@ -243,57 +246,54 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         require(!c->apply() && c->step() == 2, "Apply with fans but none added: refused, on the Air page");
         for (auto* b : c->findChildren<QPushButton*>())
           if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
-        require(c->pickingWhat() == Pick::Fan && c->fans().size() == 1, "Add a fan: a fan, picking it");
+        require(c->pickingWhat() == Pick::Outlet && c->fans().size() == 1 && w.action("select.faces")->isChecked(),
+                "Add a fan: a fan, picking its opening (faces and the sketches' profiles)");
+        require(pickBox("coolingInletPick") && !pickBox("coolingInletPick")->isVisibleTo(c), "an axial fan has no inlet to draw");
         st->phase = 11;
         return;
       }
-      case 11: {  // the fan a component: one part (its row in the browser clicked, once the filter is applied)
-        if (c->fans()[0].on != std::vector<std::string>{st->fanUnit}) {
-          area->services().select({body(st->fanUnit)});
-          return;
-        }
-        require(pickBox("coolingFanPick")->what().contains("component"), "the fan is the component Fan unit, one part: " + pickBox("coolingFanPick")->what());
-        pickBox("coolingWayPick")->click();
-        require(c->pickingWhat() == Pick::Way && w.action("select.faces")->isChecked(), "Air goes through clicked: it picks a face");
-        st->phase = 12;
-        return;
-      }
-      case 12: {  // a face of the fan block, once the faces are pickable
-        if (c->fans()[0].across.body.empty()) {
+      case 11: {  // its opening: a face of the fan block, once the faces are pickable; its normal read on a worker
+        if (c->fans()[0].outlet.is_null()) {
           area->services().select({face(st->fan, 0)});
           return;
         }
-        const opad::Vec3 v = c->fans()[0].vector();
-        if (std::hypot(c->fans()[0].normal[0], c->fans()[0].normal[1], c->fans()[0].normal[2]) < 0.5) return;  // measured on a worker
+        const auto& spec = c->fans()[0];
+        if (std::hypot(spec.normal[0], spec.normal[1], spec.normal[2]) < 0.5 || spec.outletLoops.empty()) return;
+        require(spec.outlet == face(st->fan, 0).to_json() && spec.on.empty(), "the opening is the face clicked, no body stands for the fan");
+        const opad::Vec3 v = spec.vector();
         st->way = v;
         require(std::fabs(std::fabs(v[0]) + std::fabs(v[1]) + std::fabs(v[2]) - 1) < 1e-6, QString("the air goes across the face: along an axis of the block (%1, %2, %3)").arg(v[0]).arg(v[1]).arg(v[2]));
-        // The outlet: the face's rectangle (the block's faces are 20 x 20 or 10 x 20), its row shown; the plane drawn with its arrow.
-        const auto& spec = c->fans()[0];
-        const double fw = std::min(spec.width, spec.height), fh = std::max(spec.width, spec.height);
-        require(spec.outlet && std::fabs(fh - 20) < 1e-6 && (std::fabs(fw - 20) < 1e-6 || std::fabs(fw - 10) < 1e-6) &&
-                    c->findChild<QDoubleSpinBox*>("coolingOutletWidth")->isVisibleTo(c),
-                QString("the outlet is the face's rectangle, %1 x %2 mm, its size shown to change").arg(spec.width).arg(spec.height));
-        require(area->fanGlyphsShown() == 1, "the fan's plane and the air's way drawn in the view");
+        require(area->fanGlyphsShown() == 1, "the opening's outline and the air's way drawn in the view");
         w.m_viewport->fitAll();
         w.m_viewport->grabImage().save(prefix + ".outlet.png");
-        st->outletWidth = spec.width - 2;
-        c->findChild<QDoubleSpinBox*>("coolingOutletWidth")->setValue(st->outletWidth);
-        require(std::fabs(c->fans()[0].width - st->outletWidth) < 1e-9, "the outlet sized narrower");
         c->findChild<QPushButton*>("coolingWayFlip")->click();
         const opad::Vec3 f = c->fans()[0].vector();
         require(f[0] == -v[0] && f[1] == -v[1] && f[2] == -v[2], "Flip turns the way round");
+        // Its datasheet: max airflow in CFM and max static pressure in inH2O (the defaults), two points off its chart, 80 % speed;
+        // the pressure then shown in Pa, the same fan.
         auto* model = c->findChild<QComboBox*>("coolingFanModel");
         auto* flow = c->findChild<QDoubleSpinBox*>("coolingFanFlow");
-        model->setCurrentIndex(model->count() - 1);  // Custom
-        require(flow->isVisibleTo(c) && flow->isEnabled(), "Custom shows its free flow and shut-off pressure under it");
-        flow->setValue(12);
-        c->findChild<QDoubleSpinBox*>("coolingFanPressure")->setValue(30);
+        model->setCurrentIndex(model->count() - 1);  // From its datasheet
+        require(flow->isEnabled() && c->findChild<QComboBox*>("coolingFanFlowUnit")->currentData() == "cfm" &&
+                    c->findChild<QComboBox*>("coolingFanPressureUnit")->currentData() == "inH2O",
+                "From its datasheet: its max airflow (CFM) and max static pressure (inH2O) to type");
+        flow->setValue(5);
+        c->findChild<QDoubleSpinBox*>("coolingFanPressure")->setValue(0.2);
+        auto* curve = c->findChild<QLineEdit*>("coolingFanCurve");
+        curve->setText("2 0.15; 4 0.06");
+        emit curve->editingFinished();
+        c->findChild<QDoubleSpinBox*>("coolingFanSpeed")->setValue(80);
+        auto* pressureUnit = c->findChild<QComboBox*>("coolingFanPressureUnit");
+        pressureUnit->setCurrentIndex(pressureUnit->findData("Pa"));
+        const auto& g = c->fans()[0];
+        require(std::fabs(g.pressure - 0.2 * 249.08891) < 1e-6 && g.curve.size() == 2 && std::fabs(g.curve[0][1] - 0.15 * 249.08891) < 1e-6 && g.flow == 5,
+                QString("the pressure in Pa: %1 Pa, its chart's points converted too").arg(g.pressure));
         pickBox("coolingSinkPick")->click();
         require(c->pickingWhat() == Pick::Sink && w.action("select.bodies")->isChecked(), "Heatsink clicked: it picks bodies or a component");
-        st->phase = 13;
+        st->phase = 12;
         return;
       }
-      case 13: {
+      case 12: {
         if (c->fans()[0].sink != std::vector<std::string>{st->sinkUnit}) {
           area->services().select({body(st->sinkUnit)});
           return;
@@ -301,7 +301,42 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         auto* material = c->findChild<QComboBox*>("coolingSinkMaterial");
         material->setCurrentIndex(material->findData("copper"));
         require(c->fans()[0].material == "copper", "copper chosen for the whole heatsink");
+        // A blower: its outlet a sketch's profile clicked in the view (a circle sketched above the cover), its inlet missing.
+        opad::design::Sketch slot;
+        slot.add_circle(slot.add_point(0, 0), 12);
+        st->sketch = doc->run("sketch", {{"plane", {{"origin", {80, 40, 45}}, {"normal", {0, 0, 1}}, {"x", {1, 0, 0}}}}, {"geometry", slot.to_json()}, {"name", "Blower outlet"}})
+                         .value("sketch_id", std::string());
+        for (auto* b : c->findChildren<QPushButton*>())
+          if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
+        auto* type = c->findChild<QComboBox*>("coolingFanType");
+        type->setCurrentIndex(type->findData("blower"));
+        require(c->fans().size() == 2 && c->fans()[1].type == "blower" && pickBox("coolingInletPick")->isVisibleTo(c) && c->pickingWhat() == Pick::Outlet,
+                "a second fan, a blower: its outlet and its inlet to draw");
+        w.m_viewport->standardView("top");
+        w.m_viewport->fitAll();
+        st->phase = 13;
+        return;
+      }
+      case 13: {  // the sketch's region offered among the candidates, clicked in the view
+        if (c->fans()[1].outlet.is_null()) {
+          int x = 0, y = 0;
+          if (w.m_viewport->benchPickPoint([](const std::string& cand, const opad::Ref&) { return cand.find("\"sketch\"") != std::string::npos; }, x, y, false))
+            w.m_viewport->benchClickAt(x, y);
+          return;
+        }
+        require(c->fans()[1].outlet.value("sketch", std::string()) == st->sketch, "the blower's outlet: the sketch's profile clicked");
+        require(!c->apply() && c->step() == 2 && c->currentFan() == 1, "Apply with a blower without its inlet: refused, on that fan");
+        // Draw… starts New sketch (its plane picked first); Esc there comes back here.
+        c->findChild<QPushButton*>("coolingInletDraw")->click();
+        require(w.m_design->pickingPlane(), "Draw… asks for the sketch's plane (the blower's face)");
+        w.m_design->escape();
+        require(c->isVisible() && c->step() == 2 && !w.m_design->pickingPlane(), "Esc: back on the Air page");
+        trace::log(QString("bench: cooling walls: back from Draw…: %1 fan(s), fan %2 current").arg(c->fans().size()).arg(c->currentFan() + 1));
+        c->fanList()->setCurrentRow(1);
+        button("coolingFanRemove")->click();
+        require(c->fans().size() == 1, "the blower removed");
         c->grab().save(prefix + ".air.png");
+        require(!c->findChild<QLabel*>("coolingVents")->text().isEmpty(), "the vents' estimate said: " + c->findChild<QLabel*>("coolingVents")->text());
         c->open(3);
         require(!c->picking() && w.action("select.bodies")->isChecked() && !c->findChild<QPushButton*>("coolingNext")->isVisible(),
                 "the Run page picks nothing, the view's filter as it was; no Next on the last page");
@@ -332,13 +367,15 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         const opad::Load* fan = nullptr;
         for (const auto& l : doc->scene.loads)
           if (l.kind == "fan" && l.load_case == CoolingAssistant::kCase) fan = &l;
-        require(fan && fan->refs.size() == 1 && fan->refs[0].body == st->fanUnit && fan->def.value("heatsink", opad::json()) == opad::json::array({st->sinkUnit}) &&
-                    fan->def.value("fan", opad::json()) == opad::json{{"flow", 12.0}, {"pressure", 30.0}} &&
+        const opad::json spec = fan ? fan->def.value("fan", opad::json()) : opad::json();
+        require(fan && fan->refs.empty() && fan->def.value("outlet", opad::json()) == face(st->fan, 0).to_json() && fan->def.value("type", "") == "axial" &&
+                    fan->def.value("heatsink", opad::json()) == opad::json::array({st->sinkUnit}) &&
                     fan->def.value("vector", opad::Vec3{}) == opad::Vec3{-st->way[0], -st->way[1], -st->way[2]} &&
                     !settings.value("cfd", opad::json::object()).value("buoyancy", true),
-                "the fan load: on the component, through the heatsink, custom 12 m3/h at 30 Pa, the way flipped; no buoyancy");
-        require(fan && std::fabs(fan->def.value("outlet", opad::json::object()).value("width", 0.0) - st->outletWidth) < 1e-9,
-                "the fan load's outlet: the face's rectangle as sized");
+                "the fan load: by its opening, through the heatsink, the way flipped; no buoyancy");
+        require(spec.value("cfm", 0.0) == 5 && std::fabs(spec.value("pressure", 0.0) - 0.2 * 249.08891) < 1e-6 && spec.value("speed", 0.0) == 80 &&
+                    spec.value("curve", opad::json::array()).size() == 4,
+                "its datasheet: 5 CFM, 0.2 inH2O as Pa, its chart's two points between the ends, at 80 %: " + QString::fromStdString(spec.dump()));
         c->dismiss();
         require(!c->picking(), "closed: the view selects again");
         c->open(1);
@@ -348,8 +385,9 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
                     c->heatTable()->item(b, 3)->data(Qt::EditRole).toInt() == 6 && c->heatFaces().size() == 1,
                 "opened again: the chip, the board (a PCB of 6 layers) and the face");
         const auto& f = c->fans();
-        require(f.size() == 1 && f[0].on == std::vector<std::string>{st->fanUnit} && f[0].sink == std::vector<std::string>{st->sinkUnit} && f[0].material == "copper",
-                "opened again: the fan as set");
+        require(f.size() == 1 && f[0].outlet == face(st->fan, 0).to_json() && f[0].sink == std::vector<std::string>{st->sinkUnit} && f[0].material == "copper" &&
+                    f[0].flowUnit == "cfm" && f[0].pressureUnit == "Pa" && f[0].curve.size() == 2 && f[0].speed == 80,
+                "opened again: the fan as set, in the units it was given in");
         // Fans and the warm air rising: the fan's load kept, buoyancy on; the estimate says it takes longer.
         c->open(2);
         auto* estimate = c->findChild<QLabel*>("coolingEstimate");

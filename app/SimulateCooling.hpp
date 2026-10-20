@@ -3,8 +3,9 @@
 // setup of a thermal study of a board, its chips and a heatsink in a vented box, cooled by fans, by fans with the warm air rising
 // too (mixed convection, slower), or by natural convection: the box (the bodies it is made of: a base and its lid, a frame and
 // its panels), the parts and faces that make heat (a chip joined into its board is a face) with their power and which part is a
-// board, how the air moves (fans, each a body or a component of its own model; the face the air crosses, whose rectangle, sized,
-// is the fan's outlet, drawn in the view with the air's way; the heatsink it blows through with its material), and the run (the
+// board, how the air moves (fans, each by its openings: an axial fan's, a blower's inlet and outlet, sketch regions drawn on
+// its faces, with its datasheet's airflow and pressure; drawn in the view with the air's way; the heatsink it blows through
+// with its material; whether the box's vents let them blow what they can), and the run (the
 // air solved with OpenFOAM, the parts with CalculiX: sim/cfd.hpp; Quick by default, with an estimate of how long) with its
 // results. Every list starts empty (or as the study left it) and is filled by its Add button, which picks in the view and the
 // browser while it is on: a click adds, never takes out (Remove does, for the rows chosen). What it sets up is ordinary loads
@@ -54,8 +55,11 @@ class CoolingAssistant : public QWidget {
     // The rows chosen in a list lit in the view by what they are ("heat", "board", "box", "fan", "heatsink"): a face too,
     // whatever the selection filter; none: nothing lit.
     std::function<void(const std::vector<std::pair<opad::Ref, std::string>>&)> light;
-    std::function<void(bool)> panel;
-    std::function<void(const std::vector<opad::json>&)> fanGlyphs;  // fans ({refs, vector, outlet}) drawn with their plane and way  // its panel shown (as the other panels: the one shown) or hidden; none: a window of its own
+    std::function<void(bool)> panel;  // its panel shown (as the other panels: the one shown) or hidden; none: a window of its own
+    std::function<void(const std::vector<opad::json>&)> fanGlyphs;  // fans ({refs, vector, outlet}) drawn with their plane and way
+    std::function<void(bool)> profiles;                      // the sketches' closed regions offered in the view to pick, or not
+    std::function<void(const std::string&)> selectCandidate;  // a profile (its candidate id) shown selected
+    std::function<void(int, bool)> draw;                      // a fan's outlet (or inlet) drawn: a sketch on a face, then setProfile
     std::function<void(bool)> accumulate;                  // the view's clicks add and take out (picking) or select
     std::function<QString(const QString&)> filter;         // the view's selection filter set to that action (empty: kept); the one before
     std::function<bool()> filterSwitching;                 // a filter switch is being applied (its cleared selection is no pick)
@@ -79,34 +83,44 @@ class CoolingAssistant : public QWidget {
   QListWidget* wallChoice() const { return m_walls; }  // the box's bodies, by name (their ids in Qt::UserRole)
   const std::vector<std::string>& pickedBodies() const { return m_picked; }
   bool picking() const { return m_picking != Pick::None; }
+  void reselect();  // what the list being added to holds, shown selected
   bool pickingFaces() const { return m_picking == Pick::Faces; }
   std::vector<std::string> heatBodies() const;  // the heat table's parts (bodies), in its order
   std::vector<opad::Ref> heatFaces() const;     // its faces (a chip joined into its board)
   // The app's selection changed (the view, the browser): while an Add button is on, what was clicked is added to its list.
-  void selectionChanged(const std::vector<std::string>& ids, const std::vector<opad::Ref>& refs);
+  void selectionChanged(const std::vector<std::string>& ids, const std::vector<opad::Ref>& refs, const std::vector<std::string>& candidates = {});
+  // A fan's opening drawn by Draw… (a sketch made on its face), taken as that fan's outlet or inlet.
+  void setProfile(int fan, bool inlet, const opad::json& profile);
   QTableWidget* heatTable() const { return m_heat; }
   bool naturalConvection() const;  // no fans: the air moves by rising where it is warm
   bool warmAirRises() const;       // natural convection, or fans and the air rising too (cfd.buoyancy: slower)
   QString runKind() const;         // its quality and how the air moves, as the last runs' durations are kept
   void showEstimate();             // how long Run would take, said before it starts
-  // A fan as the Air page sets it up: written as a fan load (on, fan, vector, across, heatsink) and the heatsink's material.
+  // A fan as the Air page sets it up, by its openings (no body): an axial fan by its opening (a sketch's closed region drawn
+  // on its face, or a flat face; the air through it, along its normal or flipped), a blower by its inlet (on its axis) and its
+  // outlet (its side), its housing staying solid; and its datasheet: max airflow and max static pressure in the units the
+  // datasheet gives, its P-Q curve read off the chart (optional), the speed it runs at. Written as a fan load (sim/cfd.hpp).
   struct FanSpec {
-    std::vector<std::string> on;    // the fan: bodies or a component (its model's bodies, one part)
-    opad::Ref across;               // the flat face the air crosses (body empty: none, the axis below)
-    opad::Vec3 normal{0, 0, 0};     // that face's normal in the world, measured on a worker
+    QString type = "axial";           // "axial" or "blower"
+    opad::json outlet, inlet;         // its openings ({sketch, at, boundary} or a face reference); null: not yet
+    opad::Vec3 normal{0, 0, 0};       // the outlet's normal (fan_profile), read on a worker; 0: not yet
+    opad::Vec3 centre{0, 0, 0}, inletCentre{0, 0, 0}, inletNormal{0, 0, 0};
+    std::vector<std::vector<opad::Vec3>> outletLoops, inletLoops;  // their outlines, drawn in the view
     bool flip = false;
-    int axis = 0;                   // ways(), without a face
-    QString model = "40x10";        // a library fan, empty: custom
-    double flow = 10, pressure = 20;  // custom: m3/h, Pa
-    std::vector<std::string> sink;  // the heatsink it blows through: bodies or a component (one part)
-    // Its outlet: the rectangle the air leaves by, fitted to the face it goes through (a blower's side) and sized from there;
-    // the solver's pressure jump is across it (load "outlet"). Without one: a disk through the middle of the fan's body.
-    bool outlet = false;
-    opad::Vec3 centre{0, 0, 0}, xdir{1, 0, 0};
-    double width = 0, height = 0;
-    opad::json outletJson() const;  // as the load has it ({centre, normal, x, width, height}); null without one
-    QString material;               // the heatsink's library material, empty: as modelled
-    opad::Vec3 vector() const;      // the way the air goes
+    QString model;                    // a library fan's id; empty: from its datasheet (below)
+    double flow = 1, pressure = 0.5;  // max airflow, max static pressure, in the units below
+    QString flowUnit = "cfm", pressureUnit = "inH2O";
+    std::vector<std::array<double, 2>> curve;  // its P-Q curve off the datasheet's chart, those units (optional)
+    double speed = 100;               // % of its rated speed (PWM, a lower voltage)
+    std::vector<std::string> sink;    // the heatsink it blows through: bodies or a component (one part)
+    QString material;                 // the heatsink's library material, empty: as modelled
+    std::vector<std::string> on;      // an older setup's fan body and way (kept as written until its outlet is drawn)
+    opad::Vec3 written{1, 0, 0};      // and its vector
+    opad::Vec3 vector() const;        // the way an axial fan's air goes (a blower's out of its outlet)
+    opad::json spec() const;          // the load's "fan"
+    bool drawing = false;             // Draw… is making one of its openings (setProfile takes it there)
+    bool drawn() const { return !outlet.is_null() && (type != "blower" || !inlet.is_null()); }
+    bool held() const { return drawn() || (outlet.is_null() && !on.empty()); }  // a load holds it
   };
   const std::vector<FanSpec>& fans() const { return m_fanSpecs; }
   int currentFan() const { return m_fan; }
@@ -131,12 +145,11 @@ class CoolingAssistant : public QWidget {
  public:
   // What the view and the browser pick: the box's bodies, the parts or faces that make heat, a fan, the face its air crosses,
   // its heatsink. Each page picks with one of them at a time; its pick boxes choose which.
-  enum class Pick { None, Box, Parts, Faces, Fan, Way, Sink };
+  enum class Pick { None, Box, Parts, Faces, Outlet, Inlet, Sink };
   Pick pickingWhat() const { return m_picking; }
  private:
   void startPicking(Pick what);
   void stopPicking();
-  void reselect();      // what the list being added to holds, shown selected
   void showPicked();    // the box's list
   void syncAdd();       // the Add buttons say whether they pick
   bool pickable(const std::string& id) const;  // a shown body of the document
@@ -145,7 +158,8 @@ class CoolingAssistant : public QWidget {
   void loadFans(const opad::Scene& s);  // the fans the study's loads set
   void showFans();      // the fan list and the current fan's form
   void showFan();       // the current fan's form
-  void measureWay(int fan);  // the normal of the face the fan's air crosses, on a worker
+  void measureOutlet(int fan);  // the outlet's normal (a sketch-sized read)
+  QString profileText(const opad::json& profile) const;  // "Blower outlet (sketch)", "Fan, face 3"
   std::string studyId() const;
 
   Hooks m_hooks;
@@ -176,20 +190,27 @@ class CoolingAssistant : public QWidget {
   QListWidget* m_fanList = nullptr;
   QWidget* m_fanForm = nullptr;
   class QFormLayout* m_fanRows = nullptr;
-  class PickBox* m_fanPick = nullptr;
-  class PickBox* m_wayPick = nullptr;
+  QComboBox* m_fanType = nullptr;
+  class PickBox* m_outletPick = nullptr;
+  class PickBox* m_inletPick = nullptr;
+  QPushButton* m_outletDraw = nullptr;
+  QPushButton* m_inletDraw = nullptr;
   class PickBox* m_sinkPick = nullptr;
-  QComboBox* m_axis = nullptr;
   QPushButton* m_flip = nullptr;
   QLabel* m_wayText = nullptr;
   QComboBox* m_model = nullptr;
   QDoubleSpinBox* m_flow = nullptr;
+  QComboBox* m_flowUnit = nullptr;
   QDoubleSpinBox* m_pressure = nullptr;
+  QComboBox* m_pressureUnit = nullptr;
+  class QLineEdit* m_curve = nullptr;  // the P-Q points
+  QLabel* m_ventText = nullptr;        // whether the box's vents let the fans blow what they can (sim::vent_estimate)
+  int m_ventRun = 0;                   // the estimate asked last (an older one's answer is dropped)
+  void estimateVents();
+  QDoubleSpinBox* m_speed = nullptr;
+  class ClipView* m_fanClip = nullptr;  // how its openings are drawn
   QComboBox* m_sinkMaterial = nullptr;
-  QWidget* m_outletRow = nullptr;   // the outlet's width and height
-  QDoubleSpinBox* m_outletWidth = nullptr;
-  QDoubleSpinBox* m_outletHeight = nullptr;
-  std::array<double, 2> m_faceSize{0, 0};  // the face's own, for Fit
+
   QPushButton* m_back = nullptr;
   QPushButton* m_next = nullptr;
   QLabel* m_runNote = nullptr;  // why Run cannot run (no OpenFOAM)

@@ -84,6 +84,9 @@ class DesignController : public QObject {
   void removeOps(std::vector<std::string> ids, const QString& label, std::function<void(bool, const QString&)> done = {},
                  std::vector<opad::json> add = {});
 
+  // Sketch regions, points, lines or paths of the scene's sketches, on a worker, added to `found`; then `done(ok)` (also the
+  // Thermal setup's fan openings).
+  Job* sketchCandidates(const std::string& type, std::shared_ptr<std::vector<Viewport::Candidate>> found, std::function<void(bool)> done);
   bool featureActive() const { return m_form->spec() != nullptr && m_featureOn; }
   bool pickingPlane() const { return m_pickPlane; }
   QString planeCommand() const { return m_replaning ? QString("sketch.replane") : m_planeCommand; }  // the command a plane pick serves
@@ -118,8 +121,6 @@ class DesignController : public QObject {
   void activateInput(const QString& name);
   void showCandidatesFor(const QString& type, bool planes = false);
   std::vector<Viewport::Candidate> quickCandidates(const std::string& type) const;  // origin and construction axes or planes
-  // Sketch regions, points, lines or paths of the scene's sketches, on a worker, added to `found`; then `done(ok)`.
-  Job* sketchCandidates(const std::string& type, std::shared_ptr<std::vector<Viewport::Candidate>> found, std::function<void(bool)> done);
   void showAllCandidates();  // the active input's candidates and the routed ones
   // Pick routing (TODO 11 P3): while a selection input with a pick is active, the axes or planes of the next axis or plane
   // input that is still empty, on its default or filled this way show beside its own candidates, and a click on one goes

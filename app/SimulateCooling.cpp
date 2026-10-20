@@ -10,6 +10,7 @@
 #include <QHeaderView>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QRadioButton>
@@ -37,6 +38,7 @@
 #include "AppDocument.hpp"
 #include "I18n.hpp"
 #include "DesignPanels.hpp"
+#include "HelpClip.hpp"
 #include "Jobs.hpp"
 #include "SearchCombo.hpp"
 #include "Theme.hpp"
@@ -264,12 +266,11 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
   }
   // ---- 3. air
   {
-    QVBoxLayout* v = page(tr("Air"), tr("How the air moves through the box. With fans: Add a fan, then click it in the view or the browser (its "
-                                        "own model, a component: frame, hub and blades as one; or a block where it sits, as big as it), pick the "
-                                        "flat face its air goes through (Flip turns the way round), choose the fan (Custom: its free flow and "
-                                        "shut-off pressure from its datasheet) and the heatsink it blows through with its material. With natural "
-                                        "convection there are no fans: the air rises where the parts warm it and leaves through the vents, so put "
-                                        "vents low and high."));
+    QVBoxLayout* v = page(tr("Air"), tr("How the air moves through the box. With fans: Add a fan and set it up by its openings: an axial fan's "
+                                        "opening, a blower's inlet and outlet. Draw… makes a sketch on the fan's face (project its edges, draw the "
+                                        "opening in them, Finish), or click a sketch's profile or a flat face. Then its datasheet's max airflow and "
+                                        "max static pressure (or a library fan), and the heatsink it blows through. With natural convection there "
+                                        "are no fans: the air rises where the parts warm it and leaves through the vents, so put vents low and high."));
     m_fansOn = new QRadioButton(tr("Fans"), this);
     m_fansOn->setObjectName("coolingFans");
     m_mixed = new QRadioButton(tr("Fans and warm air rising (slower)"), this);
@@ -300,6 +301,8 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     auto* buttons = new QHBoxLayout();
     auto* add = new QPushButton(tr("Add a fan"), this);
     auto* remove = new QPushButton(tr("Remove"), this);
+    add->setObjectName("coolingFanAdd");
+    remove->setObjectName("coolingFanRemove");
     buttons->addWidget(add);
     buttons->addWidget(remove);
     left->addLayout(buttons);
@@ -307,63 +310,74 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     m_fanForm = new QWidget(this);
     m_fanRows = new QFormLayout(m_fanForm);
     m_fanRows->setContentsMargins(0, 6, 0, 0);
-    m_fanPick = new PickBox(m_fanForm);
-    m_fanPick->setObjectName("coolingFanPick");
-    m_fanRows->addRow(tr("Fan:"), m_fanPick);
-    auto* way = new QHBoxLayout();
-    m_wayPick = new PickBox(m_fanForm);
-    m_wayPick->setObjectName("coolingWayPick");
+    m_fanType = new QComboBox(m_fanForm);
+    m_fanType->setObjectName("coolingFanType");
+    m_fanType->addItem(tr("Axial fan (the air through it)"), "axial");
+    m_fanType->addItem(tr("Blower (in on top, out of its side)"), "blower");
+    m_fanRows->addRow(tr("Type:"), m_fanType);
+    // Its openings: a closed region of a sketch drawn on the fan's face (Draw…: a sketch on the face, its outline projected,
+    // the opening drawn in it), or a flat face; picked among the sketches' regions in the view.
+    auto opening = [this](PickBox*& pick, QPushButton*& draw, const char* name) {
+      auto* row = new QHBoxLayout();
+      pick = new PickBox(m_fanForm);
+      pick->setObjectName(QString("cooling%1Pick").arg(name));
+      draw = new QPushButton(tr("Draw…"), m_fanForm);
+      draw->setObjectName(QString("cooling%1Draw").arg(name));
+      draw->setToolTip(tr("A sketch on the fan's face: project its edges, draw the opening in it, Finish; it becomes this opening"));
+      row->addWidget(pick, 1);
+      row->addWidget(draw);
+      return row;
+    };
+    m_fanRows->addRow(tr("Outlet:"), opening(m_outletPick, m_outletDraw, "Outlet"));
+    m_fanRows->addRow(tr("Inlet:"), opening(m_inletPick, m_inletDraw, "Inlet"));
     m_flip = new QPushButton(tr("Flip"), m_fanForm);
     m_flip->setObjectName("coolingWayFlip");
-    way->addWidget(m_wayPick, 1);
-    way->addWidget(m_flip);
-    m_fanRows->addRow(tr("Air goes through:"), way);
-    m_axis = new QComboBox(m_fanForm);
-    for (const auto& w : ways()) m_axis->addItem(QString(QChar(0x202A)) + w.first + QChar(0x202C));  // kept left to right in Arabic
-    m_fanRows->addRow(tr("Or along:"), m_axis);
     m_wayText = text(QString(), m_fanForm);
-    m_fanRows->addRow(QString(), m_wayText);
-    // The outlet: the face's rectangle, sized here (a blower's outlet, a duct): the plane the air is pushed through, drawn.
-    m_outletRow = new QWidget(m_fanForm);
-    auto* outletLayout = new QHBoxLayout(m_outletRow);
-    outletLayout->setContentsMargins(0, 0, 0, 0);
-    auto sizeBox = [this](const char* name) {
-      auto* box = new QDoubleSpinBox(m_outletRow);
-      box->setObjectName(name);
-      box->setRange(0.5, 5000);
-      box->setDecimals(1);
-      box->setSuffix(" mm");
-      box->setKeyboardTracking(false);
-      return box;
-    };
-    m_outletWidth = sizeBox("coolingOutletWidth");
-    m_outletHeight = sizeBox("coolingOutletHeight");
-    auto* fit = new QPushButton(tr("Fit"), m_outletRow);
-    fit->setObjectName("coolingOutletFit");
-    fit->setToolTip(tr("The face's own size"));
-    outletLayout->addWidget(m_outletWidth, 1);
-    outletLayout->addWidget(new QLabel(QStringLiteral("×"), m_outletRow));
-    outletLayout->addWidget(m_outletHeight, 1);
-    outletLayout->addWidget(fit);
-    m_fanRows->addRow(tr("Outlet:"), m_outletRow);
-    m_outletRow->setToolTip(tr("The rectangle the air leaves by, on the face it goes through: the fan pushes the air through it (drawn in the "
-                               "view with an arrow the air's way). Size it to the fan's opening; a blower's is on its side."));
+    auto* way = new QHBoxLayout();
+    way->addWidget(m_wayText, 1);
+    way->addWidget(m_flip);
+    m_fanRows->addRow(tr("Air:"), way);
+    m_fanClip = new ClipView(QString(), m_fanForm);
+    m_fanClip->setObjectName("coolingFanClip");
+    m_fanRows->addRow(m_fanClip);
+    // Its datasheet: a library fan, or the two numbers every datasheet gives (max airflow, max static pressure) in its units,
+    // with the P-Q curve read off its chart when it has one; the speed it runs at (PWM, a lower voltage) scales them.
     m_model = new QComboBox(m_fanForm);
     m_model->setObjectName("coolingFanModel");
-    for (const auto& f : air::fans()) m_model->addItem(QString::fromStdString(f.name), QString::fromStdString(f.id));
-    m_model->addItem(tr("Custom (from its datasheet)"), QString());
     search_combo::enable(m_model);
     m_fanRows->addRow(tr("Fan model:"), m_model);
-    m_flow = new QDoubleSpinBox(m_fanForm);
-    m_flow->setObjectName("coolingFanFlow");
-    m_flow->setRange(0.1, 2000);
-    m_flow->setSuffix(" m³/h");
-    m_fanRows->addRow(tr("Free flow:"), m_flow);
-    m_pressure = new QDoubleSpinBox(m_fanForm);
-    m_pressure->setObjectName("coolingFanPressure");
-    m_pressure->setRange(0.1, 5000);
-    m_pressure->setSuffix(" Pa");
-    m_fanRows->addRow(tr("Shut-off pressure:"), m_pressure);
+    auto withUnit = [this](QDoubleSpinBox*& box, QComboBox*& unit, const char* name, const std::vector<std::pair<QString, QString>>& units) {
+      auto* row = new QHBoxLayout();
+      box = new QDoubleSpinBox(m_fanForm);
+      box->setObjectName(name);
+      box->setRange(0.001, 100000);
+      box->setDecimals(3);
+      box->setKeyboardTracking(false);
+      unit = new QComboBox(m_fanForm);
+      unit->setObjectName(QString(name) + "Unit");
+      for (const auto& [label, id] : units) unit->addItem(label, id);
+      row->addWidget(box, 1);
+      row->addWidget(unit);
+      return row;
+    };
+    m_fanRows->addRow(tr("Max airflow:"), withUnit(m_flow, m_flowUnit, "coolingFanFlow",
+                                                   {{"CFM", "cfm"}, {QStringLiteral("m³/h"), "m3h"}, {QStringLiteral("m³/min"), "m3min"}, {"l/s", "ls"}}));
+    m_fanRows->addRow(tr("Max static pressure:"), withUnit(m_pressure, m_pressureUnit, "coolingFanPressure",
+                                                           {{QStringLiteral("inH₂O"), "inH2O"}, {QStringLiteral("mmH₂O"), "mmH2O"}, {"Pa", "Pa"}}));
+    m_curve = new QLineEdit(m_fanForm);
+    m_curve->setObjectName("coolingFanCurve");
+    m_curve->setPlaceholderText(tr("airflow pressure; airflow pressure; … (optional)"));
+    m_curve->setToolTip(tr("Points read off the datasheet's P-Q chart, in the units above, each an airflow and the static pressure at it. "
+                           "Without them the curve is a straight line from the max static pressure to the max airflow."));
+    m_fanRows->addRow(tr("P-Q curve:"), m_curve);
+    m_speed = new QDoubleSpinBox(m_fanForm);
+    m_speed->setObjectName("coolingFanSpeed");
+    m_speed->setRange(10, 150);
+    m_speed->setDecimals(0);
+    m_speed->setSuffix(" %");
+    m_speed->setKeyboardTracking(false);
+    m_speed->setToolTip(tr("Of its rated speed (the datasheet's): its airflow scales with the speed, its pressure with the speed squared"));
+    m_fanRows->addRow(tr("Speed:"), m_speed);
     m_sinkPick = new PickBox(m_fanForm);
     m_sinkPick->setObjectName("coolingSinkPick");
     m_fanRows->addRow(tr("Heatsink:"), m_sinkPick);
@@ -374,7 +388,7 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       if (opad::thermal(m.id)) m_sinkMaterial->addItem(i18n::t(QString::fromStdString(m.name)), QString::fromStdString(m.id));
     search_combo::enable(m_sinkMaterial);
     m_fanRows->addRow(tr("Heatsink material:"), m_sinkMaterial);
-    for (QComboBox* box : {m_axis, m_model, m_sinkMaterial}) {  // as narrow as the panel (the longest item would widen it)
+    for (QComboBox* box : {m_fanType, m_model, m_sinkMaterial}) {  // as narrow as the panel (the longest item would widen it)
       box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
       box->setMinimumContentsLength(8);
     }
@@ -387,13 +401,18 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
         showFans();
       };
     };
-    connect(m_natural, &QRadioButton::toggled, this, [this, add, remove](bool natural) {
+    m_ventText = text(QString(), this);
+    m_ventText->setObjectName("coolingVents");
+    v->addWidget(m_ventText);
+    auto fanPick = [this] { return m_picking == Pick::Outlet || m_picking == Pick::Inlet || m_picking == Pick::Sink; };
+    connect(m_natural, &QRadioButton::toggled, this, [this, add, remove, fanPick](bool natural) {
       const bool on = !natural;  // the fans, with or without the warm air rising
       m_fanList->setEnabled(on);
       m_fanForm->setEnabled(on);
       add->setEnabled(on);
       remove->setEnabled(on);
-      if (!on && (m_picking == Pick::Fan || m_picking == Pick::Way || m_picking == Pick::Sink)) stopPicking();
+      m_ventText->setVisible(on);
+      if (!on && fanPick()) stopPicking();
     });
     for (QRadioButton* r : {m_fansOn, m_mixed, m_natural})
       connect(r, &QRadioButton::toggled, this, [this, airNote](bool on) {
@@ -406,55 +425,92 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       m_fanSpecs.push_back({});
       m_fan = int(m_fanSpecs.size()) - 1;
       showFans();
-      startPicking(Pick::Fan);
+      startPicking(Pick::Outlet);  // its opening picked among the sketches' regions (or Draw…)
     });
-    connect(remove, &QPushButton::clicked, this, [this] {
+    connect(remove, &QPushButton::clicked, this, [this, fanPick] {
       if (m_fan < 0 || m_fan >= int(m_fanSpecs.size())) return;
       m_fanSpecs.erase(m_fanSpecs.begin() + m_fan);
       m_fan = std::min(m_fan, int(m_fanSpecs.size()) - 1);
       showFans();
-      if (m_picking == Pick::Fan || m_picking == Pick::Way || m_picking == Pick::Sink) reselect();
+      if (fanPick()) reselect();
     });
-    connect(m_fanList, &QListWidget::currentRowChanged, this, [this](int row) {
+    connect(m_fanList, &QListWidget::currentRowChanged, this, [this, fanPick](int row) {
       if (m_fanLoading || row < 0 || row == m_fan) return;
       m_fan = row;
       showFan();
       lightChosen();
-      if (m_picking == Pick::Fan || m_picking == Pick::Way || m_picking == Pick::Sink) reselect();  // this fan's picks shown
+      if (fanPick()) reselect();  // this fan's picks shown
     });
-    connect(m_fanPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Fan); });
-    connect(m_wayPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Way); });
-    connect(m_sinkPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Sink); });
-    connect(m_fanPick, &PickBox::cleared, this, edit([this](FanSpec& f) {
-      f.on.clear();
-      if (m_picking == Pick::Fan) m_hooks.select({});
+    connect(m_fanType, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) {
+      f.type = m_fanType->currentData().toString();
+      if (!f.model.isEmpty() && QString::fromStdString(air::fan_from(json(f.model.toStdString())).kind) != f.type) f.model.clear();  // the library's of that type
+      if (f.type != "blower" && m_picking == Pick::Inlet) startPicking(Pick::Outlet);
     }));
-    connect(m_wayPick, &PickBox::cleared, this, edit([this](FanSpec& f) {
-      f.across = {}, f.flip = false;
-      if (m_picking == Pick::Way) m_hooks.select({});
+    connect(m_outletPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Outlet); });
+    connect(m_inletPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Inlet); });
+    connect(m_sinkPick, &QPushButton::clicked, this, [this] { startPicking(Pick::Sink); });
+    auto drawing = [this] {
+      for (size_t i = 0; i < m_fanSpecs.size(); ++i) m_fanSpecs[i].drawing = int(i) == m_fan;
+    };
+    connect(m_outletDraw, &QPushButton::clicked, this, [this, drawing] {
+      stopPicking();
+      drawing();
+      if (m_hooks.draw) m_hooks.draw(m_fan, false);
+    });
+    connect(m_inletDraw, &QPushButton::clicked, this, [this, drawing] {
+      stopPicking();
+      drawing();
+      if (m_hooks.draw) m_hooks.draw(m_fan, true);
+    });
+    connect(m_outletPick, &PickBox::cleared, this, edit([this](FanSpec& f) {
+      f.outlet = json(), f.normal = {0, 0, 0}, f.flip = false, f.outletLoops.clear();
+      if (m_picking == Pick::Outlet) reselect();
+    }));
+    connect(m_inletPick, &PickBox::cleared, this, edit([this](FanSpec& f) {
+      f.inlet = json(), f.inletLoops.clear();
+      if (m_picking == Pick::Inlet) reselect();
     }));
     connect(m_sinkPick, &PickBox::cleared, this, edit([this](FanSpec& f) {
       f.sink.clear();
       if (m_picking == Pick::Sink) m_hooks.select({});
     }));
     connect(m_flip, &QPushButton::clicked, this, edit([](FanSpec& f) { f.flip = !f.flip; }));
-    connect(m_axis, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) { f.axis = std::max(0, m_axis->currentIndex()); }));
     connect(m_model, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) {
       f.model = m_model->currentData().toString();
-      if (!f.model.isEmpty()) {
-        const air::Fan spec = air::fan_from(json(f.model.toStdString()));
-        f.flow = spec.Qmax * 3600, f.pressure = spec.Pmax;
-      }
+      if (f.model.isEmpty()) return;
+      const air::Fan spec = air::fan_from(json(f.model.toStdString()));  // its numbers shown, in the units chosen
+      f.flow = spec.Qmax / air::flow_unit(f.flowUnit.toStdString()), f.pressure = spec.Pmax / air::pressure_unit(f.pressureUnit.toStdString());
+      f.curve.clear();
     }));
     connect(m_flow, &QDoubleSpinBox::valueChanged, this, edit([this](FanSpec& f) { f.flow = m_flow->value(); }));
     connect(m_pressure, &QDoubleSpinBox::valueChanged, this, edit([this](FanSpec& f) { f.pressure = m_pressure->value(); }));
-    connect(m_outletWidth, &QDoubleSpinBox::valueChanged, this, edit([this](FanSpec& f) { f.width = m_outletWidth->value(); }));
-    connect(m_outletHeight, &QDoubleSpinBox::valueChanged, this, edit([this](FanSpec& f) { f.height = m_outletHeight->value(); }));
-    connect(m_outletRow->findChild<QPushButton*>("coolingOutletFit"), &QPushButton::clicked, this, [this] {
-      if (m_fan < 0 || m_fan >= int(m_fanSpecs.size()) || m_faceSize[0] <= 0) return measureWay(m_fan);  // its size read again
-      m_fanSpecs[size_t(m_fan)].width = m_faceSize[0], m_fanSpecs[size_t(m_fan)].height = m_faceSize[1];
-      showFans();
-    });
+    // Another unit: the same fan, its numbers (and its curve's) converted.
+    connect(m_flowUnit, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) {
+      const QString to = m_flowUnit->currentData().toString();
+      const double k = air::flow_unit(f.flowUnit.toStdString()) / air::flow_unit(to.toStdString());
+      f.flow *= k;
+      for (auto& p : f.curve) p[0] *= k;
+      f.flowUnit = to;
+    }));
+    connect(m_pressureUnit, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) {
+      const QString to = m_pressureUnit->currentData().toString();
+      const double k = air::pressure_unit(f.pressureUnit.toStdString()) / air::pressure_unit(to.toStdString());
+      f.pressure *= k;
+      for (auto& p : f.curve) p[1] *= k;
+      f.pressureUnit = to;
+    }));
+    connect(m_curve, &QLineEdit::editingFinished, this, edit([this](FanSpec& f) {
+      f.curve.clear();
+      for (const QString& point : m_curve->text().split(';', Qt::SkipEmptyParts)) {
+        const QStringList v = point.simplified().replace(',', ' ').split(' ', Qt::SkipEmptyParts);
+        bool a = false, b = false;
+        if (v.size() == 2) {
+          const double q = v[0].toDouble(&a), p = v[1].toDouble(&b);
+          if (a && b && q >= 0 && p >= 0) f.curve.push_back({q, p});
+        }
+      }
+    }));
+    connect(m_speed, &QDoubleSpinBox::valueChanged, this, edit([this](FanSpec& f) { f.speed = m_speed->value(); }));
     connect(m_sinkMaterial, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) { f.material = m_sinkMaterial->currentData().toString(); }));
   }
   // ---- 4. run
@@ -570,6 +626,7 @@ void CoolingAssistant::keyPressEvent(QKeyEvent* e) {
 
 void CoolingAssistant::showStep(int i) {
   if (i >= 0 && i < m_pages->count()) m_pages->setCurrentIndex(i);
+  if (i == 2) estimateVents();
   m_back->setEnabled(i > 0);
   m_next->setVisible(i < steps() - 1);  // the last page runs (its Run button)
   // A page picks only while one of its Add buttons (or a fan's pick boxes) is on; the rows chosen in its list are lit in the
@@ -587,6 +644,7 @@ void CoolingAssistant::reload() {
     ~Done() { flag = false; }
   } done{m_reloading};
   AppDocument* d = m_hooks.document();
+  if (!d || m_loaded.first != d->generation) m_fanSpecs.clear(), m_fan = -1;  // another document: no fan of the last one kept
   m_loaded = d ? std::make_pair(d->generation, d->revision) : std::make_pair(0ull, 0ull);
   const bool foam = opad::sim::openfoam().found();
   m_engine->setText(foam ? QString()
@@ -599,10 +657,10 @@ void CoolingAssistant::reload() {
   stopPicking();
   m_picked.clear();
   m_heat->setRowCount(0);
-  m_fanSpecs.clear();
-  m_fan = -1;
   m_status->clear();
   if (!d || !d->hasDocument) {
+    m_fanSpecs.clear();
+    m_fan = -1;
     showPicked();
     return showFans();
   }
@@ -675,16 +733,25 @@ void CoolingAssistant::lightChosen() {
                        m_heat->item(i.row(), 2) && m_heat->item(i.row(), 2)->checkState() == Qt::Checked ? "board" : "heat"});
     }
   }
-  std::vector<json> fans;  // the current fan's plane and the air's way, as the solver will take them
+  std::vector<json> fans;  // the current fan's openings and the air's way through them, as the solver will take them
   if (step() == 2 && !naturalConvection() && m_fan >= 0 && m_fan < int(m_fanSpecs.size())) {
     const FanSpec& f = m_fanSpecs[size_t(m_fan)];
     for (const auto& id : f.on) lit.push_back({body(id), "fan"});
+    for (const json& o : {f.outlet, f.inlet})  // an opening that is a face: lit as the fan
+      if (o.is_object() && o.contains("body")) try {
+          lit.push_back({opad::Ref::from_json(o), "fan"});
+        } catch (const std::exception&) {
+        }
     for (const auto& id : f.sink) lit.push_back({body(id), "heatsink"});
-    if (!f.on.empty()) {
-      json fan = {{"refs", f.on}, {"vector", f.vector()}};
-      if (const json o = f.outletJson(); !o.is_null()) fan["outlet"] = o;
-      fans.push_back(fan);
+    const opad::Vec3 way = f.vector();
+    if (!f.outletLoops.empty()) fans.push_back({{"loops", f.outletLoops}, {"centre", f.centre}, {"vector", way}});
+    if (f.type == "blower" && !f.inletLoops.empty()) {  // the air going in: against the inlet's normal out of the housing
+      opad::Vec3 n = f.inletNormal;
+      if ((n[0] * (f.inletCentre[0] - f.centre[0]) + n[1] * (f.inletCentre[1] - f.centre[1]) + n[2] * (f.inletCentre[2] - f.centre[2])) < 0)
+        n = {-n[0], -n[1], -n[2]};
+      fans.push_back({{"loops", f.inletLoops}, {"centre", f.inletCentre}, {"vector", opad::Vec3{-n[0], -n[1], -n[2]}}, {"inward", true}});
     }
+    if (f.outlet.is_null() && !f.on.empty()) fans.push_back({{"refs", f.on}, {"vector", way}});  // an older setup's
   }
   m_hooks.light(lit);
   if (m_hooks.fanGlyphs) m_hooks.fanGlyphs(fans);
@@ -728,7 +795,7 @@ void CoolingAssistant::startPicking(Pick what) {
   if (!isVisible()) return syncAdd();
   const Pick was = m_picking;
   m_picking = Pick::None;  // switching the filter clears the selection: no pick taken
-  const QString filter = what == Pick::Faces || what == Pick::Way ? "select.faces" : "select.bodies";  // pickFilter() once picking
+  const QString filter = what == Pick::Faces || what == Pick::Outlet || what == Pick::Inlet ? "select.faces" : "select.bodies";  // pickFilter()
   QString before = filter;
   if (m_hooks.filter) {
     before = m_hooks.filter(filter);
@@ -737,12 +804,16 @@ void CoolingAssistant::startPicking(Pick what) {
   if (was == Pick::None && m_hooks.accumulate) m_hooks.accumulate(true);  // clicks gather, as a feature's picks
   m_picking = what;
   m_awaiting = before != filter && m_hooks.onFilterApplied;  // the view's picks taken once its targets are built (filterApplied)
+  const bool profiles = what == Pick::Outlet || what == Pick::Inlet;
+  if (m_hooks.profiles && profiles != (was == Pick::Outlet || was == Pick::Inlet)) m_hooks.profiles(profiles);  // the sketches' regions offered
   if (!m_awaiting) reselect();
   syncAdd();
   showFan();
 }
 
-QString CoolingAssistant::pickFilter() const { return m_picking == Pick::Faces || m_picking == Pick::Way ? "select.faces" : "select.bodies"; }
+QString CoolingAssistant::pickFilter() const {
+  return m_picking == Pick::Faces || m_picking == Pick::Outlet || m_picking == Pick::Inlet ? "select.faces" : "select.bodies";
+}
 
 // Faces can be selected only once the Faces filter has built their pick targets (a sliced job), and a filter switched (here,
 // by hand, by a key) clears the selection, not the lists: once the page's filter is applied what they hold is selected again.
@@ -754,6 +825,7 @@ void CoolingAssistant::filterApplied() {
 
 void CoolingAssistant::stopPicking() {
   if (m_picking == Pick::None) return syncAdd();
+  if (m_hooks.profiles && (m_picking == Pick::Outlet || m_picking == Pick::Inlet)) m_hooks.profiles(false);
   m_picking = Pick::None;
   m_awaiting = false;
   if (m_hooks.accumulate) m_hooks.accumulate(false);
@@ -777,11 +849,23 @@ void CoolingAssistant::reselect() {
   if (!m_hooks.select || m_picking == Pick::None) return;
   if (m_picking == Pick::Faces) return m_hooks.select(heatFaces());
   const FanSpec* fan = m_fan >= 0 && m_fan < int(m_fanSpecs.size()) ? &m_fanSpecs[size_t(m_fan)] : nullptr;
-  if (m_picking == Pick::Way) return m_hooks.select(fan && !fan->across.body.empty() ? std::vector<opad::Ref>{fan->across} : std::vector<opad::Ref>{});
+  if (m_picking == Pick::Outlet || m_picking == Pick::Inlet) {  // its opening: a face, or a sketch's region (a candidate)
+    const json p = !fan ? json() : m_picking == Pick::Outlet ? fan->outlet : fan->inlet;
+    if (p.is_object() && p.contains("sketch")) {
+      m_hooks.select({});
+      if (m_hooks.selectCandidate) m_hooks.selectCandidate(p.dump());
+      return;
+    }
+    std::vector<opad::Ref> refs;
+    try {
+      if (p.is_object()) refs.push_back(opad::Ref::from_json(p));
+    } catch (const std::exception&) {
+    }
+    return m_hooks.select(refs);
+  }
   const std::vector<std::string> ids = m_picking == Pick::Box     ? m_picked
                                        : m_picking == Pick::Parts ? heatBodies()
                                        : !fan                     ? std::vector<std::string>{}
-                                       : m_picking == Pick::Fan   ? fan->on
                                                                   : fan->sink;
   std::vector<opad::Ref> refs;
   for (const auto& id : ids) {
@@ -792,7 +876,7 @@ void CoolingAssistant::reselect() {
   m_hooks.select(refs);  // what the list holds, shown selected in the view and the browser
 }
 
-void CoolingAssistant::selectionChanged(const std::vector<std::string>& ids, const std::vector<opad::Ref>& refs) {
+void CoolingAssistant::selectionChanged(const std::vector<std::string>& ids, const std::vector<opad::Ref>& refs, const std::vector<std::string>& candidates) {
   // A filter switched (by the page, by hand) clears the selection, not the lists: shown again once applied (filterApplied).
   if (m_picking == Pick::None || m_awaiting || (m_hooks.filterSwitching && m_hooks.filterSwitching())) return;
   const AppDocument* d = m_hooks.document();
@@ -818,27 +902,27 @@ void CoolingAssistant::selectionChanged(const std::vector<std::string>& ids, con
     return;
   }
   FanSpec* fan = m_fan >= 0 && m_fan < int(m_fanSpecs.size()) ? &m_fanSpecs[size_t(m_fan)] : nullptr;
-  if (m_picking == Pick::Way) {
-    // One face: the one clicked last (a click on another replaces it).
+  if (m_picking == Pick::Outlet || m_picking == Pick::Inlet) {
+    // One opening: the region or the face clicked last (a click on another replaces it).
     if (!fan) return;
-    opad::Ref next;
+    json& field = m_picking == Pick::Outlet ? fan->outlet : fan->inlet;
+    json next;
+    for (const auto& c : candidates)
+      if (c.find("\"sketch\"") != std::string::npos && c != field.dump()) next = json::parse(c, nullptr, false);
     for (const auto& r : refs)
-      if (r.kind == opad::Ref::Kind::Face && (fan->across.body.empty() || !sameRef(r, fan->across))) next = r;
-    if (next.body.empty())
-      for (const auto& r : refs)
-        if (r.kind == opad::Ref::Kind::Face) next = r;  // the same face still picked
-    if (sameRef(next, fan->across) && !next.body.empty()) return;
-    fan->across = next;
-    fan->flip = false;
-    if (refs.size() > 1) QTimer::singleShot(0, this, [this] { reselect(); });  // the one face left selected
-    showFans();
-    if (!next.body.empty()) measureWay(m_fan);
+      if (next.is_null() && r.kind == opad::Ref::Kind::Face && pickable(r.body) && r.to_json() != field) next = r.to_json();
+    if (next.is_null() || next.is_discarded()) {
+      if (!field.is_null()) restore();  // a click that took it out: shown again
+      return;
+    }
+    setProfile(m_fan, m_picking == Pick::Inlet, next);
+    if (refs.size() + candidates.size() > 1) restore();  // the one left selected
     return;
   }
-  if (m_picking == Pick::Fan || m_picking == Pick::Sink) {
+  if (m_picking == Pick::Sink) {
     // Bodies or components, each one part: a component picked in the browser stands for all its bodies.
     if (!fan) return;
-    std::vector<std::string>& field = m_picking == Pick::Fan ? fan->on : fan->sink;
+    std::vector<std::string>& field = fan->sink;
     auto listed = [&](const std::string& id) { return std::find(field.begin(), field.end(), id) != field.end(); };
     auto within = [&](const std::string& id) {  // under a component listed or picked with it: that component stands for it
       for (const opad::Node* n = d->scene.node(id); n && !n->parent.empty(); n = d->scene.node(n->parent))
@@ -950,54 +1034,88 @@ void CoolingAssistant::addHeatFace(const opad::Ref& f, double watts) {
 }
 
 // ---------------------------------------------------------------- the fans
-opad::json CoolingAssistant::FanSpec::outletJson() const {
-  if (!outlet || width <= 0 || height <= 0 || std::hypot(normal[0], normal[1], normal[2]) < 0.5) return json();
-  return {{"centre", centre}, {"normal", normal}, {"x", xdir}, {"width", width}, {"height", height}};
-}
-
 opad::Vec3 CoolingAssistant::FanSpec::vector() const {
-  const opad::Vec3 v = across.body.empty() || std::hypot(normal[0], normal[1], normal[2]) < 0.5 ? ways()[size_t(std::clamp(axis, 0, 5))].second : normal;
+  opad::Vec3 v = written;
+  if (std::hypot(normal[0], normal[1], normal[2]) > 0.5) {
+    v = normal;
+    if (type == "blower") {  // out of its side: away from its inlet
+      if (v[0] * (centre[0] - inletCentre[0]) + v[1] * (centre[1] - inletCentre[1]) + v[2] * (centre[2] - inletCentre[2]) < 0) v = {-v[0], -v[1], -v[2]};
+      return v;
+    }
+  }
   return flip ? opad::Vec3{-v[0], -v[1], -v[2]} : v;
 }
 
+// As fan_from takes it (sim/airflow.hpp): a library fan by its id, or the datasheet's numbers under their units' keys, the
+// chart's points between its two ends; and the speed.
+opad::json CoolingAssistant::FanSpec::spec() const {
+  json j;
+  if (!model.isEmpty()) {
+    j = {{"model", model.toStdString()}};
+  } else {
+    const std::string fu = flowUnit.toStdString(), pu = pressureUnit.toStdString();
+    j = {{"kind", type.toStdString()}, {fu == "m3h" ? "flow" : fu, flow}, {pu == "Pa" ? "pressure" : pu, pressure}};
+    if (!curve.empty()) {
+      json points = json::array({{0.0, pressure}});
+      for (const auto& p : curve)
+        if (p[0] > 0 && p[1] > 0 && p[0] < flow && p[1] < pressure) points.push_back({p[0], p[1]});
+      points.push_back({flow, 0.0});
+      j["curve"] = points;
+      j["curve_units"] = {{"flow", fu}, {"pressure", pu}};
+    }
+  }
+  if (speed != 100) j["speed"] = speed;
+  return j;
+}
+
 void CoolingAssistant::loadFans(const opad::Scene& s) {
+  // A fan not written yet (its openings still being drawn: Draw… makes a sketch, which reloads the pages) is kept.
+  std::vector<FanSpec> pending;
+  bool current = false;
+  for (size_t i = 0; i < m_fanSpecs.size(); ++i)
+    if (!m_fanSpecs[i].held()) {
+      current = current || int(i) == m_fan;
+      pending.push_back(m_fanSpecs[i]);
+    }
   m_fanSpecs.clear();
   const opad::Study* st = s.study(studyId());
   const json settings = st ? st->def.value("settings", json::object()) : json::object();
   const json mats = settings.value("materials", json::object());
   for (const auto& l : s.loads) {
-    if (l.load_case != kCase || l.kind != "fan" || l.refs.empty()) continue;
+    if (l.load_case != kCase || l.kind != "fan") continue;
     FanSpec f;
     for (const auto& r : l.refs) f.on.push_back(r.body);
+    f.type = QString::fromStdString(l.def.value("type", std::string("axial")));
     const json fan = l.def.value("fan", json("80x25"));
-    f.model = fan.is_string() ? QString::fromStdString(fan.get<std::string>()) : QString();
-    try {
-      const air::Fan spec = air::fan_from(fan);
-      f.flow = spec.Qmax * 3600, f.pressure = spec.Pmax;
-    } catch (const std::exception&) {
-    }
-    const opad::Vec3 v = l.def.value("vector", opad::Vec3{1, 0, 0});
-    if (const json a = l.def.value("across", json()); a.is_object()) {
+    const json model = fan.is_string() ? fan : fan.is_object() ? fan.value("model", json()) : json();
+    if (model.is_string()) f.model = QString::fromStdString(model.get<std::string>());
+    if (fan.is_object()) f.speed = fan.value("speed", 100.0);
+    if (fan.is_object() && !model.is_string()) {  // its datasheet's numbers, in the units it was given in
+      for (const char* k : {"flow", "cfm", "m3min", "ls"})
+        if (fan.contains(k)) f.flow = fan[k].get<double>(), f.flowUnit = QString(k) == "flow" ? "m3h" : k;
+      for (const char* k : {"pressure", "inH2O", "mmH2O"})
+        if (fan.contains(k)) f.pressure = fan[k].get<double>(), f.pressureUnit = QString(k) == "pressure" ? "Pa" : k;
+      const json units = fan.value("curve_units", json::object());
+      if (fan.contains("curve")) f.flowUnit = QString::fromStdString(units.value("flow", std::string("m3h"))), f.pressureUnit = QString::fromStdString(units.value("pressure", std::string("Pa")));
+      for (const auto& p : fan.value("curve", json::array()))
+        if (p.is_array() && p.size() == 2 && p[0].get<double>() > 0 && p[1].get<double>() > 0) f.curve.push_back({p[0].get<double>(), p[1].get<double>()});
+    } else if (!f.model.isEmpty()) {
       try {
-        f.across = opad::Ref::from_json(a), f.normal = v;  // the way as written: the face's normal, flipped or not
+        const air::Fan spec = air::fan_from(json(f.model.toStdString()));
+        f.flow = spec.Qmax / air::flow_unit("cfm"), f.pressure = spec.Pmax / air::pressure_unit("inH2O");
       } catch (const std::exception&) {
       }
     }
-    if (f.across.body.empty())
-      for (size_t i = 0; i < ways().size(); ++i)
-        if (v[0] * ways()[i].second[0] + v[1] * ways()[i].second[1] + v[2] * ways()[i].second[2] > 0.9) f.axis = int(i);
+    f.written = l.def.value("vector", opad::Vec3{1, 0, 0});
+    if (const json o = l.def.value("outlet", json()); o.is_string() || (o.is_object() && !o.contains("centre"))) f.outlet = o;
+    if (const json o = l.def.value("inlet", json()); o.is_string() || o.is_object()) f.inlet = o;
     for (const auto& h : l.def.value("heatsink", json::array()))
       if (h.is_string()) f.sink.push_back(h.get<std::string>());
-    if (const json o = l.def.value("outlet", json()); o.is_object()) {  // its outlet as set (and sized)
-      f.outlet = true;
-      f.centre = o.value("centre", opad::Vec3{0, 0, 0}), f.xdir = o.value("x", opad::Vec3{1, 0, 0});
-      f.width = o.value("width", 0.0), f.height = o.value("height", 0.0);
-      if (!f.across.body.empty()) f.normal = o.value("normal", f.normal);
-    }
     // The heatsink's material, when the study set one for it (each of its bodies has it).
     for (const auto& id : f.sink)
       for (const auto& b : s.node(id) && s.node(id)->kind != opad::Node::Kind::Body ? s.bodies_under(id) : std::vector<std::string>{id})
         if (mats.contains(b) && mats[b].is_object() && mats[b].contains("material")) f.material = QString::fromStdString(mats[b].value("material", ""));
+    if (f.outlet.is_null() && f.on.empty()) continue;
     m_fanSpecs.push_back(f);
   }
   // Natural convection when the study says the air rises and no fan is set; with fans, the air rising too or not (a new study:
@@ -1005,17 +1123,59 @@ void CoolingAssistant::loadFans(const opad::Scene& s) {
   const bool rising = st && settings.value("cfd", json::object()).value("buoyancy", false);
   (rising ? (m_fanSpecs.empty() ? m_natural : m_mixed) : m_fansOn)->setChecked(true);
   m_fan = m_fanSpecs.empty() ? -1 : 0;
+  for (size_t i = 0; i < pending.size(); ++i) {
+    if (current && (i == 0 || pending[i].drawing)) m_fan = int(m_fanSpecs.size());
+    m_fanSpecs.push_back(pending[i]);
+  }
+  if (m_fan < 0 && !m_fanSpecs.empty()) m_fan = 0;
+  for (int i = 0; i < int(m_fanSpecs.size()); ++i) measureOutlet(i);  // their outlines and ways, read on a worker
   showFans();
 }
 
-void CoolingAssistant::showFans() {
+QString CoolingAssistant::profileText(const opad::json& p) const {
   const AppDocument* d = m_hooks.document();
+  if (p.is_null() || !d) return QString();
+  if (p.is_object() && p.contains("sketch")) {
+    const std::string id = p.value("sketch", std::string());
+    for (const auto& k : d->scene.sketches)
+      if (k.id == id) return tr("Profile of %1").arg(QString::fromStdString(k.name));
+    return tr("A sketch's profile");
+  }
+  try {
+    const opad::Ref r = opad::Ref::from_json(p);
+    return tr("%1, face %2").arg(nameOf(d->scene, r.body)).arg(r.index + 1);
+  } catch (const std::exception&) {
+    return QString();
+  }
+}
+
+void CoolingAssistant::setProfile(int fan, bool inlet, const opad::json& profile) {
+  for (size_t i = 0; i < m_fanSpecs.size(); ++i)  // the fan Draw… was pressed for (the pages may have been reloaded since)
+    if (m_fanSpecs[i].drawing) fan = int(i), m_fanSpecs[i].drawing = false;
+  if (fan < 0 || fan >= int(m_fanSpecs.size())) return;
+  m_fan = fan;
+  FanSpec& f = m_fanSpecs[size_t(fan)];
+  (inlet ? f.inlet : f.outlet) = profile;
+  (inlet ? f.inletLoops : f.outletLoops).clear();
+  if (!inlet) f.normal = {0, 0, 0}, f.flip = false;
+  if (!f.outlet.is_null()) f.on.clear();  // drawn: no body stands for it any more
+  showFans();
+  measureOutlet(fan);
+}
+
+void CoolingAssistant::showFans() {
   m_fanLoading = true;
   m_fanList->clear();
   for (size_t i = 0; i < m_fanSpecs.size(); ++i) {
-    QStringList names;
-    for (const auto& id : m_fanSpecs[i].on) names << (d ? nameOf(d->scene, id) : QString::fromStdString(id));
-    m_fanList->addItem(tr("Fan %1: %2").arg(i + 1).arg(names.isEmpty() ? tr("pick it") : names.join(", ")));
+    const FanSpec& f = m_fanSpecs[i];
+    const QString what = f.type == "blower" ? tr("blower") : tr("axial fan");
+    QString model = f.model;
+    for (const auto& lib : air::fans())
+      if (QString::fromStdString(lib.id) == f.model) model = QString::fromStdString(lib.name);
+    if (model.isEmpty())
+      model = QString("%1 %2, %3 %4").arg(f.flow, 0, 'g', 3).arg(m_flowUnit->itemText(std::max(0, m_flowUnit->findData(f.flowUnit))))
+                  .arg(f.pressure, 0, 'g', 3).arg(m_pressureUnit->itemText(std::max(0, m_pressureUnit->findData(f.pressureUnit))));
+    m_fanList->addItem(tr("Fan %1 (%2): %3").arg(i + 1).arg(what, f.drawn() || !f.on.empty() ? model : tr("draw or pick its openings")));
   }
   m_fanList->setCurrentRow(m_fan);
   m_fanLoading = false;
@@ -1041,74 +1201,81 @@ void CoolingAssistant::showFan() {
     return out;
   };
   m_fanLoading = true;
-  m_fanPick->set(int(f.on.size()), names(f.on).join(", "), m_picking == Pick::Fan, !f.on.empty());
-  const bool face = !f.across.body.empty();
-  m_wayPick->set(face ? 1 : 0, face ? tr("%1, face %2").arg(d ? nameOf(d->scene, f.across.body) : QString()).arg(f.across.index + 1) : QString(),
-                 m_picking == Pick::Way, true);
-  m_axis->setCurrentIndex(std::clamp(f.axis, 0, 5));
-  m_fanRows->setRowVisible(m_axis, !face);  // the face sets the way: no axis to choose
-  m_fanRows->setRowVisible(m_outletRow, face && f.outlet);
-  m_outletWidth->setValue(f.width);
-  m_outletHeight->setValue(f.height);
-  const bool measured = face && std::hypot(f.normal[0], f.normal[1], f.normal[2]) > 0.5;
-  m_wayText->setText(face && !measured ? tr("Reading the face…") : tr("The air goes along %1.").arg(QString(QChar(0x202A)) + wayText(f.vector()) + QChar(0x202C)));
+  const bool blower = f.type == "blower";
+  m_fanType->setCurrentIndex(std::max(0, m_fanType->findData(f.type)));
+  m_outletPick->set(f.outlet.is_null() ? 0 : 1, f.outlet.is_null() && !f.on.empty() ? tr("%1 (an older setup: draw its opening)").arg(names(f.on).join(", ")) : profileText(f.outlet),
+                    m_picking == Pick::Outlet, !f.outlet.is_null());
+  m_inletPick->set(f.inlet.is_null() ? 0 : 1, profileText(f.inlet), m_picking == Pick::Inlet, !f.inlet.is_null());
+  if (auto* label = qobject_cast<QLabel*>(m_fanRows->itemAt(1, QFormLayout::LabelRole) ? m_fanRows->itemAt(1, QFormLayout::LabelRole)->widget() : nullptr))
+    label->setText(blower ? tr("Outlet:") : tr("Opening:"));
+  m_fanRows->setRowVisible(2, blower);  // a blower's inlet
+  m_flip->setVisible(!blower);  // a blower's way is out of its outlet, away from its inlet
+  const bool measured = std::hypot(f.normal[0], f.normal[1], f.normal[2]) > 0.5;
+  m_wayText->setText(!f.outlet.is_null() && !measured ? tr("Reading its opening…")
+                     : f.outlet.is_null() && f.on.empty() ? tr("Draw or pick its opening first.")
+                                                          : tr("Out along %1.").arg(QString(QChar(0x202A)) + wayText(f.vector()) + QChar(0x202C)));
+  m_fanClip->setClip(blower ? "simulate.fanBlower" : "simulate.fanAxial");
+  m_fanClip->setVisible(!f.drawn());  // how its openings are drawn, until they are
+  // The library's fans of its type, then its datasheet.
+  m_model->clear();
+  for (const auto& lib : air::fans())
+    if (QString::fromStdString(lib.kind) == f.type) m_model->addItem(QString::fromStdString(lib.name), QString::fromStdString(lib.id));
+  m_model->addItem(tr("From its datasheet"), QString());
   m_model->setCurrentIndex(std::max(0, m_model->findData(f.model)));
+  if (m_model->currentData().toString() != f.model) m_model->setCurrentIndex(m_model->count() - 1);
   const bool custom = f.model.isEmpty();
+  m_flowUnit->setCurrentIndex(std::max(0, m_flowUnit->findData(f.flowUnit)));
+  m_pressureUnit->setCurrentIndex(std::max(0, m_pressureUnit->findData(f.pressureUnit)));
   m_flow->setValue(f.flow);
   m_pressure->setValue(f.pressure);
-  m_flow->setEnabled(custom);
+  m_flow->setEnabled(custom);  // a library fan's numbers shown, as its datasheet has them
   m_pressure->setEnabled(custom);
-  m_fanRows->setRowVisible(m_flow, custom);  // a custom fan's numbers, under its choice
-  m_fanRows->setRowVisible(m_pressure, custom);
+  QStringList points;
+  for (const auto& p : f.curve) points << QString("%1 %2").arg(p[0], 0, 'g', 4).arg(p[1], 0, 'g', 4);
+  m_curve->setText(points.join("; "));
+  m_fanRows->setRowVisible(m_curve, custom);
+  m_speed->setValue(f.speed);
   m_sinkPick->set(int(f.sink.size()), names(f.sink).join(", "), m_picking == Pick::Sink, true);
   m_sinkMaterial->setCurrentIndex(std::max(0, m_sinkMaterial->findData(f.material)));
   m_sinkMaterial->setEnabled(!f.sink.empty());
   m_fanLoading = false;
 }
 
-void CoolingAssistant::measureWay(int fan) {
+// The openings' outlines and normals (sim::fan_profile: a sketch's regions are kernel work), on a worker.
+void CoolingAssistant::measureOutlet(int fan) {
   AppDocument* d = m_hooks.document();
   JobRunner* jobs = m_hooks.jobs ? m_hooks.jobs() : nullptr;
   if (!d || !jobs || fan < 0 || fan >= int(m_fanSpecs.size())) return;
-  const opad::Ref face = m_fanSpecs[size_t(fan)].across;
-  m_fanSpecs[size_t(fan)].normal = {0, 0, 0};
-  showFan();
+  const json outlet = m_fanSpecs[size_t(fan)].outlet, inlet = m_fanSpecs[size_t(fan)].type == "blower" ? m_fanSpecs[size_t(fan)].inlet : json();
+  if (outlet.is_null() && inlet.is_null()) return;
   auto doc = std::make_shared<const opad::Document>(d->doc);
   auto scene = std::make_shared<const opad::Scene>(d->scene);
-  struct Measured {
-    opad::Vec3 normal, centre, x;
-    double width = 0, height = 0;
+  struct Read {
+    opad::sim::FanProfile out, in;
+    bool hasOut = false, hasIn = false;
+    std::string error;
   };
-  auto m = std::make_shared<Measured>();
-  jobs->async(tr("Reading the face"), [doc, scene, face, m](Progress) {
-    const TopoDS_Shape f = opad::subshape(opad::node_world_shape(*doc, *scene, face.body), opad::Ref::Kind::Face, face.index);
-    if (f.IsNull() || f.ShapeType() != TopAbs_FACE) throw opad::Error("no such face");
-    const opad::Frame fr = opad::design::face_frame(TopoDS::Face(f));  // throws for a face that is not flat
-    const opad::Vec3 n{fr.x[1] * fr.y[2] - fr.x[2] * fr.y[1], fr.x[2] * fr.y[0] - fr.x[0] * fr.y[2], fr.x[0] * fr.y[1] - fr.x[1] * fr.y[0]};
-    const double l = std::hypot(n[0], n[1], n[2]);
-    m->normal = {n[0] / l, n[1] / l, n[2] / l};
-    // The outlet: the face's rectangle in its own plane (its box along the frame's x and y).
-    gp_Trsf local;
-    local.SetTransformation(gp_Ax3(gp_Pnt(fr.origin[0], fr.origin[1], fr.origin[2]), gp_Dir(m->normal[0], m->normal[1], m->normal[2]), gp_Dir(fr.x[0], fr.x[1], fr.x[2])));
-    Bnd_Box box;
-    BRepBndLib::AddOptimal(BRepBuilderAPI_Transform(f, local, Standard_True).Shape(), box, Standard_False, Standard_False);
-    double u0, v0, w0, u1, v1, w1;
-    box.Get(u0, v0, w0, u1, v1, w1);
-    const double uc = 0.5 * (u0 + u1), vc = 0.5 * (v0 + v1), wc = 0.5 * (w0 + w1);
-    for (int i = 0; i < 3; ++i) m->centre[i] = fr.origin[i] + fr.x[i] * uc + fr.y[i] * vc + m->normal[i] * wc;
-    m->x = fr.x, m->width = u1 - u0, m->height = v1 - v0;
-  }, [this, self = QPointer<CoolingAssistant>(this), fan, face, m](bool ok, const QString&) {
-    if (!self || fan >= int(m_fanSpecs.size()) || !sameRef(m_fanSpecs[size_t(fan)].across, face)) return;
-    FanSpec& f = m_fanSpecs[size_t(fan)];
-    if (ok) {
-      f.normal = m->normal;
-      f.outlet = true, f.centre = m->centre, f.xdir = m->x, f.width = m->width, f.height = m->height;  // the face's rectangle, to size
-      m_faceSize = {m->width, m->height};
-    } else {
-      f.across = {};  // a curved face gives no one way
-      m_status->setText(tr("That face is not flat: pick a flat face the air goes through, or choose an axis."));
+  auto m = std::make_shared<Read>();
+  jobs->async(tr("Reading the fan's openings"), [doc, scene, outlet, inlet, m](Progress) {
+    try {
+      if (!outlet.is_null()) m->out = opad::sim::fan_profile(*doc, *scene, outlet), m->hasOut = true;
+      if (!inlet.is_null()) m->in = opad::sim::fan_profile(*doc, *scene, inlet), m->hasIn = true;
+    } catch (const std::exception& e) {
+      m->error = e.what();
     }
-    showFans();  // its way and outlet known: the fan load written, its plane drawn
+  }, [this, self = QPointer<CoolingAssistant>(this), fan, outlet, inlet, m](bool ok, const QString&) {
+    if (!self || !ok || fan >= int(m_fanSpecs.size())) return;
+    FanSpec& f = m_fanSpecs[size_t(fan)];
+    if (f.outlet != outlet) return;  // picked again meanwhile
+    auto loops = [](const opad::sim::FanProfile& p) {
+      std::vector<std::vector<opad::Vec3>> out;
+      for (const auto& l : p.loops) out.push_back(std::vector<opad::Vec3>(l.begin(), l.end()));
+      return out;
+    };
+    if (m->hasOut) f.normal = m->out.normal, f.centre = m->out.centre, f.outletLoops = loops(m->out);
+    if (m->hasIn && f.inlet == inlet) f.inletNormal = m->in.normal, f.inletCentre = m->in.centre, f.inletLoops = loops(m->in);
+    if (!m->error.empty()) m_status->setText(i18n::t(QString::fromStdString(m->error)));
+    showFans();  // its way known: the fan load written, its openings drawn
   });
 }
 
@@ -1136,10 +1303,22 @@ bool CoolingAssistant::apply() {
     m_steps->setCurrentIndex(1);
     return false;
   }
-  if (!naturalConvection() && std::none_of(m_fanSpecs.begin(), m_fanSpecs.end(), [](const FanSpec& f) { return !f.on.empty(); })) {
-    m_status->setText(tr("No fan: add one on the Air page (Add a fan, then click it), or choose natural convection."));
-    m_steps->setCurrentIndex(2);
-    return false;
+  if (!naturalConvection()) {
+    if (m_fanSpecs.empty()) {
+      m_status->setText(tr("No fan: add one on the Air page (Add a fan, then draw or pick its opening), or choose natural convection."));
+      m_steps->setCurrentIndex(2);
+      return false;
+    }
+    for (size_t i = 0; i < m_fanSpecs.size(); ++i) {
+      const FanSpec& f = m_fanSpecs[i];
+      if (f.drawn() || (f.outlet.is_null() && !f.on.empty() && f.type != "blower")) continue;
+      m_status->setText(f.outlet.is_null() ? tr("Fan %1 has no opening: draw it on the fan's face (Draw…) or pick a sketch's profile.").arg(i + 1)
+                                           : tr("Blower %1 has no inlet: draw where its air comes in (Draw…) or pick a sketch's profile.").arg(i + 1));
+      m_fan = int(i);
+      showFans();
+      m_steps->setCurrentIndex(2);
+      return false;
+    }
   }
   sync();
   return true;
@@ -1183,15 +1362,22 @@ void CoolingAssistant::sync() {
       materials[id] = {{"pcb", {{"layers", std::clamp(m_heat->item(r, 3)->data(Qt::EditRole).toInt(), 1, 32)}}}};
   }
   const bool fans = !naturalConvection();
-  for (const FanSpec& f : m_fanSpecs) {
-    if (f.on.empty()) continue;
+  for (size_t i = 0; i < m_fanSpecs.size(); ++i) {
+    const FanSpec& f = m_fanSpecs[i];
+    if (f.outlet.is_null() && f.on.empty()) continue;  // nothing drawn yet: no load
     if (fans) {
-      json args = {{"vector", f.vector()}, {"fan", f.model.isEmpty() ? json{{"flow", f.flow}, {"pressure", f.pressure}} : json(f.model.toStdString())},
-                   {"heatsink", f.sink}};
-      if (!f.across.body.empty()) args["across"] = f.across.to_json();
-      if (const json o = f.outletJson(); !o.is_null()) args["outlet"] = o;
-      Want w{"fan", json(f.on), args, tr("Fan") + " · " + nameOf(s, f.on.front())};
-      w.keep = !f.across.body.empty() && std::hypot(f.normal[0], f.normal[1], f.normal[2]) < 0.5;
+      json args = {{"fan", f.spec()}, {"heatsink", f.sink}, {"type", f.type.toStdString()}};
+      Want w{"fan", json::array(), args, (f.type == "blower" ? tr("Blower") : tr("Fan")) + QString(" %1").arg(i + 1)};
+      if (!f.outlet.is_null()) {
+        args["outlet"] = f.outlet;
+        if (f.type == "blower" && !f.inlet.is_null()) args["inlet"] = f.inlet;
+        if (f.type != "blower" && std::hypot(f.normal[0], f.normal[1], f.normal[2]) > 0.5) args["vector"] = f.vector();
+        w.args = args;
+        w.keep = f.type == "blower" ? f.inlet.is_null() : std::hypot(f.normal[0], f.normal[1], f.normal[2]) < 0.5;  // not all there yet
+      } else {  // an older setup's: on its body, along its vector
+        args["vector"] = f.written;
+        w.args = args, w.refs = json(f.on), w.name = tr("Fan") + " · " + nameOf(s, f.on.front());
+      }
       want.push_back(w);
     }
     if (!f.material.isEmpty())  // the heatsink one part of one material: each of its bodies
@@ -1199,14 +1385,23 @@ void CoolingAssistant::sync() {
         for (const auto& b : s.node(id) && s.node(id)->kind != opad::Node::Kind::Body ? s.bodies_under(id) : std::vector<std::string>{id})
           materials[b] = {{"material", f.material.toStdString()}};
   }
+  estimateVents();
   // The writes, decided before any is made (without a batch each write resolves the scene again).
   std::vector<std::pair<std::string, json>> writes;
   for (const auto& l : s.loads) {
     if (l.load_case != kCase || (l.kind != "heat" && l.kind != "fan")) continue;
     const json refs = l.def.value("refs", json::array());
-    auto w = std::find_if(want.begin(), want.end(), [&](const Want& x) { return !x.used && x.kind == l.kind && x.refs == refs; });
-    if (w != want.end() && !w->keep && ((l.def.contains("across") && !w->args.contains("across")) || (l.def.contains("outlet") && !w->args.contains("outlet"))))
-      w = want.end();  // a way or an outlet that cannot be unset in place: made again
+    // A fan is the same load while its outlet is (or, an older one, its body); the rest is changed in place.
+    auto same = [&](const Want& x) {
+      if (x.kind != "fan") return x.refs == refs;
+      return x.args.contains("outlet") ? l.def.value("outlet", json()) == x.args["outlet"] : !l.def.contains("outlet") && x.refs == refs;
+    };
+    auto w = std::find_if(want.begin(), want.end(), [&](const Want& x) { return !x.used && x.kind == l.kind && same(x); });
+    if (w != want.end() && !w->keep) {
+      bool unset = false;  // a key that cannot be unset in place (a blower's inlet as an axial fan): made again
+      for (const char* k : {"across", "inlet", "vector", "heatsink"}) unset = unset || (l.def.contains(k) && !w->args.contains(k) && !(std::string(k) == "heatsink" && l.def[k].empty()));
+      if (unset) w = want.end();
+    }
     if (w == want.end()) {
       writes.push_back({"delete", {{"target", l.id}}});
       continue;
@@ -1215,7 +1410,7 @@ void CoolingAssistant::sync() {
     if (w->keep) continue;
     json set = json::object();
     for (const auto& [k, v] : w->args.items())
-      if (l.def.value(k, json()) != v) set[k] = v;
+      if (l.def.value(k, json()) != v && !(k == "heatsink" && v.empty() && !l.def.contains(k))) set[k] = v;
     if (!set.empty()) {
       set["id"] = l.id;
       writes.push_back({"load", set});
@@ -1247,6 +1442,67 @@ void CoolingAssistant::sync() {
   else all();
   m_writing = false;
   m_loaded = {d->generation, d->revision};
+}
+
+// Whether the box's vents let the fans blow what they can (sim::vent_estimate, on a worker): said under the fans, in the
+// current fan's units, against the flow the heat needs.
+void CoolingAssistant::estimateVents() {
+  AppDocument* d = m_hooks.document();
+  JobRunner* jobs = m_hooks.jobs ? m_hooks.jobs() : nullptr;
+  const int run = ++m_ventRun;
+  std::vector<json> defs;
+  for (const FanSpec& f : m_fanSpecs) {
+    if (!f.drawn() && (f.on.empty() || !f.outlet.is_null())) continue;
+    json def = {{"fan", f.spec()}, {"type", f.type.toStdString()}, {"vector", f.vector()}};
+    if (!f.outlet.is_null()) def["outlet"] = f.outlet;
+    if (!f.inlet.is_null()) def["inlet"] = f.inlet;
+    if (f.outlet.is_null()) def["refs"] = f.on;
+    defs.push_back(def);
+  }
+  const std::vector<std::string> box = walls();
+  if (!d || !jobs || naturalConvection() || box.empty() || defs.empty()) {
+    m_ventText->setText(box.empty() || naturalConvection() ? QString() : tr("Once a fan's openings are set, this says whether the box's vents let it blow what it can."));
+    return;
+  }
+  double watts = 0;
+  for (int r = 0; r < m_heat->rowCount(); ++r) watts += std::max(0.0, m_heat->item(r, 1)->data(Qt::EditRole).toDouble());
+  const QString unit = m_fan >= 0 && m_fan < int(m_fanSpecs.size()) ? m_fanSpecs[size_t(m_fan)].flowUnit : QString("cfm");
+  auto doc = std::make_shared<const opad::Document>(d->doc);
+  auto scene = std::make_shared<const opad::Scene>(d->scene);
+  auto out = std::make_shared<json>();
+  const double ambient = m_ambient->value();
+  jobs->async(tr("Estimating the vents"), [doc, scene, box, defs, watts, ambient, out](Progress) {
+    try {
+      *out = opad::sim::vent_estimate(*doc, *scene, box, defs, watts, ambient);
+    } catch (const std::exception& e) {
+      *out = {{"error", e.what()}};
+    }
+  }, [this, self = QPointer<CoolingAssistant>(this), run, out, unit, watts](bool ok, const QString&) {
+    if (!self || run != m_ventRun || !ok) return;
+    const json& e = *out;
+    if (e.contains("error")) return m_ventText->setText(i18n::t(QString::fromStdString(e["error"].get<std::string>())));
+    const double k = 1 / (3600 * air::flow_unit(unit.toStdString()));  // m3/h -> the unit
+    const QString u = m_flowUnit->itemText(std::max(0, m_flowUnit->findData(unit)));
+    auto flow = [&](const char* key) { return QString::number(e.value(key, 0.0) * k, 'g', 3) + " " + u; };
+    auto side = [&](const char* key) {
+      const json& v = e[key];
+      return v.value("fan", false) && v.value("openings", 0) == 0 ? tr("the fan's own opening")
+                                                                    : tr("%1 mm² in %n opening(s)", "", v.value("openings", 0)).arg(std::lround(v.value("area_mm2", 0.0)));
+    };
+    QString text = tr("Vents: intake %1, exhaust %2.").arg(side("intake"), side("exhaust")) + " ";
+    const std::string by = e.value("limited_by", std::string());
+    text += tr("Through them the fans give about %1 of their %2 free flow (%3%)").arg(flow("flow_m3h"), flow("free_flow_m3h")).arg(std::lround(100 * e.value("fraction", 0.0)));
+    text += by == "intake" ? tr(", held back most by the intakes.") : by == "exhaust" ? tr(", held back most by the exhausts.") : QString(".");
+    if (watts > 0 && e.contains("needed_m3h")) {
+      const bool enough = e.value("flow_m3h", 0.0) >= e.value("needed_m3h", 0.0);
+      text += " " + tr("%1 W needs about %2 for the air to warm 10 K: %3").arg(watts, 0, 'g', 3).arg(flow("needed_m3h"))
+                        .arg(enough ? tr("enough (the air warms about %1 K).").arg(e.value("rise_K", 0.0), 0, 'f', 1)
+                                    : by == "fans" ? tr("not enough: a stronger fan, or another.")
+                                                   : tr("not enough: more %1 area, or a stronger fan.").arg(by == "intake" ? tr("intake") : tr("exhaust")));
+    }
+    for (const auto& n : e.value("notes", json::array())) text += " (" + i18n::t(QString::fromStdString(n.get<std::string>())) + ")";
+    m_ventText->setText(text);
+  });
 }
 
 bool CoolingAssistant::startRun() {
@@ -1337,8 +1593,15 @@ void CoolingAssistant::buildExample() {
   m_hooks.write("part_properties", {{"target", hs}, {"set", {{"material", "aluminium-6061"}}}}, label);
   for (const auto& [id, w] : std::vector<std::pair<std::string, double>>{{soc, 4.0}, {pmic, 0.5}})
     m_hooks.write("load", {{"kind", "heat"}, {"case", kCase}, {"on", {id}}, {"value", w}, {"name", tr("Heat").toStdString()}}, label);
-  m_hooks.write("load", {{"kind", "fan"}, {"case", kCase}, {"on", {fan}}, {"fan", {{"flow", 8}, {"pressure", 25}}}, {"vector", {1, 0, 0}}, {"heatsink", {hs}}, {"name", tr("Fan").toStdString()}},
+  // The fan by its opening: a 28 mm circle on a sketch across the middle of its block (which is then air), blowing along +X;
+  // its datasheet: 4.7 CFM free, 0.1 inH2O shut off.
+  opad::design::Sketch opening;
+  opening.add_circle(opening.add_point(0, 0), 14);
+  const json sk = m_hooks.write("sketch", {{"plane", {{"origin", {7.5, 40, 20}}, {"normal", {1, 0, 0}}, {"x", {0, 1, 0}}}}, {"geometry", opening.to_json()}, {"name", "Fan opening"}}, label);
+  m_hooks.write("load", {{"kind", "fan"}, {"case", kCase}, {"outlet", {{"sketch", sk.value("sketch_id", std::string())}}}, {"type", "axial"},
+                         {"fan", {{"cfm", 4.7}, {"inH2O", 0.1}}}, {"vector", {1, 0, 0}}, {"heatsink", {hs}}, {"name", (tr("Fan") + " 1").toStdString()}},
                 label);
+  (void)fan;
   json settings = {{"case", kCase},
                    {"air", "cfd"},
                    {"ambient", 25},
