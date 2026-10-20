@@ -568,6 +568,7 @@ void Simulate::workspaceChanged(const QString& id) {
   if (id != "simulate") {
     pause();
     if (m_panel && !m_panel->pinned()) m_panel->hide();
+    if (m_coolingPanel && !m_coolingPanel->pinned()) m_coolingPanel->hide();
   }
 }
 
@@ -616,7 +617,11 @@ void Simulate::documentChanged(bool replaced) {
   if (resultShown() && hiddenResultBodies() != m_mapHidden) showResults(true);
   if (m_panel && m_panel->isVisible()) refresh();
   if (!m_picked.empty() || !m_lit.empty())  // the targets may have moved or gone: lit again from what lit them (the browser, Thermal setup)
-    QTimer::singleShot(0, this, [this] { m_litRefs.empty() ? lightRows(m_picked) : lightRefs(std::vector<std::pair<opad::Ref, std::string>>(m_litRefs)); });
+    QTimer::singleShot(0, this, [this] {
+      if (m_litRefs.empty()) return lightRows(m_picked);
+      lightRefs(std::vector<std::pair<opad::Ref, std::string>>(m_litRefs));
+      showFanGlyphs(std::vector<json>(m_glyphFans));
+    });
 }
 
 std::vector<std::string> Simulate::hiddenResultBodies() const {
@@ -849,8 +854,7 @@ void Simulate::openCooling(int step) {
     hooks.run = [this](const std::string& id) {
       services().guarded([&] {
         if (services().workspace() != "simulate") services().setWorkspace("simulate");
-        open();
-        followStudy(id);
+        followStudy(id);  // its Run page shows the progress and the result: the Simulation panel stays closed
         chooseStudy(id);
         runStudy();
       });
@@ -880,10 +884,23 @@ void Simulate::openCooling(int step) {
       showResults(true);
     };
     hooks.light = [this](const std::vector<std::pair<opad::Ref, std::string>>& refs) { lightRefs(refs); };
+    hooks.fanGlyphs = [this](const std::vector<json>& fans) { showFanGlyphs(fans); };
+    hooks.panel = [this](bool shown) {
+      if (!m_coolingPanel) return;
+      if (shown) services().openPanel(m_coolingPanel);
+      else m_coolingPanel->hide();
+    };
     hooks.setVisible = [this](const std::string& id, bool on) {
       services().guarded([&] { write("appearance", {{"target", id}, {"visible", on}}, on ? tr("Show the box") : tr("See inside the box")); });
     };
-    assistant = new CoolingAssistant(std::move(hooks), window);
+    assistant = new CoolingAssistant(std::move(hooks));
+    // A floating panel like the others (its pages are short: no window of its own), beside the view.
+    m_coolingPanel = new ToolPanel("cooling", "simCooling", &Tokens::sel, tr("Thermal setup"), assistant, 720, window);
+    m_coolingPanel->setDefaultWidth(420);
+    m_coolingPanel->setObjectName("coolingToolPanel");
+    m_coolingPanel->setHelpId("simulate.cooling");
+    m_coolingPanel->setEscapeHandler([assistant] { assistant->escape(); });
+    services().addPanel(m_coolingPanel);
   }
   assistant->open(step);
 }

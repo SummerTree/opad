@@ -167,7 +167,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING, cooling) {
                     3600000});
   }
   list.push_back({nullptr, [=](bool) {
-                    if (CoolingAssistant* c = assistant()) c->close();
+                    if (CoolingAssistant* c = assistant()) c->dismiss();
                   }});
   runSteps(&w, steps, 0, [all] { QCoreApplication::exit(*all ? 0 : 2); });
   return true;

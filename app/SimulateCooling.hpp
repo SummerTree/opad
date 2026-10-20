@@ -1,17 +1,20 @@
 #pragma once
-// Thermal setup (simulate.cooling, the CoolingAssistant): the guided setup of a thermal study of a board, its chips and a heatsink in a
-// vented box, cooled by fans or by natural convection (warm air rising), step by step: the box (the bodies it is made of: a base
-// and its lid, a frame and its panels), the parts and faces that make heat (a chip joined into its board is a face) with their
-// power and which part is a board, how the air moves (fans, each a body or a component of its own model, the face the air
-// crosses, the heatsink it blows through with its material; or natural convection through the vents), and the run (the air
-// solved with OpenFOAM, the parts with CalculiX: sim/cfd.hpp) with its results. Every list starts empty (or as the study left
-// it) and is filled by its Add button, which picks in the view and the browser while it is on: a click adds, never takes
-// out (Remove does, for the rows chosen). What it sets up is ordinary loads (case "Cooling") and a study, written as it is set
-// (each change one step to undo, the loads changed in place), so they show in the browser's Simulation folder as the manual
-// commands' do, and can be changed in the Simulation panel afterwards; an AI agent sees the same.
+// Thermal setup (simulate.cooling, the CoolingAssistant), the content of the "cooling" ToolPanel, its steps as tabs: the guided
+// setup of a thermal study of a board, its chips and a heatsink in a vented box, cooled by fans, by fans with the warm air rising
+// too (mixed convection, slower), or by natural convection: the box (the bodies it is made of: a base and its lid, a frame and
+// its panels), the parts and faces that make heat (a chip joined into its board is a face) with their power and which part is a
+// board, how the air moves (fans, each a body or a component of its own model; the face the air crosses, whose rectangle, sized,
+// is the fan's outlet, drawn in the view with the air's way; the heatsink it blows through with its material), and the run (the
+// air solved with OpenFOAM, the parts with CalculiX: sim/cfd.hpp; Quick by default, with an estimate of how long) with its
+// results. Every list starts empty (or as the study left it) and is filled by its Add button, which picks in the view and the
+// browser while it is on: a click adds, never takes out (Remove does, for the rows chosen). What it sets up is ordinary loads
+// (case "Cooling") and a study, written as it is set (each change one step to undo, the loads changed in place), so they show in
+// the browser's Simulation folder as the manual commands' do, and can be changed in the Simulation panel afterwards; an AI agent
+// sees the same.
 #include <QPointer>
 #include <QWidget>
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -51,6 +54,8 @@ class CoolingAssistant : public QWidget {
     // The rows chosen in a list lit in the view by what they are ("heat", "board", "box", "fan", "heatsink"): a face too,
     // whatever the selection filter; none: nothing lit.
     std::function<void(const std::vector<std::pair<opad::Ref, std::string>>&)> light;
+    std::function<void(bool)> panel;
+    std::function<void(const std::vector<opad::json>&)> fanGlyphs;  // fans ({refs, vector, outlet}) drawn with their plane and way  // its panel shown (as the other panels: the one shown) or hidden; none: a window of its own
     std::function<void(bool)> accumulate;                  // the view's clicks add and take out (picking) or select
     std::function<QString(const QString&)> filter;         // the view's selection filter set to that action (empty: kept); the one before
     std::function<bool()> filterSwitching;                 // a filter switch is being applied (its cleared selection is no pick)
@@ -58,7 +63,9 @@ class CoolingAssistant : public QWidget {
   };
   CoolingAssistant(Hooks hooks, QWidget* parent = nullptr);
 
-  void open(int step = -1);  // shown and raised, at that step (-1: where it was)
+  void open(int step = -1);  // its panel shown, at that step (-1: where it was)
+  void dismiss();            // its panel closed (what is still to write written first)
+  void escape();             // Esc: the Add button that picks goes off, else the panel closes
   int step() const;
   int steps() const;
   // A study finished (or failed: run null): its results onto the Run page.
@@ -79,6 +86,9 @@ class CoolingAssistant : public QWidget {
   void selectionChanged(const std::vector<std::string>& ids, const std::vector<opad::Ref>& refs);
   QTableWidget* heatTable() const { return m_heat; }
   bool naturalConvection() const;  // no fans: the air moves by rising where it is warm
+  bool warmAirRises() const;       // natural convection, or fans and the air rising too (cfd.buoyancy: slower)
+  QString runKind() const;         // its quality and how the air moves, as the last runs' durations are kept
+  void showEstimate();             // how long Run would take, said before it starts
   // A fan as the Air page sets it up: written as a fan load (on, fan, vector, across, heatsink) and the heatsink's material.
   struct FanSpec {
     std::vector<std::string> on;    // the fan: bodies or a component (its model's bodies, one part)
@@ -89,6 +99,12 @@ class CoolingAssistant : public QWidget {
     QString model = "40x10";        // a library fan, empty: custom
     double flow = 10, pressure = 20;  // custom: m3/h, Pa
     std::vector<std::string> sink;  // the heatsink it blows through: bodies or a component (one part)
+    // Its outlet: the rectangle the air leaves by, fitted to the face it goes through (a blower's side) and sized from there;
+    // the solver's pressure jump is across it (load "outlet"). Without one: a disk through the middle of the fan's body.
+    bool outlet = false;
+    opad::Vec3 centre{0, 0, 0}, xdir{1, 0, 0};
+    double width = 0, height = 0;
+    opad::json outletJson() const;  // as the load has it ({centre, normal, x, width, height}); null without one
     QString material;               // the heatsink's library material, empty: as modelled
     opad::Vec3 vector() const;      // the way the air goes
   };
@@ -133,7 +149,7 @@ class CoolingAssistant : public QWidget {
   std::string studyId() const;
 
   Hooks m_hooks;
-  QListWidget* m_steps = nullptr;
+  class QTabBar* m_steps = nullptr;  // Box, Heat, Air, Run
   QStackedWidget* m_pages = nullptr;
   QLabel* m_engine = nullptr;
   QListWidget* m_walls = nullptr;   // the box's bodies, by name
@@ -152,6 +168,8 @@ class CoolingAssistant : public QWidget {
   QTableWidget* m_heat = nullptr;  // a row per part or face that makes heat (or a board): its power, board, copper layers
   QRadioButton* m_fansOn = nullptr;   // fans move the air
   QRadioButton* m_natural = nullptr;  // natural convection: no fans, the air rises where it is warm
+  QRadioButton* m_mixed = nullptr;    // fans, and the air rising where it is warm (mixed convection)
+  QLabel* m_airNote = nullptr;        // what the choice includes and what it costs
   std::vector<FanSpec> m_fanSpecs;
   int m_fan = -1;
   bool m_fanLoading = false;  // the form being filled: its edits are not the user's
@@ -168,11 +186,16 @@ class CoolingAssistant : public QWidget {
   QDoubleSpinBox* m_flow = nullptr;
   QDoubleSpinBox* m_pressure = nullptr;
   QComboBox* m_sinkMaterial = nullptr;
+  QWidget* m_outletRow = nullptr;   // the outlet's width and height
+  QDoubleSpinBox* m_outletWidth = nullptr;
+  QDoubleSpinBox* m_outletHeight = nullptr;
+  std::array<double, 2> m_faceSize{0, 0};  // the face's own, for Fit
   QPushButton* m_back = nullptr;
   QPushButton* m_next = nullptr;
   QLabel* m_runNote = nullptr;  // why Run cannot run (no OpenFOAM)
   QDoubleSpinBox* m_ambient = nullptr;
   QComboBox* m_quality = nullptr;
+  QLabel* m_estimate = nullptr;     // how long a run would take
   QCheckBox* m_radiation = nullptr;
   QPushButton* m_runButton = nullptr;
   QLabel* m_status = nullptr;

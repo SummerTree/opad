@@ -654,6 +654,16 @@ class Viewport : public QWidget, protected AIS_ViewController {
   // in the colour of what they are (a heat source red), beside the ones lit already; apart from the note editor's.
   bool showSimTarget(const opad::Ref& target, const QColor& color, opad::Vec3* centre = nullptr, TargetMiss* miss = nullptr);
   void clearSimTargets();
+  // A fan's air as the solver takes it: the plane the air is pushed through (a rectangle: its outlet as set; else a disk) and an
+  // arrow the way the air goes, on top of everything. Replaces the ones shown; none: none.
+  struct SimGlyph {
+    opad::Vec3 centre{0, 0, 0}, normal{0, 0, 1}, x{1, 0, 0};
+    double width = 0, height = 0;  // a rectangle; round: width is the diameter
+    bool round = false;
+    QColor color;
+  };
+  void showSimGlyphs(const std::vector<SimGlyph>& glyphs);
+  size_t simGlyphCount() const { return m_simGlyphs.size(); }
   opad::Frame annotationCameraPlane(const opad::Vec3& origin) const;  // through origin, facing the camera
   void previewAnnotationDrawing(const opad::json& drawing);
   bool cubeAt(const QPointF& point);  // the view cube is under the mouse: a left press there belongs to the cube
@@ -1051,6 +1061,7 @@ class Viewport : public QWidget, protected AIS_ViewController {
     std::vector<Job*> jobs;                            // a body target's tint, built on a worker when the body has no arrays
   };
   TargetSet m_annotationSet, m_simSet;  // showAnnotationTarget's, showSimTarget's
+  std::vector<Handle(AIS_InteractiveObject)> m_simGlyphs;  // showSimGlyphs
   bool showTarget(TargetSet& set, const opad::Ref& target, const QColor& color, opad::Vec3* centre, TargetMiss* miss);
   void clearTargets(TargetSet& set);
   std::map<std::string, NoteMark> m_notes;  // open notes by op id

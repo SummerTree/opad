@@ -1,6 +1,8 @@
 // The Simulation folder's rows in the browser: a thermal study's setup (its box, boards, heatsinks and air) as rows of their own,
 // and what a picked row stands for lit in the view in the colour of its nature, with its badge (a heat source red with a
 // flame, a fan blue, a heatsink steel, a board green, the box sand, a support purple, a force orange). A hidden part is not lit.
+#include <Bnd_Box.hxx>
+
 #include <QBitmap>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -17,6 +19,7 @@
 #include "SimulateArea.hpp"
 #include "Tracking.hpp"
 #include "Viewport.hpp"
+#include "opad/geometry.hpp"
 #include "opad/materials.hpp"
 
 namespace {
@@ -177,12 +180,65 @@ std::vector<Simulate::Lit> Simulate::rowTargets(const std::string& row) const {
 void Simulate::lightRows(const std::vector<std::string>& rows) {
   m_litRefs.clear();
   std::vector<Lit> targets;
+  std::vector<json> fans;  // a fan's row (or its case's): its plane and the air's way too
+  const opad::Scene& s = services().document()->scene;
   for (const auto& row : rows) {
     const auto more = rowTargets(row);
     targets.insert(targets.end(), more.begin(), more.end());
+    for (const auto& l : s.loads)
+      if (l.kind == "fan" && (row == "sim:l:" + l.id || row == "sim:c:" + l.load_case)) fans.push_back(l.def);
   }
   lightTargets(std::move(targets));
+  showFanGlyphs(fans);
 }
+
+// The plane a fan pushes the air through, as the solver will take it (cfd.cpp): its outlet as set, else a disk through the
+// middle of what it is on, 0.47 of its width across (its body's box here: near enough to show), square to its way.
+void Simulate::showFanGlyphs(const std::vector<json>& fans) {
+  m_glyphFans = fans;
+  Viewport* view = services().viewport();
+  const AppDocument* doc = services().document();
+  if (!view || !doc) return;
+  std::vector<Viewport::SimGlyph> glyphs;
+  auto unit = [](opad::Vec3 v) {
+    const double l = std::hypot(v[0], v[1], v[2]);
+    return l > 1e-12 ? opad::Vec3{v[0] / l, v[1] / l, v[2] / l} : opad::Vec3{0, 0, 0};
+  };
+  for (const json& f : fans) {
+    Viewport::SimGlyph g;
+    g.color = natureColor("convection");  // the air's cyan: apart from the fan body's blue under it
+    const opad::Vec3 way = unit(f.value("vector", opad::Vec3{1, 0, 0}));
+    if (const json o = f.value("outlet", json()); o.is_object()) {
+      opad::Vec3 n = unit(o.value("normal", way));
+      if (n[0] * way[0] + n[1] * way[1] + n[2] * way[2] < 0) n = {-n[0], -n[1], -n[2]};
+      g.centre = o.value("centre", opad::Vec3{0, 0, 0}), g.normal = n, g.x = o.value("x", opad::Vec3{1, 0, 0});
+      g.width = o.value("width", 0.0), g.height = o.value("height", 0.0);
+    } else {
+      Bnd_Box box;
+      for (const auto& r : f.value("refs", json::array())) {
+        const std::string id = r.is_string() ? r.get<std::string>() : r.value("body", std::string());
+        try {
+          if (doc->scene.node(id)) box.Add(opad::node_world_bbox(doc->doc, doc->scene, id));
+        } catch (const std::exception&) {
+        }
+      }
+      if (box.IsVoid()) continue;
+      double x0, y0, z0, x1, y1, z1;
+      box.Get(x0, y0, z0, x1, y1, z1);
+      const opad::Vec3 half{0.5 * (x1 - x0), 0.5 * (y1 - y0), 0.5 * (z1 - z0)};
+      const opad::Vec3 u1 = unit(std::fabs(way[0]) < 0.9 ? opad::Vec3{0, way[2], -way[1]} : opad::Vec3{-way[2], 0, way[0]});
+      const opad::Vec3 u2 = unit({way[1] * u1[2] - way[2] * u1[1], way[2] * u1[0] - way[0] * u1[2], way[0] * u1[1] - way[1] * u1[0]});
+      auto across = [&](const opad::Vec3& u) { return 2 * (std::fabs(u[0]) * half[0] + std::fabs(u[1]) * half[1] + std::fabs(u[2]) * half[2]); };
+      g.centre = {0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)}, g.normal = way, g.x = u1;
+      g.round = true;
+      g.width = 0.94 * std::min(across(u1), across(u2));
+    }
+    glyphs.push_back(g);
+  }
+  view->showSimGlyphs(glyphs);
+}
+
+size_t Simulate::fanGlyphsShown() const { return services().viewport() ? services().viewport()->simGlyphCount() : 0; }
 
 void Simulate::lightRefs(const std::vector<std::pair<opad::Ref, std::string>>& refs) {
   m_litRefs = refs;

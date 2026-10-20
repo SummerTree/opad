@@ -227,7 +227,7 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         st->fanLoad = f->id;
         require(row("sim:l:" + f->id) && row("sim:x:" + st->study + ":air"), "the fan and its heatsink: the fan's load, the Heatsink and Air rows");
         require(lights("setup", "fan", st->fan) && lights("setup", "heatsink", st->sink), "the Air page: the current fan lit as a fan, its heatsink as one");
-        c->close();
+        c->dismiss();
         w.m_viewport->fitAll();  // the whole model (view.fit fits a selection while there is one)
         w.m_browser->selectIds({"sim:l:" + st->heat});
         st->phase = 8;
@@ -266,7 +266,7 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
       case 10: {
         if (caseLoad("fan")) return;
         require(row("sim:x:" + st->study + ":air") && !row("sim:l:" + st->fanLoad), "natural convection: the fan's load gone from the browser, the Air row kept");
-        c->close();
+        c->dismiss();
         // Del on the folder's rows deletes what they stand for (it once only lit them).
         w.m_browser->selectIds({"sim:l:" + st->heat});
         w.action("edit.delete")->trigger();
