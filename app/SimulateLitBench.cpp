@@ -24,10 +24,13 @@
 // commands' are (the box, the chip's heat source, the board, the fan, its heatsink, the air); a power typed changes the same
 // load in place; natural convection takes the fan's load out. Then each row picked in the browser lights its target by its
 // nature: the heat source red with its flame badge, the fan, the heatsink, the board, the box; a hidden chip is not lit;
-// nothing picked, nothing lit. Frames: <prefix>.heat.png, .case.png (the view with its badges).
+// nothing picked, nothing lit. Del on a row deletes it: a heat source (Undo brings it back), the Board row (the board no PCB),
+// the whole case, the study. In Thermal setup itself, a row chosen in a list lights which part or face it is: the heat
+// table's chip (red), board, and a face of the board (that face alone); the box's row; the current fan with its heatsink.
+// Frames: <prefix>.heat.png, .case.png, .face-row.png (the view with its badges).
 OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
   struct State {
-    int phase = 0, ticks = 0;
+    int phase = 0, ticks = 0, wait = 0;
     bool all = true;
     std::string box, board, chip, sink, fan, study, heat, fanLoad;
   };
@@ -156,7 +159,50 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         int heats = 0;
         for (const auto& l : doc->scene.loads) heats += l.kind == "heat" && l.load_case == CoolingAssistant::kCase;
         require(heats == 1, "the board ticked: its Board row, and no heat source for it (0 W)");
-        c->partAdd()->click();
+        c->partAdd()->click();  // Done
+        // Choosing a row of the heat table lights which part it is.
+        auto chooseRow = [c](const std::string& id) {
+          for (int r = 0; r < c->heatTable()->rowCount(); ++r)
+            if (c->heatTable()->item(r, 0)->data(Qt::UserRole).toString().toStdString() == id) c->heatTable()->selectRow(r);
+        };
+        c->heatTable()->clearSelection();
+        chooseRow(st->chip);
+        require(lights("setup", "heat", st->chip) && area->lit().size() == 1 && badges() == 1, "the chip's row chosen in the heat table: the chip lit red, with its badge");
+        c->heatTable()->clearSelection();
+        chooseRow(st->board);
+        require(lights("setup", "board", st->board) && area->lit().size() == 1, "the board's row chosen: the board lit as one");
+        c->heatTable()->clearSelection();
+        require(area->lit().empty() && badges() == 0, "no row chosen: nothing lit");
+        c->faceAdd()->click();
+        st->phase = 50;
+        return;
+      }
+      case 50: {  // a face of the board added (its targets come once the Faces filter is applied)
+        if (c->heatFaces().empty()) {
+          opad::Ref f;
+          f.body = st->board;
+          f.kind = opad::Ref::Kind::Face;
+          f.index = 5;
+          area->services().select({f});
+          return;
+        }
+        c->faceAdd()->click();  // Done
+        const int last = c->heatTable()->rowCount() - 1;
+        c->heatTable()->clearSelection();
+        c->heatTable()->selectRow(last);
+        bool face = false;
+        for (const auto& l : area->lit()) face = face || (l.nature == "heat" && l.target.kind == opad::Ref::Kind::Face && l.target.body == st->board && l.shown);
+        require(face && area->lit().size() == 1, "the face's row chosen: that face of the board lit (not the whole board), whatever the filter");
+        st->phase = 51;
+        return;
+      }
+      case 51: {  // Done: nothing stays selected over it (a selection's blue would turn the heat source's red purple)
+        if (!area->services().selection().refs.empty() && ++st->wait < 30) return;
+        require(area->services().selection().refs.empty(), QString("Done: the picks no longer selected, the face lit in its own red (%1 selected)").arg(area->services().selection().refs.size()));
+        shot("face-row");
+        c->open(0);
+        c->wallChoice()->item(0)->setSelected(true);
+        require(lights("setup", "box", st->box), "the box's row chosen: the box lit");
         c->open(2);
         for (auto* b : c->findChildren<QPushButton*>())
           if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
@@ -165,7 +211,11 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         return;
       }
       case 6: {
-        if (c->fans().empty() || c->fans()[0].on.empty()) return;
+        if (c->fans().empty()) return;
+        if (c->fans()[0].on.empty()) {  // the Bodies filter back from Faces first (a sliced job): clicked again then
+          pick({st->fan});
+          return;
+        }
         c->findChild<PickBox*>("coolingSinkPick")->click();
         pick({st->sink});
         st->phase = 7;
@@ -176,8 +226,9 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         if (!f || !row("sim:x:" + st->study + ":sink:" + st->sink)) return;
         st->fanLoad = f->id;
         require(row("sim:l:" + f->id) && row("sim:x:" + st->study + ":air"), "the fan and its heatsink: the fan's load, the Heatsink and Air rows");
-        c->close();
-        w.action("view.fit")->trigger();
+        require(lights("setup", "fan", st->fan) && lights("setup", "heatsink", st->sink), "the Air page: the current fan lit as a fan, its heatsink as one");
+        c->dismiss();
+        w.m_viewport->fitAll();  // the whole model (view.fit fits a selection while there is one)
         w.m_browser->selectIds({"sim:l:" + st->heat});
         st->phase = 8;
         return;
@@ -195,7 +246,7 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
         w.m_browser->selectIds({"sim:x:" + st->study + ":box"});
         require(lights("sim:x:" + st->study + ":box", "box", st->box), "the Box row: the box lit");
         w.m_browser->selectIds({"sim:c:" + std::string(CoolingAssistant::kCase)});
-        require(lights("sim:c:Cooling", "heat", st->chip) && lights("sim:c:Cooling", "fan", st->fan) && badges() == 2, "the case's row: each of its loads lit by its nature");
+        require(lights("sim:c:Cooling", "heat", st->chip) && lights("sim:c:Cooling", "fan", st->fan) && badges() == int(area->lit().size()), "the case's row: each of its loads lit by its nature, each badged");
         shot("case");
         doc->run("appearance", {{"target", st->chip}, {"visible", false}});
         st->phase = 9;
@@ -215,7 +266,27 @@ OPAD_BENCH(OPAD_BENCH_SIMLIT, simlit) {
       case 10: {
         if (caseLoad("fan")) return;
         require(row("sim:x:" + st->study + ":air") && !row("sim:l:" + st->fanLoad), "natural convection: the fan's load gone from the browser, the Air row kept");
-        c->close();
+        c->dismiss();
+        // Del on the folder's rows deletes what they stand for (it once only lit them).
+        w.m_browser->selectIds({"sim:l:" + st->heat});
+        w.action("edit.delete")->trigger();
+        require(!doc->scene.load(st->heat) && !row("sim:l:" + st->heat), "Del on the chip's heat source row: the load and its row gone");
+        w.action("edit.undo")->trigger();
+        require(doc->scene.load(st->heat) && row("sim:l:" + st->heat), "Undo: the heat source back");
+        w.m_browser->selectIds({"sim:x:" + st->study + ":board:" + st->board});
+        w.action("edit.delete")->trigger();
+        const opad::Study* s = doc->scene.study(st->study);
+        require(s && !row("sim:x:" + st->study + ":board:" + st->board) &&
+                    !s->def["settings"].value("materials", opad::json::object()).value(st->board, opad::json::object()).contains("pcb"),
+                "Del on the Board row: the board is no PCB any more, the study kept");
+        w.m_browser->selectIds({"sim:c:" + std::string(CoolingAssistant::kCase)});
+        w.action("edit.delete")->trigger();
+        int left = 0;
+        for (const auto& l : doc->scene.loads) left += l.load_case == CoolingAssistant::kCase;
+        require(left == 0 && !row("sim:c:Cooling") && row("sim:s:" + st->study), "Del on the case's row: every load of it gone, the study kept");
+        w.m_browser->selectIds({"sim:s:" + st->study});
+        w.action("edit.delete")->trigger();
+        require(!doc->scene.study(st->study) && !row("sim:s:" + st->study), "Del on the study's row: the study gone");
         return finish();
       }
     }

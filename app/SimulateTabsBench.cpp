@@ -40,7 +40,7 @@ QStringList kinds(QComboBox* box) {
 // OPAD_BENCH_SIMTABS=1 on an empty document with a motion, a static and a thermal study (not run): the Simulation panel opened
 // on the Mechanism tab shows the mechanism, its joints and only the motion study, New study offering motion and dynamic; on
 // Structure no mechanism, the static study, static and vibration; on Thermal the thermal study, Thermal setup (its button opens
-// it), thermal alone. The panel stays open across the tabs, and each tab's study is the one chosen.
+// its panel in the Simulation panel's place), thermal alone. The panel stays open across the tabs, and each tab's study is the one chosen.
 OPAD_BENCH(OPAD_BENCH_SIMTABS, simtabs) {
   bool all = true;
   auto require = [&all](bool ok, const QString& what) {
@@ -92,8 +92,9 @@ OPAD_BENCH(OPAD_BENCH_SIMTABS, simtabs) {
     if (t.cooling) {
       cooling->click();
       auto* assistant = w.findChild<CoolingAssistant*>();
-      require(assistant && assistant->isVisible(), on + "Thermal setup opens from the panel");
-      if (assistant) assistant->close();
+      require(assistant && assistant->isVisible() && !area->panel()->isVisible(), on + "Thermal setup opens from the panel, a panel in its place");
+      if (assistant) assistant->dismiss();
+      w.action("simulate.panel")->trigger();  // the Simulation panel again
     }
   }
   QCoreApplication::exit(all ? 0 : 2);

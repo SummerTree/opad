@@ -64,6 +64,10 @@ class Simulate : public AreaController {
   const std::vector<Lit>& lit() const { return m_lit; }
   static QColor natureColor(const std::string& nature);
   static QString natureIcon(const std::string& nature);
+  void lightRefs(const std::vector<std::pair<opad::Ref, std::string>>& refs);  // those (a nature each) lit; none: nothing lit
+  // Fans as loads have them ({refs, vector, outlet}): each one's plane and the air's way drawn (Viewport::showSimGlyphs).
+  void showFanGlyphs(const std::vector<opad::json>& fans);
+  size_t fanGlyphsShown() const;
 
  private:
   opad::json write(const std::string& command, const opad::json& args, const QString& label);  // doc->run once it is free
@@ -91,15 +95,23 @@ class Simulate : public AreaController {
   void folderMenu(const std::string& id, QMenu& menu);
   std::vector<std::string> pickedJoints() const;  // joints chosen in the browser's Simulation folder, in order
   std::vector<browser::Item> setupRows(const opad::Study& study) const;  // a thermal study's box, boards, heatsinks and air
+  // Del (and Delete in the menu) on the folder's rows: loads, a whole case, studies, joints, a study's box, board or heatsink
+  // (its settings changed); one step to undo. False: nothing there could be deleted (the Air row).
+  bool removeRows(const std::vector<std::string>& rows);
   std::vector<Lit> rowTargets(const std::string& row) const;
   void lightRows(const std::vector<std::string>& rows);  // the rows' targets lit (none: what was lit goes)
+  void lightTargets(std::vector<Lit> targets);
+  void addTarget(std::vector<Lit>& out, const std::string& row, const opad::Ref& r, const std::string& nature) const;  // a component: its bodies
   void placeBadges();  // over their targets, after every camera move
   std::vector<Lit> m_lit;
+  std::vector<std::pair<opad::Ref, std::string>> m_litRefs;  // what Thermal setup's rows lit last (empty: the browser's rows)
+  std::vector<opad::json> m_glyphFans;                       // the fans drawn with their plane and way
   std::vector<std::pair<opad::Vec3, QWidget*>> m_badges;
 
   SimulatePanel* m_form = nullptr;
   bool m_modeShown = false;
   ToolPanel* m_panel = nullptr;
+  ToolPanel* m_coolingPanel = nullptr;  // Thermal setup's
   SimLegend* m_legend = nullptr;
   std::unique_ptr<opad::sim::Mechanism> m_mech;  // the document's mechanism, for the slider's preview
   std::string m_joint;                            // the joint the slider moves

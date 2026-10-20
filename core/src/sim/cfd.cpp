@@ -901,6 +901,11 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     air::Fan fan;
     V centre, normal;
     double radius;
+    // The fan's outlet as set (load "outlet": a rectangle on the face its air leaves by, a blower's side): the jump on it
+    // rather than on a disk through the middle of the fan's body. Its two in-plane directions, width and height (mm).
+    bool plate = false;
+    V x{1, 0, 0}, y{0, 1, 0};
+    double width = 0, height = 0;
   };
   std::vector<Disk> disks;
   std::vector<bool> is_air(bodies.size(), false);
@@ -931,6 +936,17 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
       const double along = !solid ? 0.5 * (n0 + n1) : n0 - std::max(1.0, 1.5 * coarse / std::pow(2.0, finest));
       d.centre = add(add(mul(d.normal, along), mul(u1, 0.5 * (p0 + p1))), mul(u2, 0.5 * (q0 + q1)));
       d.radius = !solid || d.fan.size <= 0 ? 0.47 * std::min(p1 - p0, q1 - q0) : 0.47 * d.fan.size;
+      if (const json o = l->def.value("outlet", json()); o.is_object()) {  // the outlet as set: the jump across that rectangle
+        const V x = unit(o.value("x", V{0, 0, 0})), n = unit(o.value("normal", V{0, 0, 0}));
+        d.width = o.value("width", 0.0), d.height = o.value("height", 0.0);
+        if (norm(x) < 0.5 || norm(n) < 0.5 || d.width <= 0 || d.height <= 0)
+          throw Error("fan \"" + l->name + "\": its outlet needs a centre, its normal and x, a width and a height");
+        d.plate = true;
+        d.centre = o.value("centre", d.centre);
+        d.normal = dot(n, d.normal) < 0 ? mul(n, -1.0) : n;  // the jump pushes the air the fan's way
+        d.x = x, d.y = unit(cross(d.normal, x));
+        d.radius = 0.5 * std::min(d.width, d.height);
+      }
       if (!solid)
         for (size_t i : parts) is_air[i] = true, level[i] = 0;
       disks.push_back(d);
@@ -1216,8 +1232,28 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     cb << "internalFacesOnly true;\nbaffles {\n";
     for (size_t k = 0; k < disks.size(); ++k) {
       const std::string f = "fan" + std::to_string(k);
-      ts << " { name " << f << "; type faceZoneSet; action new; source searchableSurfaceToFaceZone; surface searchableDisk; origin "
-         << vec(mul(disks[k].centre, 1e-3)) << "; normal " << vec(disks[k].normal) << "; radius " << num(disks[k].radius * 1e-3) << "; }\n";
+      if (disks[k].plate) {  // a rectangle at any angle: two triangles in constant/triSurface (surfaceName keeps the zone's name)
+        const Disk& d = disks[k];
+        auto at = [&](double a, double b) { return mul(add(add(d.centre, mul(d.x, a * 0.5 * d.width)), mul(d.y, b * 0.5 * d.height)), 1e-3); };
+        const V c00 = at(-1, -1), c10 = at(1, -1), c11 = at(1, 1), c01 = at(-1, 1);
+        std::ostringstream stl;
+        auto xyz = [](const V& v) { return num(v[0]) + " " + num(v[1]) + " " + num(v[2]); };  // STL: no brackets (vec() is OpenFOAM's)
+        auto tri = [&](const V& a, const V& b, const V& c) {
+          stl << "facet normal " << xyz(d.normal) << "\n outer loop\n  vertex " << xyz(a) << "\n  vertex " << xyz(b) << "\n  vertex " << xyz(c)
+              << "\n endloop\nendfacet\n";
+        };
+        stl << "solid " << f << "\n";
+        tri(c00, c10, c11);
+        tri(c00, c11, c01);
+        stl << "endsolid " << f << "\n";
+        fs::create_directories(cas / "constant" / "triSurface");
+        write_text_file(cas / "constant" / "triSurface" / (f + ".stl"), stl.str());
+        ts << " { name " << f << "; type faceZoneSet; action new; source searchableSurfaceToFaceZone; surface triSurfaceMesh; surfaceName " << f
+           << ".stl; }\n";
+      } else {
+        ts << " { name " << f << "; type faceZoneSet; action new; source searchableSurfaceToFaceZone; surface searchableDisk; origin "
+           << vec(mul(disks[k].centre, 1e-3)) << "; normal " << vec(disks[k].normal) << "; radius " << num(disks[k].radius * 1e-3) << "; }\n";
+      }
       cb << "  " << f << " { type faceZone; zoneName " << f << "; patches { master { name " << f << "_in; type cyclic; neighbourPatch " << f
          << "_out; } slave { name " << f << "_out; type cyclic; neighbourPatch " << f << "_in; } } }\n";
     }
@@ -1229,7 +1265,9 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
       const std::string key = "fan" + std::to_string(k) + " now size ";
       const size_t at = log.rfind(key);
       const size_t n = at == std::string::npos ? 0 : size_t(std::strtoul(log.c_str() + at + key.size(), nullptr, 10));
-      if (n == 0) throw Error("fan \"" + disks[k].load->name + "\": its disk crosses no air (is it inside a part?)");
+      if (n == 0)
+        throw Error("fan \"" + disks[k].load->name + "\": " + (disks[k].plate ? "its outlet crosses no air (is it inside a part, or off the air's box?)"
+                                                                            : "its disk crosses no air (is it inside a part?)"));
       disk_faces.push_back(n);
     }
     foam_run("createBaffles", {"-overwrite"}, cas, 0.315);
@@ -1402,8 +1440,10 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
           const double jump = (mean(read_patch(p, f + "_out")) - mean(read_patch(p, f + "_in"))) * a.rho;
           if (Q < 0) run.warnings.push_back("fan \"" + disks[k].load->name + "\": the air went through it backwards (" + num(-Q * 3600) + " m3/h)");
           list.push_back({{"name", disks[k].load->name}, {"fan", disks[k].fan.to_json()}, {"flow_m3h", Q * 3600}, {"flow_cfm", Q / 4.719474e-4},
-                          {"pressure_Pa", jump}, {"disk", {{"centre", disks[k].centre}, {"normal", disks[k].normal}, {"radius_mm", disks[k].radius},
-                                                           {"faces", disk_faces[k]}}}});
+                          {"pressure_Pa", jump}, {"disk", disks[k].plate ? json{{"centre", disks[k].centre}, {"normal", disks[k].normal}, {"x", disks[k].x},
+                                                                              {"width_mm", disks[k].width}, {"height_mm", disks[k].height}, {"faces", disk_faces[k]}}
+                                                                       : json{{"centre", disks[k].centre}, {"normal", disks[k].normal}, {"radius_mm", disks[k].radius},
+                                                                              {"faces", disk_faces[k]}}}});
         }
         double in = 0, out = 0;
         for (double v : read_patch(phi, "open")) (v > 0 ? out : in) += std::fabs(v);

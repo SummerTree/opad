@@ -1,20 +1,22 @@
 // OPAD_BENCH_COOLING_WALLS=<prefix>: Thermal setup on an enclosure of two bodies, a tray and the cover on it (built here on an
 // empty document: a board, a 3 W chip, a heatsink with a fin (the component Cooler), a fan block with a hub (the component Fan
 // unit), a desk under it). Everything is picked through the app's selection (what clicks in the view and rows of the browser
-// make). Nothing is guessed: the box's list opens empty, the heat table holds only the chip the case already heats, the Air
-// page no fan. Each list grows by its Add button, which picks while it is on (it says Done): the tray and the cover added; a
-// click that would toggle one out keeps it; Remove takes out the row chosen; Done stops. The Heat page: the board added
-// (no power, ticked Board), a face of it added through Add face (the Faces filter on) with its power, kept when the filter is
-// switched by hand; a part added and removed. The Air page: Apply refuses fans with none; a fan added (a component, one part),
-// the face its air goes through (Flip turns it round), a custom fan, the heatsink (a component) and its material. Apply
-// writes the enclosure, the heat loads, the fan load, the board and the heatsink's material; opened again, everything is as it
-// was set. Natural convection: no fan load, the air rising (buoyancy); opened again, it is chosen. Frames: <prefix>.box.png,
-// .heat.png, .air.png.
+// make). Nothing is guessed: the box's list opens empty, the heat table holds only the chip the case already heats, the Air page
+// no fan. Each list grows by its Add button, which picks while it is on (it says Done): the tray and the cover added; a click
+// that would toggle one out keeps it; Remove takes out the row chosen; Done stops. The Heat page: the board added (no power,
+// ticked Board), a face of it added through Add face (the Faces filter on) with its power, kept when the filter is switched by
+// hand; a part added and removed. The Air page: Apply refuses fans with none; a fan added (a component, one part), the face its
+// air goes through (Flip turns it round; its rectangle the outlet, drawn with the air's way, sized narrower), a custom fan, the
+// heatsink (a component) and its material. Apply writes the enclosure, the heat loads, the fan load, the board and the heatsink's
+// material; opened again, everything is as it was set. Natural convection: no fan load, the air rising (buoyancy); opened again,
+// it is chosen. Fans and warm air rising: the fan's load back with buoyancy, at Quick (a new study's quality), the run's estimate
+// saying it takes longer. Frames: <prefix>.box.png, .heat.png, .air.png.
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QLabel>
 #include <QListWidget>
 #include <QPushButton>
 #include <QRadioButton>
@@ -31,6 +33,7 @@
 #include "SimulateArea.hpp"
 #include "SimulateCooling.hpp"
 #include "Tracking.hpp"
+#include "Viewport.hpp"
 
 OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
   struct State {
@@ -38,6 +41,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
     bool all = true;
     std::string tray, cover, board, chip, sink, fan, desk, hub, fin, fanUnit, sinkUnit;
     opad::Vec3 way{0, 0, 0};
+    double outletWidth = 0;
   };
   auto st = std::make_shared<State>();
   const QString prefix = value;
@@ -263,6 +267,18 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         if (std::hypot(c->fans()[0].normal[0], c->fans()[0].normal[1], c->fans()[0].normal[2]) < 0.5) return;  // measured on a worker
         st->way = v;
         require(std::fabs(std::fabs(v[0]) + std::fabs(v[1]) + std::fabs(v[2]) - 1) < 1e-6, QString("the air goes across the face: along an axis of the block (%1, %2, %3)").arg(v[0]).arg(v[1]).arg(v[2]));
+        // The outlet: the face's rectangle (the block's faces are 20 x 20 or 10 x 20), its row shown; the plane drawn with its arrow.
+        const auto& spec = c->fans()[0];
+        const double fw = std::min(spec.width, spec.height), fh = std::max(spec.width, spec.height);
+        require(spec.outlet && std::fabs(fh - 20) < 1e-6 && (std::fabs(fw - 20) < 1e-6 || std::fabs(fw - 10) < 1e-6) &&
+                    c->findChild<QDoubleSpinBox*>("coolingOutletWidth")->isVisibleTo(c),
+                QString("the outlet is the face's rectangle, %1 x %2 mm, its size shown to change").arg(spec.width).arg(spec.height));
+        require(area->fanGlyphsShown() == 1, "the fan's plane and the air's way drawn in the view");
+        w.m_viewport->fitAll();
+        w.m_viewport->grabImage().save(prefix + ".outlet.png");
+        st->outletWidth = spec.width - 2;
+        c->findChild<QDoubleSpinBox*>("coolingOutletWidth")->setValue(st->outletWidth);
+        require(std::fabs(c->fans()[0].width - st->outletWidth) < 1e-9, "the outlet sized narrower");
         c->findChild<QPushButton*>("coolingWayFlip")->click();
         const opad::Vec3 f = c->fans()[0].vector();
         require(f[0] == -v[0] && f[1] == -v[1] && f[2] == -v[2], "Flip turns the way round");
@@ -321,7 +337,9 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
                     fan->def.value("vector", opad::Vec3{}) == opad::Vec3{-st->way[0], -st->way[1], -st->way[2]} &&
                     !settings.value("cfd", opad::json::object()).value("buoyancy", true),
                 "the fan load: on the component, through the heatsink, custom 12 m3/h at 30 Pa, the way flipped; no buoyancy");
-        c->close();
+        require(fan && std::fabs(fan->def.value("outlet", opad::json::object()).value("width", 0.0) - st->outletWidth) < 1e-9,
+                "the fan load's outlet: the face's rectangle as sized");
+        c->dismiss();
         require(!c->picking(), "closed: the view selects again");
         c->open(1);
         require(c->pickedBodies() == std::vector<std::string>{st->tray, st->cover}, "opened again: the tray and the cover");
@@ -332,8 +350,29 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         const auto& f = c->fans();
         require(f.size() == 1 && f[0].on == std::vector<std::string>{st->fanUnit} && f[0].sink == std::vector<std::string>{st->sinkUnit} && f[0].material == "copper",
                 "opened again: the fan as set");
-        // Natural convection: no fans, the air rising
+        // Fans and the warm air rising: the fan's load kept, buoyancy on; the estimate says it takes longer.
         c->open(2);
+        auto* estimate = c->findChild<QLabel*>("coolingEstimate");
+        const QString fansOnly = estimate ? estimate->text() : QString();
+        c->findChild<QRadioButton*>("coolingMixed")->setChecked(true);
+        require(c->fanList()->isEnabled() && estimate && estimate->text() != fansOnly,
+                "Fans and warm air rising: the fans still set, the estimate longer: " + (estimate ? estimate->text() : QString()));
+        require(c->apply(), "Apply with fans and the warm air rising");
+        st->phase = 30;
+        return;
+      }
+      case 30: {
+        int fans = 0;
+        opad::json cfd;
+        for (const auto& l : doc->scene.loads) fans += l.kind == "fan" && l.load_case == CoolingAssistant::kCase;
+        for (const auto& s : doc->scene.studies)
+          if (s.name == CoolingAssistant::studyName().toStdString()) cfd = s.def.value("settings", opad::json::object()).value("cfd", opad::json::object());
+        require(fans == 1 && cfd.value("buoyancy", false), "Fans and warm air rising written: the fan's load and buoyancy together");
+        require(cfd.value("quality", "") == "quick", "a new study runs at Quick (a first answer in minutes): " + QString::fromStdString(cfd.value("quality", "")));
+        c->dismiss();
+        c->open(2);
+        require(c->findChild<QRadioButton*>("coolingMixed")->isChecked(), "opened again: Fans and warm air rising chosen");
+        // Natural convection: no fans, the air rising
         c->findChild<QRadioButton*>("coolingNatural")->setChecked(true);
         require(!c->fanList()->isEnabled() && c->naturalConvection(), "Natural convection: the fans set aside");
         require(c->apply(), "Apply with natural convection");
@@ -348,10 +387,10 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
           if (s.name == CoolingAssistant::studyName().toStdString())
             buoyant = s.def.value("settings", opad::json::object()).value("cfd", opad::json::object()).value("buoyancy", false);
         require(fans == 0 && buoyant, "natural convection written: no fan load, the air rising (buoyancy)");
-        c->close();
+        c->dismiss();
         c->open(2);
         require(c->findChild<QRadioButton*>("coolingNatural")->isChecked(), "opened again: Natural convection chosen");
-        c->close();
+        c->dismiss();
         require(w.action("select.bodies")->isChecked(), "closed: the Bodies filter as before");
         return finish();
       }
@@ -430,7 +469,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING_PERF, coolingPerf) {
         t.start();
         c->selectionChanged({first}, {});
         require(t.elapsed() < 250 && c->pickedBodies() == std::vector<std::string>{first}, QString("a body added in %1 ms").arg(t.elapsed()));
-        c->close();
+        c->dismiss();
         return finish();
       }
     }

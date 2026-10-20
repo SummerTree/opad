@@ -345,6 +345,107 @@ void boxSegments(const Bnd_Box& box, std::vector<gp_Pnt>& ends) {
 }
 }  // namespace
 
+namespace {
+// A fan's plane and its arrow (showSimGlyphs): the plane tinted with its outline, the arrow a shaft and a flat head.
+class FanGlyph : public AIS_InteractiveObject {
+  DEFINE_STANDARD_RTTI_INLINE(FanGlyph, AIS_InteractiveObject)
+ public:
+  explicit FanGlyph(const QColor& color) : m_color(occ(color)) {}
+  std::vector<gp_Pnt> outline;  // closed polygon
+  gp_Pnt from, to;              // the arrow's shaft
+  gp_Dir side;                  // the head's spread
+
+ protected:
+  void Compute(const Handle(PrsMgr_PresentationManager)&, const Handle(Prs3d_Presentation)& prs, Standard_Integer) override {
+    if (outline.size() >= 3) {
+      Handle(Graphic3d_ArrayOfTriangles) fill = new Graphic3d_ArrayOfTriangles(int(outline.size()) + 1, 3 * int(outline.size()));
+      gp_XYZ mid(0, 0, 0);
+      for (const auto& p : outline) mid += p.XYZ();
+      fill->AddVertex(gp_Pnt(mid / double(outline.size())));
+      for (const auto& p : outline) fill->AddVertex(p);
+      for (int i = 0; i < int(outline.size()); ++i) fill->AddEdges(1, 2 + i, 2 + (i + 1) % int(outline.size()));
+      Handle(Graphic3d_AspectFillArea3d) aspect = new Graphic3d_AspectFillArea3d();
+      aspect->SetInteriorStyle(Aspect_IS_SOLID);
+      aspect->SetInteriorColor(Quantity_ColorRGBA(m_color, 0.55f));
+      aspect->SetAlphaMode(Graphic3d_AlphaMode_Blend);
+      aspect->SetShadingModel(Graphic3d_TypeOfShadingModel_Unlit);
+      aspect->SetFaceCulling(Graphic3d_TypeOfBackfacingModel_DoubleSided);
+      auto group = prs->NewGroup();
+      group->SetGroupPrimitivesAspect(aspect);
+      group->AddPrimitiveArray(fill);
+      Handle(Graphic3d_ArrayOfSegments) edge = new Graphic3d_ArrayOfSegments(2 * int(outline.size()));
+      for (size_t i = 0; i < outline.size(); ++i) {
+        edge->AddVertex(outline[i]);
+        edge->AddVertex(outline[(i + 1) % outline.size()]);
+      }
+      auto lines = prs->NewGroup();
+      lines->SetGroupPrimitivesAspect(new Graphic3d_AspectLine3d(m_color, Aspect_TOL_SOLID, 3.0));
+      lines->AddPrimitiveArray(edge);
+    }
+    const gp_Vec shaft(from, to);
+    if (shaft.Magnitude() > 1e-9) {
+      const double head = 0.25 * shaft.Magnitude();
+      const gp_Pnt base = to.Translated(gp_Vec(gp_Dir(shaft)) * -head);
+      Handle(Graphic3d_ArrayOfSegments) arrow = new Graphic3d_ArrayOfSegments(2);
+      arrow->AddVertex(from);
+      arrow->AddVertex(base);
+      auto line = prs->NewGroup();
+      line->SetGroupPrimitivesAspect(new Graphic3d_AspectLine3d(m_color, Aspect_TOL_SOLID, 4.0));
+      line->AddPrimitiveArray(arrow);
+      Handle(Graphic3d_ArrayOfTriangles) tip = new Graphic3d_ArrayOfTriangles(3);
+      tip->AddVertex(to);
+      tip->AddVertex(base.Translated(gp_Vec(side) * 0.5 * head));
+      tip->AddVertex(base.Translated(gp_Vec(side) * -0.5 * head));
+      Handle(Graphic3d_AspectFillArea3d) aspect = new Graphic3d_AspectFillArea3d();
+      aspect->SetInteriorStyle(Aspect_IS_SOLID);
+      aspect->SetInteriorColor(m_color);
+      aspect->SetShadingModel(Graphic3d_TypeOfShadingModel_Unlit);
+      aspect->SetFaceCulling(Graphic3d_TypeOfBackfacingModel_DoubleSided);
+      auto head3 = prs->NewGroup();
+      head3->SetGroupPrimitivesAspect(aspect);
+      head3->AddPrimitiveArray(tip);
+    }
+  }
+  void ComputeSelection(const Handle(SelectMgr_Selection)&, Standard_Integer) override {}
+
+ private:
+  Quantity_Color m_color;
+};
+}  // namespace
+
+void Viewport::showSimGlyphs(const std::vector<SimGlyph>& glyphs) {
+  if (!m_initialised) return;
+  for (const auto& g : std::exchange(m_simGlyphs, {})) m_ctx->Remove(g, Standard_False);
+  for (const SimGlyph& g : glyphs) {
+    const gp_Pnt c(g.centre[0], g.centre[1], g.centre[2]);
+    gp_Vec n(g.normal[0], g.normal[1], g.normal[2]), x(g.x[0], g.x[1], g.x[2]);
+    if (n.Magnitude() < 1e-9) continue;
+    n.Normalize();
+    x = x - n * x.Dot(n);
+    if (x.Magnitude() < 1e-9) x = gp_Vec(std::fabs(n.X()) < 0.9 ? gp_Dir(1, 0, 0) : gp_Dir(0, 1, 0)).Crossed(n);
+    x.Normalize();
+    const gp_Vec y = n.Crossed(x);
+    Handle(FanGlyph) glyph = new FanGlyph(g.color);
+    if (g.round)
+      for (int i = 0; i < 32; ++i) {
+        const double a = 2 * M_PI * i / 32;
+        glyph->outline.push_back(c.Translated(x * (0.5 * g.width * std::cos(a)) + y * (0.5 * g.width * std::sin(a))));
+      }
+    else
+      for (const auto& [a, b] : {std::pair{-1, -1}, {1, -1}, {1, 1}, {-1, 1}})
+        glyph->outline.push_back(c.Translated(x * (0.5 * a * g.width) + y * (0.5 * b * g.height)));
+    const double size = std::max({g.width, g.height, 1.0});
+    glyph->from = c;
+    glyph->to = c.Translated(n * (2.0 * size));
+    glyph->side = gp_Dir(y);
+    glyph->SetZLayer(Graphic3d_ZLayerId_Topmost);
+    glyph->SetInfiniteState(Standard_True);
+    m_ctx->Display(glyph, 0, -1, Standard_False);
+    m_simGlyphs.push_back(glyph);
+  }
+  redrawScene();
+}
+
 bool Viewport::annotationPick(const QPointF& point, opad::Ref& target, bool& hit) {
   hit = false;
   if (!m_initialised || m_blocked || !referenceAt(point, target) || !m_items.count(target.body)) return false;

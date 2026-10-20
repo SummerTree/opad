@@ -238,5 +238,6 @@
  "Simulate (beta)": "المحاكاة (تجريبي)",
  "Simulation (beta)": "المحاكاة (تجريبي)",
  "Beta: checked against published benchmarks, not yet against measurements on real parts.": "تجريبي: تم التحقق منها مقابل معايير منشورة، وليس بعد مقابل قياسات على قطع حقيقية.",
- "<b>Beta.</b> The simulations are checked against published benchmarks, not yet against measurements on real parts. Confirm a design that matters with a test.": "<b>تجريبي.</b> تم التحقق من المحاكاة مقابل معايير منشورة، وليس بعد مقابل قياسات على قطع حقيقية. أكّد أي تصميم مهم باختبار فعلي."
+ "<b>Beta.</b> The simulations are checked against published benchmarks, not yet against measurements on real parts. Confirm a design that matters with a test.": "<b>تجريبي.</b> تم التحقق من المحاكاة مقابل معايير منشورة، وليس بعد مقابل قياسات على قطع حقيقية. أكّد أي تصميم مهم باختبار فعلي.",
+ "Delete %n item(s)": "حذف %n من العناصر"
 }

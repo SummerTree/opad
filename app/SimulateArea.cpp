@@ -31,6 +31,7 @@
 #include "I18n.hpp"
 #include "Icons.hpp"
 #include "Jobs.hpp"
+#include "KeyText.hpp"
 #include "PanelFooter.hpp"
 #include "Ribbon.hpp"
 #include "SimPlot.hpp"
@@ -507,6 +508,11 @@ void Simulate::ready() {
   folder.startsClosed = true;  // the parts stay the browser's first rows
   folder.items = [this] { return folderItems(); };
   folder.contextMenu = [this](const std::string& id, QMenu& menu) { folderMenu(id, menu); };
+  folder.remove = [this](const std::vector<std::string>& ids) {
+    bool taken = false;
+    services().guarded([&] { taken = removeRows(ids); });
+    return taken;
+  };
   folder.activated = [this](const std::string& id) {
     services().guarded([&] {
       open();
@@ -562,6 +568,7 @@ void Simulate::workspaceChanged(const QString& id) {
   if (id != "simulate") {
     pause();
     if (m_panel && !m_panel->pinned()) m_panel->hide();
+    if (m_coolingPanel && !m_coolingPanel->pinned()) m_coolingPanel->hide();
   }
 }
 
@@ -586,7 +593,7 @@ void Simulate::selectionChanged(const SelectionContext& selection) {
   for (const auto& id : now)
     if (std::find(kept.begin(), kept.end(), id) == kept.end()) kept.push_back(id);
   m_picked = kept;
-  lightRows(m_picked);  // what the rows stand for, lit in the view by nature
+  if (!now.empty() || m_litRefs.empty()) lightRows(m_picked);  // what the rows stand for, lit by nature (Thermal setup's rows keep theirs)
   if (m_panel && m_panel->isVisible() && now.size() == 1 && now[0].rfind("sim:j:", 0) == 0) chooseJoint(now[0].substr(6));
   if (m_panel && m_panel->isVisible() && now.size() == 1 && now[0].rfind("sim:s:", 0) == 0) chooseStudy(now[0].substr(6));  // its row picked
 }
@@ -609,7 +616,12 @@ void Simulate::documentChanged(bool replaced) {
   }
   if (resultShown() && hiddenResultBodies() != m_mapHidden) showResults(true);
   if (m_panel && m_panel->isVisible()) refresh();
-  if (!m_picked.empty() || !m_lit.empty()) QTimer::singleShot(0, this, [this] { lightRows(m_picked); });  // the rows' targets may have moved or gone
+  if (!m_picked.empty() || !m_lit.empty())  // the targets may have moved or gone: lit again from what lit them (the browser, Thermal setup)
+    QTimer::singleShot(0, this, [this] {
+      if (m_litRefs.empty()) return lightRows(m_picked);
+      lightRefs(std::vector<std::pair<opad::Ref, std::string>>(m_litRefs));
+      showFanGlyphs(std::vector<json>(m_glyphFans));
+    });
 }
 
 std::vector<std::string> Simulate::hiddenResultBodies() const {
@@ -842,8 +854,7 @@ void Simulate::openCooling(int step) {
     hooks.run = [this](const std::string& id) {
       services().guarded([&] {
         if (services().workspace() != "simulate") services().setWorkspace("simulate");
-        open();
-        followStudy(id);
+        followStudy(id);  // its Run page shows the progress and the result: the Simulation panel stays closed
         chooseStudy(id);
         runStudy();
       });
@@ -872,10 +883,24 @@ void Simulate::openCooling(int step) {
       showRun();
       showResults(true);
     };
+    hooks.light = [this](const std::vector<std::pair<opad::Ref, std::string>>& refs) { lightRefs(refs); };
+    hooks.fanGlyphs = [this](const std::vector<json>& fans) { showFanGlyphs(fans); };
+    hooks.panel = [this](bool shown) {
+      if (!m_coolingPanel) return;
+      if (shown) services().openPanel(m_coolingPanel);
+      else m_coolingPanel->hide();
+    };
     hooks.setVisible = [this](const std::string& id, bool on) {
       services().guarded([&] { write("appearance", {{"target", id}, {"visible", on}}, on ? tr("Show the box") : tr("See inside the box")); });
     };
-    assistant = new CoolingAssistant(std::move(hooks), window);
+    assistant = new CoolingAssistant(std::move(hooks));
+    // A floating panel like the others (its pages are short: no window of its own), beside the view.
+    m_coolingPanel = new ToolPanel("cooling", "simCooling", &Tokens::sel, tr("Thermal setup"), assistant, 720, window);
+    m_coolingPanel->setDefaultWidth(420);
+    m_coolingPanel->setObjectName("coolingToolPanel");
+    m_coolingPanel->setHelpId("simulate.cooling");
+    m_coolingPanel->setEscapeHandler([assistant] { assistant->escape(); });
+    services().addPanel(m_coolingPanel);
   }
   assistant->open(step);
 }
@@ -1368,6 +1393,16 @@ std::vector<browser::Item> Simulate::folderItems() const {
 }
 
 void Simulate::folderMenu(const std::string& id, QMenu& menu) {
+  // Delete: the rows picked when this one is among them, else this one (Del is edit.delete's).
+  const bool air = id.rfind("sim:x:", 0) == 0 && id.size() > 4 && id.compare(id.size() - 4, 4, ":air") == 0;  // nothing to delete
+  if (!id.empty() && !air) {
+    std::vector<std::string> rows = std::find(m_picked.begin(), m_picked.end(), id) != m_picked.end() ? m_picked : std::vector<std::string>{id};
+    const QString what = rows.size() == 1 ? tr("Delete") : tr("Delete %n item(s)", "", int(rows.size()));
+    menu.addAction(icons::themed("delete", 16), keys::menuText(what, QStringLiteral("edit.delete")), this, [this, rows] {
+      services().guarded([&] { removeRows(rows); });
+    });
+    menu.addSeparator();
+  }
   if (id.rfind("sim:s:", 0) == 0) {
     const std::string st = id.substr(6);
     menu.addAction(icons::themed("simRun", 16), tr("Run study"), this, [this, st] {

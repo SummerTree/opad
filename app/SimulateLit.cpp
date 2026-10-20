@@ -1,12 +1,15 @@
 // The Simulation folder's rows in the browser: a thermal study's setup (its box, boards, heatsinks and air) as rows of their own,
 // and what a picked row stands for lit in the view in the colour of its nature, with its badge (a heat source red with a
 // flame, a fan blue, a heatsink steel, a board green, the box sand, a support purple, a force orange). A hidden part is not lit.
+#include <Bnd_Box.hxx>
+
 #include <QBitmap>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 
+#include <map>
 #include <set>
 
 #include "AppDocument.hpp"
@@ -14,7 +17,9 @@
 #include "Icons.hpp"
 #include "Jobs.hpp"
 #include "SimulateArea.hpp"
+#include "Tracking.hpp"
 #include "Viewport.hpp"
+#include "opad/geometry.hpp"
 #include "opad/materials.hpp"
 
 namespace {
@@ -120,22 +125,25 @@ std::vector<browser::Item> Simulate::setupRows(const opad::Study& st) const {
   return rows;
 }
 
+void Simulate::addTarget(std::vector<Lit>& out, const std::string& row, const opad::Ref& r, const std::string& nature) const {
+  if (r.body.empty()) return;
+  const opad::Scene& s = services().document()->scene;
+  const opad::Node* n = s.node(r.body);
+  if (n && n->kind != opad::Node::Kind::Body) {  // a component (a fan's own model): each of its bodies
+    for (const auto& b : s.bodies_under(r.body)) {
+      opad::Ref body;
+      body.body = b;
+      out.push_back({row, nature, body});
+    }
+    return;
+  }
+  out.push_back({row, nature, r});
+}
+
 std::vector<Simulate::Lit> Simulate::rowTargets(const std::string& row) const {
   std::vector<Lit> out;
   const opad::Scene& s = services().document()->scene;
-  auto add = [&](const opad::Ref& r, const std::string& nature) {
-    if (r.body.empty()) return;
-    const opad::Node* n = s.node(r.body);
-    if (n && n->kind != opad::Node::Kind::Body) {  // a component (a fan's own model): each of its bodies
-      for (const auto& b : s.bodies_under(r.body)) {
-        opad::Ref body;
-        body.body = b;
-        out.push_back({row, nature, body});
-      }
-      return;
-    }
-    out.push_back({row, nature, r});
-  };
+  auto add = [&](const opad::Ref& r, const std::string& nature) { addTarget(out, row, r, nature); };
   auto body = [](const std::string& id) {
     opad::Ref r;
     r.body = id;
@@ -170,18 +178,87 @@ std::vector<Simulate::Lit> Simulate::rowTargets(const std::string& row) const {
 }
 
 void Simulate::lightRows(const std::vector<std::string>& rows) {
+  m_litRefs.clear();
+  std::vector<Lit> targets;
+  std::vector<json> fans;  // a fan's row (or its case's): its plane and the air's way too
+  const opad::Scene& s = services().document()->scene;
+  for (const auto& row : rows) {
+    const auto more = rowTargets(row);
+    targets.insert(targets.end(), more.begin(), more.end());
+    for (const auto& l : s.loads)
+      if (l.kind == "fan" && (row == "sim:l:" + l.id || row == "sim:c:" + l.load_case)) fans.push_back(l.def);
+  }
+  lightTargets(std::move(targets));
+  showFanGlyphs(fans);
+}
+
+// The plane a fan pushes the air through, as the solver will take it (cfd.cpp): its outlet as set, else a disk through the
+// middle of what it is on, 0.47 of its width across (its body's box here: near enough to show), square to its way.
+void Simulate::showFanGlyphs(const std::vector<json>& fans) {
+  m_glyphFans = fans;
+  Viewport* view = services().viewport();
+  const AppDocument* doc = services().document();
+  if (!view || !doc) return;
+  std::vector<Viewport::SimGlyph> glyphs;
+  auto unit = [](opad::Vec3 v) {
+    const double l = std::hypot(v[0], v[1], v[2]);
+    return l > 1e-12 ? opad::Vec3{v[0] / l, v[1] / l, v[2] / l} : opad::Vec3{0, 0, 0};
+  };
+  for (const json& f : fans) {
+    Viewport::SimGlyph g;
+    g.color = natureColor("convection");  // the air's cyan: apart from the fan body's blue under it
+    const opad::Vec3 way = unit(f.value("vector", opad::Vec3{1, 0, 0}));
+    if (const json o = f.value("outlet", json()); o.is_object()) {
+      opad::Vec3 n = unit(o.value("normal", way));
+      if (n[0] * way[0] + n[1] * way[1] + n[2] * way[2] < 0) n = {-n[0], -n[1], -n[2]};
+      g.centre = o.value("centre", opad::Vec3{0, 0, 0}), g.normal = n, g.x = o.value("x", opad::Vec3{1, 0, 0});
+      g.width = o.value("width", 0.0), g.height = o.value("height", 0.0);
+    } else {
+      Bnd_Box box;
+      for (const auto& r : f.value("refs", json::array())) {
+        const std::string id = r.is_string() ? r.get<std::string>() : r.value("body", std::string());
+        try {
+          if (doc->scene.node(id)) box.Add(opad::node_world_bbox(doc->doc, doc->scene, id));
+        } catch (const std::exception&) {
+        }
+      }
+      if (box.IsVoid()) continue;
+      double x0, y0, z0, x1, y1, z1;
+      box.Get(x0, y0, z0, x1, y1, z1);
+      const opad::Vec3 half{0.5 * (x1 - x0), 0.5 * (y1 - y0), 0.5 * (z1 - z0)};
+      const opad::Vec3 u1 = unit(std::fabs(way[0]) < 0.9 ? opad::Vec3{0, way[2], -way[1]} : opad::Vec3{-way[2], 0, way[0]});
+      const opad::Vec3 u2 = unit({way[1] * u1[2] - way[2] * u1[1], way[2] * u1[0] - way[0] * u1[2], way[0] * u1[1] - way[1] * u1[0]});
+      auto across = [&](const opad::Vec3& u) { return 2 * (std::fabs(u[0]) * half[0] + std::fabs(u[1]) * half[1] + std::fabs(u[2]) * half[2]); };
+      g.centre = {0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)}, g.normal = way, g.x = u1;
+      g.round = true;
+      g.width = 0.94 * std::min(across(u1), across(u2));
+    }
+    glyphs.push_back(g);
+  }
+  view->showSimGlyphs(glyphs);
+}
+
+size_t Simulate::fanGlyphsShown() const { return services().viewport() ? services().viewport()->simGlyphCount() : 0; }
+
+void Simulate::lightRefs(const std::vector<std::pair<opad::Ref, std::string>>& refs) {
+  m_litRefs = refs;
+  std::vector<Lit> targets;
+  for (const auto& [r, nature] : refs) addTarget(targets, "setup", r, nature);
+  lightTargets(std::move(targets));
+}
+
+void Simulate::lightTargets(std::vector<Lit> targets) {
   Viewport* view = services().viewport();
   if (!view) return;
   view->clearSimTargets();
   for (auto& [at, badge] : std::exchange(m_badges, {})) delete badge;
   m_lit.clear();
-  for (const auto& row : rows)
-    for (Lit t : rowTargets(row)) {
-      opad::Vec3 centre{0, 0, 0};
-      t.shown = view->showSimTarget(t.target, natureColor(t.nature), &centre);
-      if (t.shown && m_badges.size() < kMaxBadges) m_badges.push_back({centre, new Badge(view, natureColor(t.nature), natureIcon(t.nature))});
-      m_lit.push_back(t);
-    }
+  for (Lit t : targets) {
+    opad::Vec3 centre{0, 0, 0};
+    t.shown = view->showSimTarget(t.target, natureColor(t.nature), &centre);
+    if (t.shown && m_badges.size() < kMaxBadges) m_badges.push_back({centre, new Badge(view, natureColor(t.nature), natureIcon(t.nature))});
+    m_lit.push_back(t);
+  }
   placeBadges();
 }
 
@@ -194,4 +271,67 @@ void Simulate::placeBadges() {
     badge->setVisible(in);
     if (in) badge->raise();
   }
+}
+
+bool Simulate::removeRows(const std::vector<std::string>& rows) {
+  AppDocument* doc = services().document();
+  const opad::Scene& s = doc->scene;
+  std::vector<std::string> deleted;  // op ids: loads, studies, joints
+  auto drop = [&](const std::string& id) {
+    if (std::find(deleted.begin(), deleted.end(), id) == deleted.end()) deleted.push_back(id);
+  };
+  std::map<std::string, json> settings;        // a study's settings as its setup rows leave them
+  std::map<std::string, json> heatsinks;       // a fan load's heatsink list without the heatsink deleted
+  for (const auto& row : rows) {
+    if (row.rfind("sim:l:", 0) == 0 && s.load(row.substr(6))) drop(row.substr(6));
+    else if (row.rfind("sim:s:", 0) == 0 && s.study(row.substr(6))) drop(row.substr(6));
+    else if (row.rfind("sim:j:", 0) == 0 && s.joint(row.substr(6))) drop(row.substr(6));
+    else if (row.rfind("sim:c:", 0) == 0) {
+      for (const auto& l : s.loads)
+        if (l.load_case == row.substr(6)) drop(l.id);
+    } else if (row.rfind("sim:x:", 0) == 0) {
+      const std::string rest = row.substr(6);
+      const size_t colon = rest.find(':');
+      const opad::Study* st = colon == std::string::npos ? nullptr : s.study(rest.substr(0, colon));
+      if (!st) continue;
+      const std::string what = rest.substr(colon + 1);
+      json& set = settings.try_emplace(st->id, st->def.value("settings", json::object())).first->second;
+      if (what == "box") {
+        if (set.contains("cfd")) set["cfd"].erase("enclosure");
+      } else if (what.rfind("board:", 0) == 0) {
+        const std::string id = what.substr(6);
+        if (set.contains("materials") && set["materials"].contains(id)) {
+          set["materials"][id].erase("pcb");
+          if (set["materials"][id].empty()) set["materials"].erase(id);
+        }
+      } else if (what.rfind("sink:", 0) == 0) {
+        const std::string id = what.substr(5);
+        for (const auto& l : s.loads) {  // off the fans that blow through it
+          if (l.load_case != set.value("case", std::string()) || l.kind != "fan") continue;
+          json& list = heatsinks.try_emplace(l.id, l.def.value("heatsink", json::array())).first->second;
+          for (auto it = list.begin(); it != list.end();) it = *it == id ? list.erase(it) : it + 1;
+        }
+        std::vector<std::string> bodies{id};  // its material, set for it as one part
+        if (const opad::Node* n = s.node(id); n && n->kind != opad::Node::Kind::Body) bodies = s.bodies_under(id);
+        for (const auto& b : bodies)
+          if (set.contains("materials") && set["materials"].contains(b) && set["materials"][b].contains("material")) set["materials"].erase(b);
+      }
+    }
+  }
+  std::vector<std::pair<std::string, json>> writes;
+  for (const auto& id : deleted) writes.push_back({"delete", {{"target", id}}});
+  for (const auto& [id, set] : settings)
+    if (std::find(deleted.begin(), deleted.end(), id) == deleted.end() && set != s.study(id)->def.value("settings", json::object()))
+      writes.push_back({"study", {{"id", id}, {"settings", set}, {"run", false}}});
+  for (const auto& [id, list] : heatsinks)
+    if (std::find(deleted.begin(), deleted.end(), id) == deleted.end() && list != s.load(id)->def.value("heatsink", json::array()))
+      writes.push_back({"load", {{"id", id}, {"heatsink", list}}});
+  if (writes.empty()) return false;
+  if (std::find(deleted.begin(), deleted.end(), m_study) != deleted.end()) chooseStudy(std::string());  // its results put away
+  doc->batch(rows.size() == 1 ? tr("Delete") : tr("Delete %n item(s)", "", int(rows.size())), [&] {
+    for (const auto& [command, args] : writes) doc->run(command, args);
+  });
+  lightRows({});
+  m_picked.clear();
+  return true;
 }
