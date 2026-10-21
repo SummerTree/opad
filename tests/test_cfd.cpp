@@ -266,21 +266,37 @@ TEST(enclosure_of_two_halves) {
 CHECK_MAIN()
 
 // The vents before a run (sim::vent_estimate): the vented box's 30 mm intake behind its fan, its three 40 x 4 mm slots ahead
-// of it, each a sharp-edged orifice in series met by the fan's straight curve; with the fan's opening drawn in the intake's
-// hole, the fan draws straight through it and only the slots hold it back.
+// of it, each a sharp-edged orifice with the laminar friction along it, in series, met by the fan's straight curve; with the
+// fan's opening drawn in the intake's hole, the fan draws straight through it (its cut-out) and only the slots hold it back.
 TEST(vent_estimate_of_a_vented_box) {
   std::string enclosure, fan, block;
   Document doc = vented_box(enclosure, fan, block);
   const Scene scene = resolve(doc);
   const air::Air a = air::properties(25);
-  auto k = [&](double mm2) { return mm2 > 0 ? a.rho / (2 * std::pow(0.6 * mm2 * 1e-6, 2)) : 0.0; };
-  auto expected = [&](double K) {  // 30 Pa (1 - Q / 15 m3/h) = K Q^2
+  // A side of n alike holes (area, width, length through, mm): the pressure that drives Q (m3/s) through them.
+  struct Holes {
+    int n;
+    double area, width, length;
+  };
+  auto drop = [&](const Holes& h, double Q) {
+    if (h.n == 0) return 0.0;
+    const double A = h.area * 1e-6, q = Q / h.n;
+    return a.rho / (2 * std::pow(0.6 * A, 2)) * q * q + 32 * a.mu * h.length * 1e-3 / (A * std::pow(h.width * 1e-3, 2)) * q;
+  };
+  auto expected = [&](const std::vector<Holes>& sides) {  // 30 Pa (1 - Q / 15 m3/h) = the sides' drops at Q
     double lo = 0, hi = 15.0 / 3600;
     for (int i = 0; i < 100; ++i) {
       const double m = 0.5 * (lo + hi);
-      (30 * (1 - m * 3600 / 15) > K * m * m ? lo : hi) = m;
+      double need = 0;
+      for (const auto& h : sides) need += drop(h, m);
+      (30 * (1 - m * 3600 / 15) > need ? lo : hi) = m;
     }
     return 0.5 * (lo + hi) * 3600;
+  };
+  auto measured = [](const json& e, double area) {  // the hole of that area as the estimate measured it
+    for (const auto& o : e["openings"])
+      if (std::fabs(o["area_mm2"].get<double>() - area) < 1) return Holes{1, area, o["width_mm"].get<double>(), o["thickness_mm"].get<double>()};
+    return Holes{0, 0, 0, 0};
   };
   json load = {{"fan", {{"flow", 15}, {"pressure", 30}}}, {"vector", {1, 0, 0}}, {"refs", {fan}}};
   json e = sim::vent_estimate(doc, scene, {enclosure}, {load}, 5);
@@ -289,7 +305,12 @@ TEST(vent_estimate_of_a_vented_box) {
   CHECK_EQ(e["intake"]["openings"].get<int>(), 1);
   CHECK_NEAR(e["exhaust"]["area_mm2"].get<double>(), 480, 1);
   CHECK_EQ(e["exhaust"]["openings"].get<int>(), 3);
-  CHECK_NEAR(e["flow_m3h"].get<double>(), expected(k(900) + k(480)), 0.01);
+  Holes intake = measured(e, 900), slot = measured(e, 160);
+  slot.n = 3;
+  CHECK_NEAR(intake.width, 30, 1e-6);           // a square: its own side
+  CHECK_NEAR(slot.width, 4 * 160.0 / 88, 1e-6);  // 4 area / perimeter
+  CHECK_NEAR(slot.length, 3, 0.3);               // through the wall
+  CHECK_NEAR(e["flow_m3h"].get<double>(), expected({intake, slot}), 0.01);
   CHECK_EQ(e["limited_by"].get<std::string>(), "exhaust");
   CHECK_NEAR(e["needed_m3h"].get<double>(), 5 / (a.rho * a.cp * 10) * 3600, 1e-6);
   // The fan's opening drawn: its block's face towards the intake (the face whose normal is -X).
@@ -304,7 +325,8 @@ TEST(vent_estimate_of_a_vented_box) {
   e = sim::vent_estimate(doc, scene, {enclosure}, {load}, 5);
   CHECK(e["intake"].value("fan", false));
   CHECK_EQ(e["intake"]["openings"].get<int>(), 0);
-  CHECK_NEAR(e["flow_m3h"].get<double>(), expected(k(480)), 0.01);
+  CHECK_EQ(e["openings"][0]["side"].get<std::string>(), "fan");  // the cut-out it is mounted in
+  CHECK_NEAR(e["flow_m3h"].get<double>(), expected({slot}), 0.01);
   // A boss on the lid (an inner loop of the top face, no hole), a connector in a cut-out of the -Y wall: neither a vent.
   box(doc, {40, 20, 40}, 10, 10, 2, "Boss", enclosure);
   cut(doc, enclosure, {60, -1, 10}, 10, 5, 8);
@@ -354,7 +376,7 @@ TEST(vent_estimate_of_a_sealed_box_and_a_grille) {
   e = sim::vent_estimate(doc, resolve(doc), {enclosure}, {load}, 5, 25, [&](int, int) { return ++calls > 0; });
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   if (std::getenv("OPAD_TEST_VERBOSE")) std::printf("grille: %.2f s, %d progress calls\n", seconds, calls);
-  CHECK_EQ(e["exhaust"]["openings"].get<int>() + e["intake"]["openings"].get<int>(), 100);
+  CHECK_EQ(e["openings"].size(), size_t(100));  // all on one side of the fan: in and out through them, half each
   CHECK(calls >= 100);
   CHECK(seconds < 30);
   // Cancelled: stops with an error.
@@ -365,4 +387,73 @@ TEST(vent_estimate_of_a_sealed_box_and_a_grille) {
     threw = true;
   }
   CHECK(threw);
+}
+
+namespace {
+// The faces of a block whose normal is along an axis (+X: {1, 0, 0}): as a fan opening's reference.
+json face_along(Document& doc, const std::string& body, const Vec3& n) {
+  const Scene s = resolve(doc);
+  for (int i = 0; i < 6; ++i) {
+    Ref r;
+    r.body = body, r.kind = Ref::Kind::Face, r.index = i;
+    const sim::FanProfile p = sim::fan_profile(doc, s, r.to_json());
+    if (p.normal[0] * n[0] + p.normal[1] * n[1] + p.normal[2] * n[2] > 0.9) return r.to_json();
+  }
+  return json();
+}
+void round_hole(Document& doc, const std::string& target, Vec3 at, Vec3 normal, double diameter, double length) {
+  commands::run("feature", {{"kind", "cylinder"},
+                            {"inputs", {{"plane", {{"origin", at}, {"normal", normal}}}, {"diameter", diameter}, {"height", length}, {"operation", "cut"}, {"targets", {target}}}}},
+                &doc);
+}
+}  // namespace
+
+// A blower whose intake faces a perforated panel of the box 1 mm away (36 holes of 1.5 mm in a 3 mm wall): those holes are
+// its own intake, in series with it (they once counted as the cut-out it is mounted in, and held nothing back); it blows
+// into the box, which the slots let out. Then the same blower behind a grille inside the box (a plate with 9 holes in front
+// of its intake, a 30 mm opening in the wall beside): the grille's holes are its intake path, from the box's air.
+TEST(vent_estimate_of_a_blower_behind_a_perforated_panel_and_a_grille) {
+  Document doc = Document::create();
+  const std::string e = box(doc, {0, 0, 0}, 90, 60, 40, "Enclosure");
+  cut(doc, e, {3, 3, 3}, 84, 54, 34);
+  for (double z : {10.0, 18.0, 26.0}) cut(doc, e, {86, 10, z}, 5, 40, 4);
+  for (int i = 0; i < 6; ++i)
+    for (int j = 0; j < 6; ++j) round_hole(doc, e, {-1, 22.5 + 3 * i, 12.5 + 3 * j}, {1, 0, 0}, 1.5, 5);
+  const std::string blower = box(doc, {4, 15, 5}, 20, 30, 30, "Blower");
+  json load = {{"name", "Blower 1"}, {"fan", "cbm-3507cf-085-295"}, {"type", "blower"}, {"inlet", face_along(doc, blower, {-1, 0, 0})},
+               {"outlet", face_along(doc, blower, {0, 0, 1})}};
+  json r = sim::vent_estimate(doc, resolve(doc), {e}, {load}, 3);
+  if (std::getenv("OPAD_TEST_VERBOSE")) std::printf("%s\n", r.dump().substr(0, 1200).c_str());
+  const json& f = r["fans"][0];
+  CHECK_EQ(f["intake"]["through"].get<std::string>(), "holes");
+  CHECK_EQ(f["intake"]["openings"].get<int>(), 36);
+  CHECK_NEAR(f["intake"]["area_mm2"].get<double>(), 36 * M_PI * 0.75 * 0.75, 0.5);
+  CHECK_EQ(f["outlet"]["through"].get<std::string>(), "box");
+  CHECK_EQ(r["exhaust"]["openings"].get<int>(), 3);
+  CHECK_EQ(r["limited_by"].get<std::string>(), "fan_intake");
+  CHECK(r["fraction"].get<double>() < 0.9);
+  CHECK(f["intake"]["pressure_Pa"].get<double>() > 10 * r["exhaust"]["pressure_Pa"].get<double>());
+  int own = 0;
+  for (const auto& o : r["openings"]) own += o["side"] == "fan_intake";
+  CHECK_EQ(own, 36);
+  // Behind a grille inside the box instead: a 2 mm plate 2 mm in front of the intake with 9 holes of 3 mm, the perforated
+  // panel's holes no longer in front of it (the blower moved 6 mm in); a 30 mm opening in the -X wall lets the air in.
+  Document g = Document::create();
+  const std::string e2 = box(g, {0, 0, 0}, 90, 60, 40, "Enclosure");
+  cut(g, e2, {3, 3, 3}, 84, 54, 34);
+  for (double z : {10.0, 18.0, 26.0}) cut(g, e2, {86, 10, z}, 5, 40, 4);
+  cut(g, e2, {-1, 5, 5}, 5, 8, 30);  // the intake opening, beside where the blower sits
+  const std::string plate = box(g, {6, 14, 4}, 2, 32, 32, "Grille");
+  for (int i = 0; i < 3; ++i)
+    for (int j = 0; j < 3; ++j) round_hole(g, plate, {5, 22 + 8 * i, 12 + 8 * j}, {1, 0, 0}, 3, 4);
+  const std::string b2 = box(g, {10, 15, 5}, 20, 30, 30, "Blower");
+  load["inlet"] = face_along(g, b2, {-1, 0, 0});
+  load["outlet"] = face_along(g, b2, {0, 0, 1});
+  r = sim::vent_estimate(g, resolve(g), {e2}, {load}, 3);
+  if (std::getenv("OPAD_TEST_VERBOSE")) std::printf("%s\n", r.dump().substr(0, 1200).c_str());
+  const json& f2 = r["fans"][0];
+  CHECK_EQ(f2["intake"]["through"].get<std::string>(), "holes");
+  CHECK_EQ(f2["intake"]["part"].get<std::string>(), "Grille");
+  CHECK_EQ(f2["intake"]["openings"].get<int>(), 9);
+  CHECK_EQ(r["intake"]["openings"].get<int>(), 1);  // the box's own intake, feeding the box's air the grille draws from
 }

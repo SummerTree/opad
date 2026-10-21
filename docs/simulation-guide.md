@@ -287,11 +287,22 @@ Needs OpenFOAM.
    l/s; inH₂O, mmH₂O, Pa), optionally points read off its P-Q chart (without them the curve is a straight line between
    the two), and its **speed** as a percentage of the rated one (flow scales with speed, pressure with its square); and
    the heatsink it blows through, with its material. Under the fans a line says whether the box's vents let them blow
-   what they can: the vents are the holes through the box's flat walls, intakes behind the fans' air and exhausts ahead
-   of it (a hole a fan's opening sits in is that fan's), each a sharp-edged orifice in series with the other side, met
-   by the fans' curves; it gives the flow they would deliver against their free flow, the side that holds them back,
-   and the flow the heat needs to warm the air by 10 K. Choose natural convection for a box with vents only: the air
-   then moves by rising where it is warm, so put vents low and high.
+   what they can (hover it for the openings, largest first; "Show the vents found in the view" draws them):
+   - the vents are the holes through the box's flat walls that open to the room (an outline that is a boss, a foot or a
+     pocket, a hole a part fills, a loop that leads under a lid are not counted);
+   - holes right in front of a fan's opening (within its outline, up to 10 mm away) are that fan's own path, in series
+     with it: a perforated panel before a blower's intake, or the holes of another part covering the opening (a grille,
+     taken to seal against it); one hole about as large as the opening is the cut-out the fan sits in and holds nothing
+     back;
+   - the box's other holes are intakes on the side the fans draw from and exhausts on the side they blow into;
+   - each hole loses its orifice's pressure (discharge 0.6) and the laminar friction along it (a small hole through a
+     thick wall: mostly friction); the box's air is solved in two parts, before and after the fans, each fan where its
+     curve meets its whole way;
+   - it says the flow they deliver against their free flow, what holds them back most, and how warm the air leaves for
+     the heat (and the flow that keeps that to 10 K); a box with no vent at all is said to pass no air.
+   The run itself resolves holes down to about two of its finest cells (about 0.4 mm at Quick, 0.2 mm at Fine in a box
+   like the example); narrower ones are closed in its mesh and a warning names how many. Choose natural convection for
+   a box with vents only: the air then moves by rising where it is warm, so put vents low and high.
 5. **Run**: the room's temperature and the quality: **Quick** to compare designs, **Normal** for the answer, **Fine** to
    check it. It takes minutes; the status bar shows how far it is and you can keep working.
 6. The page lists each part's temperature (hottest first), each fan's flow and pressure, the air through the box and

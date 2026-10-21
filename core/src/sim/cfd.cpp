@@ -34,6 +34,8 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <tuple>
+#include <optional>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -550,15 +552,7 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
     const double l = std::sqrt(dot3(v, v));
     return l > 1e-12 ? P{v[0] / l, v[1] / l, v[2] / l} : P{0, 0, 0};
   };
-  // The box's holes: each inner loop of a face that looks out of the box (a through hole has one on each side; the inside one
-  // looks in).
-  struct Vent {
-    P centre, normal;
-    double area;
-    int fan = -1;  // the fan whose opening sits in it
-    bool out = false;
-  };
-  std::vector<Vent> vents;
+  auto neg = [](const P& v) { return P{-v[0], -v[1], -v[2]}; };
   std::vector<TopoDS_Shape> shapes;
   Bnd_Box all;
   for (const auto& w : walls) {
@@ -571,8 +565,8 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
   all.Get(x0, y0, z0, x1, y1, z1);
   const P mid{0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)};
   // What may fill a hole or stand behind it: the walls, and the bodies in the box (a connector in its cut-out, a screw in its
-  // hole), their shapes read only where a probe falls in their box.
-  // Each one's classifier is made once (made per probe, it walked a detailed box's every face each time: minutes).
+  // hole), their shapes read only where a probe falls in their box. Each one's classifier is made once (made per probe, it
+  // walked a detailed box's every face each time: minutes).
   struct Blocker {
     std::string id;
     Bnd_Box box;
@@ -591,34 +585,41 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
     const Bnd_Box b = node_world_bbox(doc, scene, id);
     if (!b.IsVoid() && !b.IsOut(all)) blockers.push_back({id, b, TopoDS_Shape(), false, nullptr});
   }
+  auto shape_of = [&](Blocker& b) -> const TopoDS_Shape& {
+    if (b.shape.IsNull()) b.shape = node_world_shape(doc, scene, b.id);
+    return b.shape;
+  };
+  auto inside = [&](Blocker& b, const gp_Pnt& p) {
+    if (b.box.IsOut(p)) return false;
+    if (!b.classifier) b.classifier = std::make_unique<BRepClass3d_SolidClassifier>(shape_of(b));
+    b.classifier->Perform(p, 1e-6);
+    return b.classifier->State() == TopAbs_IN;
+  };
   auto solid_at = [&](const gp_Pnt& p, bool walls_only) {
-    for (auto& b : blockers) {
-      if ((walls_only && !b.wall) || b.box.IsOut(p)) continue;
-      if (!b.classifier) {
-        if (b.shape.IsNull()) b.shape = node_world_shape(doc, scene, b.id);
-        b.classifier = std::make_unique<BRepClass3d_SolidClassifier>(b.shape);
-      }
-      b.classifier->Perform(p, 1e-6);
-      if (b.classifier->State() == TopAbs_IN) return true;
-    }
+    for (auto& b : blockers)
+      if ((!walls_only || b.wall) && inside(b, p)) return true;
     return false;
   };
   // The walls loaded once for rays out of the box.
   std::vector<IntCurvesFace_ShapeIntersector> outward(shapes.size());
   for (size_t k = 0; k < shapes.size(); ++k) outward[k].Load(shapes[k], 1e-6);
   const double reach = std::sqrt(all.SquareExtent());
-  int holes = 0, examined = 0;  // for progress: every inner loop of the outward flat faces
-  for (const auto& shape : shapes)
-    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next())
-      if (BRepAdaptor_Surface(TopoDS::Face(e.Current())).GetType() == GeomAbs_Plane)
-        for (TopExp_Explorer w(e.Current(), TopAbs_WIRE); w.More(); w.Next()) ++holes;
-  // A hole goes through when, from its middle, the way in stays clear of every solid through the wall's own thickness there
-  // (measured from the face beside it): an inner loop that is a boss, a foot or a blind pocket on the outside goes into
-  // solid at once or before that depth; one a part sits in (a connector, a screw) is filled. A part behind the hole (a fan
-  // drawing through it) does not close it.
+
+  // A hole: an inner loop of a flat face, through its body (and a part sitting in it fills it).
+  struct Hole {
+    P centre, normal;  // on the face, the face's own normal
+    double area = 0, width = 0, thickness = 1;  // mm2; hydraulic width (4 area / perimeter) and length through, mm
+    std::string body;
+    int fan = -1;  // the fan whose own path it is
+    bool exit = false;  // the air leaves the box (or the fan) through it
+  };
   int blind = 0, filled = 0;
-  for (const auto& shape : shapes)
-    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
+  // The holes through one body's flat faces that `keep` (centre, normal) accepts; to_room: one counts only when straight out
+  // of it the box's walls leave the way open (a tray's open top under its lid leads into the lid).
+  auto holes_of = [&](size_t bk, const std::function<bool(const gp_Pnt&, const gp_Dir&)>& keep, bool to_room, int* examined, int total) {
+    std::vector<Hole> out;
+    Blocker& own = blockers[bk];
+    for (TopExp_Explorer e(shape_of(own), TopAbs_FACE); e.More(); e.Next()) {
       const TopoDS_Face face = TopoDS::Face(e.Current());
       BRepAdaptor_Surface surface(face);
       if (surface.GetType() != GeomAbs_Plane) continue;  // vents are cut through flat panels
@@ -627,7 +628,7 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
       if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
       const TopoDS_Wire outer = BRepTools::OuterWire(face);
       for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
-        if (progress && !progress(++examined, holes)) throw Error("cancelled");
+        if (examined && progress && !progress(++*examined, total)) throw Error("cancelled");
         if (w.Current().IsSame(outer)) continue;
         BRepBuilderAPI_MakeFace hole(surface.Plane(), TopoDS::Wire(w.Current()));
         if (!hole.IsDone()) continue;
@@ -637,7 +638,7 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
         const double area = std::fabs(g.Mass());
         if (area < 1e-6) continue;
         gp_Pnt c = g.CentreOfMass();
-        if (dot3({n.X(), n.Y(), n.Z()}, minus({c.X(), c.Y(), c.Z()}, mid)) <= 0) continue;  // the inside of a through hole
+        if (!keep(c, n)) continue;
         // A point in the hole itself (an L-shaped slot's middle may not be): one of its triangles' middles.
         if (BRepClass_FaceClassifier(TopoDS::Face(hf.Oriented(TopAbs_FORWARD)), c, 1e-6).State() != TopAbs_IN) {
           BRepMesh_IncrementalMesh(hf, 0.1, false, 0.5, false);
@@ -649,8 +650,9 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
             c = gp_Pnt((tri->Node(a).XYZ() + tri->Node(b).XYZ() + tri->Node(cc).XYZ()) / 3).Transformed(loc.Transformation());
           }
         }
-        // The wall's thickness beside the hole: from a point of the face just past the hole's rim, inwards until out of
-        // the wall.
+        GProp_GProps rimProps;
+        BRepGProp::LinearProperties(w.Current(), rimProps);
+        // The body's thickness beside the hole: from a point of the face just past the hole's rim, inwards until out of it.
         double thickness = 0;
         {
           BRepAdaptor_Curve rim(TopoDS::Edge(TopExp_Explorer(w.Current(), TopAbs_EDGE).Current()));
@@ -660,65 +662,133 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
           if (away.Magnitude() > 1e-9) {
             const gp_Pnt beside = r.Translated(away.Normalized() * 0.3);
             for (double d = 0.1; d < 30; d += std::max(0.1, 0.1 * d)) {
-              if (!solid_at(beside.Translated(gp_Vec(n) * -d), true)) break;
+              if (!inside(own, beside.Translated(gp_Vec(n) * -d))) break;
               thickness = d;
             }
           }
         }
         if (thickness <= 0) thickness = 1;  // not measured: a millimetre
-        // Out to the room first: straight out of the box nothing of its walls in the way (a tray's open top under its lid is
-        // an inner loop of the tray's rim, but leads into the lid, not out): no opening.
-        bool covered = false;
-        for (auto& x : outward) {
-          x.Perform(gp_Lin(c.Translated(gp_Vec(n) * 0.05), n), 0, reach);
-          if (x.IsDone() && x.NbPnt() > 0) covered = true;
+        if (to_room) {
+          bool covered = false;
+          for (auto& x : outward) {
+            x.Perform(gp_Lin(c.Translated(gp_Vec(n) * 0.05), n), 0, reach);
+            if (x.IsDone() && x.NbPnt() > 0) covered = true;
+          }
+          if (covered) {
+            ++blind;
+            continue;
+          }
         }
-        if (covered) {
-          ++blind;
-          continue;
-        }
+        // Through: from its middle the way in stays clear of every solid through the body's own thickness there (a boss, a
+        // foot or a blind pocket goes into solid at once or before that depth; a part sitting in it fills it). What stands
+        // behind it (a fan drawing through it) does not close it.
         bool clear = !solid_at(c.Translated(gp_Vec(n) * 0.05), false);
-        bool wallsOnly = clear || solid_at(c.Translated(gp_Vec(n) * 0.05), true);  // what stopped it: the walls (blind) or another part (filled)
-        for (double d = 0.1; clear && d < thickness - 0.05; d += std::max(0.1, thickness / 12)) {  // within the wall: what sits behind it is no lid
+        bool ownOnly = clear || inside(own, c.Translated(gp_Vec(n) * 0.05));
+        for (double d = 0.1; clear && d < thickness - 0.05; d += std::max(0.1, thickness / 12)) {
           const gp_Pnt q = c.Translated(gp_Vec(n) * -d);
-          if (solid_at(q, false)) clear = false, wallsOnly = solid_at(q, true);
+          if (solid_at(q, false)) clear = false, ownOnly = inside(own, q);
         }
         if (!clear) {
-          ++(wallsOnly ? blind : filled);
+          ++(ownOnly ? blind : filled);
           continue;
         }
-        vents.push_back({{c.X(), c.Y(), c.Z()}, {n.X(), n.Y(), n.Z()}, area});
+        const double perimeter = rimProps.Mass();
+        out.push_back({{c.X(), c.Y(), c.Z()}, {n.X(), n.Y(), n.Z()}, area, perimeter > 0 ? 4 * area / perimeter : std::sqrt(area), thickness, own.id});
       }
     }
-  // The fans: their curves, where their air goes, their openings.
+    return out;
+  };
+  int total = 0, examined = 0;  // for progress: every inner loop of the walls' flat faces
+  for (const auto& shape : shapes)
+    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next())
+      if (BRepAdaptor_Surface(TopoDS::Face(e.Current())).GetType() == GeomAbs_Plane)
+        for (TopExp_Explorer w(e.Current(), TopAbs_WIRE); w.More(); w.Next()) ++total;
+  std::vector<Hole> vents;  // the box's: each inner loop of a face that looks out of the box (a through hole's inside one looks in)
+  for (size_t k = 0; k < shapes.size(); ++k) {
+    const auto found = holes_of(k, [&](const gp_Pnt& c, const gp_Dir& n) { return n.X() * (c.X() - mid[0]) + n.Y() * (c.Y() - mid[1]) + n.Z() * (c.Z() - mid[2]) > 0; },
+                                true, &examined, total);
+    vents.insert(vents.end(), found.begin(), found.end());
+  }
+
+  // The fans: their curves, their openings and which way the air goes through each. A fan's opening that lies right behind
+  // holes (in its outline, facing the same way, within a few millimetres) draws or blows through those holes alone: they are
+  // its own path, in series with it, whether they are in the box's wall (a perforated panel in front of a blower's intake)
+  // or in another part covering the opening (a grille). One hole about as large as the opening is the cut-out the fan is
+  // mounted in: no restriction. Otherwise the fan draws from (or blows into) the box's air.
+  struct Path {
+    std::vector<size_t> holes;  // into `vents`
+    bool direct = false;        // through holes of its own (in series with it), not straight from (or into) the box's air
+    bool room = true;           // those holes lead to the room (the box's wall), not to the box's air (a part inside it)
+    bool mount = false;         // through the fan's own cut-out: no restriction
+    std::string part;           // a part covering the opening, whose holes these are
+    P dir{0, 0, 0};             // the way out of the fan on this side (towards the room)
+  };
   struct F {
     air::Fan fan;
+    std::string name;
     P way{0, 0, 0}, at{0, 0, 0};
+    std::optional<P> draws;  // a blower's inlet: its vents are those nearer it than its outlet
+    Path in, out;
+    double Q = 0, dp = 0;
   };
   std::vector<F> list;
+  json notes = json::array();
   double free_flow = 0;
-  P way_all{0, 0, 0}, at_all{0, 0, 0};
+  constexpr double kFront = 10;  // mm: how far in front of an opening its holes may be
+  // Whether a hole (centre c, normal n) lies in front of an opening along `dir`, inside its outline (1 mm to spare).
+  auto in_front = [&](const FanProfile& o, const P& dir, const P& c, const P& n, double far) {
+    if (std::fabs(dot3(n, dir)) < 0.9) return false;
+    const P d = minus(c, o.centre);
+    const double along = dot3(d, dir);
+    if (along < -1 || along > far) return false;
+    const P u = unit(std::fabs(dir[0]) < 0.9 ? P{0, dir[2], -dir[1]} : P{-dir[2], 0, dir[0]});
+    const P v{dir[1] * u[2] - dir[2] * u[1], dir[2] * u[0] - dir[0] * u[2], dir[0] * u[1] - dir[1] * u[0]};
+    if (o.loops.empty()) return std::sqrt(std::max(0.0, dot3(d, d) - along * along)) < std::sqrt(o.area / kPi) + 1;
+    const double px = dot3(d, u), py = dot3(d, v);
+    bool in = false;
+    double nearest = 1e300;
+    const auto& loop = o.loops.front();
+    for (size_t i = 0, j = loop.size() - 1; i < loop.size(); j = i++) {
+      const double xi = dot3(minus(loop[i], o.centre), u), yi = dot3(minus(loop[i], o.centre), v);
+      const double xj = dot3(minus(loop[j], o.centre), u), yj = dot3(minus(loop[j], o.centre), v);
+      if ((yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) in = !in;
+      const double ex = xj - xi, ey = yj - yi, l2 = ex * ex + ey * ey;
+      const double t = l2 > 0 ? std::clamp(((px - xi) * ex + (py - yi) * ey) / l2, 0.0, 1.0) : 0;
+      nearest = std::min(nearest, std::hypot(px - xi - t * ex, py - yi - t * ey));
+    }
+    return in || nearest < 1;
+  };
   for (const json& d : fans) {
     F f;
     f.fan = air::fan_from(d.value("fan", json("80x25")));
-    std::vector<std::pair<FanProfile, bool>> openings;  // (profile, it lets the air out)
+    f.name = d.value("name", "Fan " + std::to_string(list.size() + 1));
     const bool blower = d.value("type", std::string("axial")) == "blower";
+    std::optional<FanProfile> outlet, inlet;
     try {
-      if (d.contains("outlet") && (d["outlet"].is_string() || !d["outlet"].contains("centre"))) openings.push_back({fan_profile(doc, scene, d["outlet"]), true});
-      if (blower && d.contains("inlet")) openings.push_back({fan_profile(doc, scene, d["inlet"]), false});
+      if (d.contains("outlet") && (d["outlet"].is_string() || !d["outlet"].contains("centre"))) outlet = fan_profile(doc, scene, d["outlet"]);
+      if (blower && d.contains("inlet")) inlet = fan_profile(doc, scene, d["inlet"]);
     } catch (const std::exception&) {
-      openings.clear();
+      outlet.reset(), inlet.reset();
     }
-    if (!openings.empty()) {
-      f.at = openings.front().first.centre;
-      if (blower && openings.size() == 2) {  // out of the side, away from the inlet
-        f.way = unit(openings[0].first.normal);
-        if (dot3(f.way, minus(openings[0].first.centre, openings[1].first.centre)) < 0) f.way = {-f.way[0], -f.way[1], -f.way[2]};
-        if (d.value("flip_outlet", false)) f.way = {-f.way[0], -f.way[1], -f.way[2]};
+    // Each side's opening and the way out of the fan there: a blower's outlet along its way (out of its side, away from its
+    // inlet), its inlet out of its housing; an axial fan's one opening, along its way downstream and against it upstream.
+    std::vector<std::tuple<Path*, const FanProfile*, P>> sides;
+    if (outlet) {
+      f.at = outlet->centre;
+      if (blower && inlet) {
+        f.way = unit(outlet->normal);
+        if (dot3(f.way, minus(outlet->centre, inlet->centre)) < 0) f.way = neg(f.way);
+        if (d.value("flip_outlet", false)) f.way = neg(f.way);
+        P in_dir = unit(inlet->normal);
+        if (dot3(in_dir, minus(inlet->centre, outlet->centre)) < 0) in_dir = neg(in_dir);
+        if (d.value("flip_inlet", false)) in_dir = neg(in_dir);
+        sides = {{&f.out, &*outlet, f.way}, {&f.in, &*inlet, in_dir}};
+        f.draws = inlet->centre;
       } else {
-        f.way = unit(d.contains("vector") ? d["vector"].get<P>() : openings.front().first.normal);
+        f.way = unit(d.contains("vector") ? d["vector"].get<P>() : outlet->normal);
+        sides = {{&f.out, &*outlet, f.way}, {&f.in, &*outlet, neg(f.way)}};
       }
-    } else {  // an older fan: its body's middle, its vector
+    } else {  // an older fan: its body's middle, its vector; no opening to find holes in front of
       Bnd_Box b;
       for (const auto& r : d.value("refs", json::array()))
         if (const std::string id = r.is_string() ? r.get<std::string>() : r.value("body", std::string()); scene.node(id)) BRepBndLib::Add(node_world_shape(doc, scene, id), b);
@@ -728,91 +798,277 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
       f.at = {0.5 * (a0 + a1), 0.5 * (b0 + b1), 0.5 * (c0 + c1)};
       f.way = unit(d.value("vector", P{1, 0, 0}));
     }
-    // A vent its opening sits in is its own: it blows (or draws) straight through it.
-    for (const auto& [o, out] : openings)
-      for (auto& v : vents) {
-        // In the hole's own plane (within a wall's thickness) and inside its span: a fan drawing from deep in the box does not.
-        const P d3 = minus(v.centre, o.centre);
-        const double across = std::fabs(dot3(d3, v.normal));
-        const P along{d3[0] - across * v.normal[0], d3[1] - across * v.normal[1], d3[2] - across * v.normal[2]};
-        if (v.fan < 0 && std::fabs(dot3(unit(o.normal), v.normal)) > 0.9 && across < 5 && std::sqrt(dot3(along, along)) < 0.5 * std::sqrt(std::max(o.area, v.area))) {
-          v.fan = int(list.size());
-          v.out = blower ? out : dot3(f.way, v.normal) > 0;
+    const size_t me = list.size();
+    for (auto& [path, o, dir] : sides) {
+      path->dir = dir;
+      // The box's holes in front of it.
+      for (size_t i = 0; i < vents.size(); ++i)
+        if (vents[i].fan < 0 && in_front(*o, dir, vents[i].centre, vents[i].normal, kFront)) path->holes.push_back(i);
+      if (path->holes.empty()) {
+        // A part covering it: rays from its middle and around its outline (two rings), out along its way: most meet the same
+        // part within 15 mm before any wall (the others pass through its holes).
+        std::vector<gp_Pnt> starts{gp_Pnt(o->centre[0], o->centre[1], o->centre[2])};
+        if (!o->loops.empty())
+          for (double ring : {0.4, 0.8})
+            for (size_t k = 0; k < o->loops.front().size(); k += std::max<size_t>(1, o->loops.front().size() / 8)) {
+              const P& q = o->loops.front()[k];
+              starts.push_back(gp_Pnt(o->centre[0] + ring * (q[0] - o->centre[0]), o->centre[1] + ring * (q[1] - o->centre[1]), o->centre[2] + ring * (q[2] - o->centre[2])));
+            }
+        std::map<std::string, int> met;
+        for (const gp_Pnt& st : starts) {
+          const gp_Lin ray(st.Translated(gp_Vec(dir[0], dir[1], dir[2]) * 0.3), gp_Dir(dir[0], dir[1], dir[2]));
+          std::string hit;
+          double best = 15;
+          for (auto& b : blockers) {
+            if (b.box.IsOut(ray)) continue;
+            IntCurvesFace_ShapeIntersector x;
+            x.Load(shape_of(b), 1e-6);
+            x.Perform(ray, 0, best);
+            if (x.IsDone() && x.NbPnt() > 0) {
+              double first = 1e300;
+              for (int k = 1; k <= x.NbPnt(); ++k) first = std::min(first, x.WParameter(k));
+              if (first < best) best = first, hit = b.wall ? std::string() : b.id;
+            }
+          }
+          if (!hit.empty()) ++met[hit];
+        }
+        std::string part;
+        int most = 0;
+        for (const auto& [id, n] : met)
+          if (n > most) most = n, part = id;
+        const bool covers = 2 * most >= int(starts.size());
+        if (covers && !part.empty()) {
+          const auto at = std::find_if(blockers.begin(), blockers.end(), [&](const Blocker& b) { return b.id == part; });
+          const auto found = holes_of(size_t(at - blockers.begin()),
+                                      [&](const gp_Pnt& c, const gp_Dir& n) { return in_front(*o, dir, {c.X(), c.Y(), c.Z()}, {n.X(), n.Y(), n.Z()}, 30); }, false,
+                                      nullptr, 0);
+          const opad::Node* pn = scene.node(part);
+          if (found.empty()) {
+            notes.push_back("\"" + f.name + "\": \"" + (pn ? pn->name : part) + "\" covers its opening with no hole in front of it: the air is taken to go round it");
+          } else {
+            // Each through hole of the part listed once (a hole has a loop on each side of the part: the one facing the fan
+            // and the one facing away; keep the one facing the way out).
+            for (const Hole& h : found)
+              if (dot3(h.normal, dir) > 0) {
+                vents.push_back(h);
+                path->holes.push_back(vents.size() - 1);
+              }
+            path->part = part;
+            path->room = false;  // a part in the box: its holes lead to the box's air
+            if (!path->holes.empty())
+              notes.push_back("\"" + f.name + "\": its air goes through \"" + (pn ? pn->name : part) + "\" in front of its opening (taken to seal against it)");
+          }
         }
       }
+      for (size_t i : path->holes) {
+        vents[i].fan = int(me), vents[i].exit = path == &f.out;
+        if (vents[i].area >= 0.5 * o->area) path->mount = true;  // the cut-out it is mounted in
+      }
+      path->direct = !path->holes.empty();
+    }
     const double q = f.fan.Qmax;
     free_flow += q;
-    for (int k = 0; k < 3; ++k) way_all[size_t(k)] += f.way[size_t(k)] * q, at_all[size_t(k)] += f.at[size_t(k)] * q;
     list.push_back(f);
   }
   if (list.empty()) throw Error("no fan to estimate the vents for");
-  for (auto& c : at_all) c /= free_flow;
-  way_all = unit(way_all);
-  // Intakes behind the fans' air, exhausts ahead of it.
-  struct Side {
-    double area = 0;
-    int openings = 0;
-    bool fan = false;  // a fan blows straight through it
-  } in, out;
-  for (auto& v : vents) {
-    if (v.fan < 0) v.out = dot3(minus(v.centre, at_all), way_all) > 0;
-    Side& s = v.out ? out : in;
-    if (v.fan >= 0) s.fan = true;
-    else s.area += v.area, ++s.openings;
-  }
-  json notes = json::array();
-  // No vent but the fans' own holes (or none at all): the air has no way through the box (a fan in its hole draws in and
-  // blows out through the same hole); the fans only stir it.
-  const bool sealed = in.area + out.area <= 0;
-  if (!sealed && ((!in.fan && in.area <= 0) || (!out.fan && out.area <= 0))) {
-    notes.push_back(std::string("no ") + (in.area <= 0 && !in.fan ? "intake" : "exhaust") +
-                    " vents found on that side of the fans: the air comes in and goes out through the same vents, half each");
-    const double half = 0.5 * (in.area + out.area);
-    if (!in.fan) in.area = half;
-    if (!out.fan) out.area = half;
-  }
+  // The box's other holes: intakes behind the fans' air, exhausts ahead of it; all exhausts when no fan draws from the box's
+  // air (each takes the room's through holes of its own), all intakes when none blows into it.
+  bool fromBox = false, intoBox = false;
+  for (const F& f : list) fromBox = fromBox || !f.in.direct || !f.in.room, intoBox = intoBox || !f.out.direct || !f.out.room;
+  std::vector<size_t> intakes, exhausts;
+  for (size_t i = 0; i < vents.size(); ++i)
+    if (vents[i].fan < 0) {
+      // Each fan's say, by its free flow: a blower's by which of its openings the hole is nearer (its outlet may point up
+      // while the box's air goes along), an axial fan's by the side of it the hole is on.
+      double vote = 0;
+      for (const F& f : list) {
+        const P& c = vents[i].centre;
+        const double ahead = f.draws ? std::sqrt(dot3(minus(c, *f.draws), minus(c, *f.draws))) - std::sqrt(dot3(minus(c, f.at), minus(c, f.at)))
+                                     : dot3(minus(c, f.at), f.way);
+        vote += (ahead > 0 ? 1 : -1) * f.fan.Qmax;
+      }
+      vents[i].exit = fromBox && intoBox ? vote > 0 : intoBox;
+      (vents[i].exit ? exhausts : intakes).push_back(i);
+    }
+
+  // Each hole: the orifice's loss (discharge 0.6) and, for a hole long against its width, the laminar friction along it:
+  // dp = a Q^2 + b Q (Q in m3/s through that hole). Holes of one size grouped: a panel of 200 alike is one group.
   const air::Air a = air::properties(ambient_C);
   constexpr double kCd = 0.6;
-  auto k = [&](const Side& s) { return s.fan || s.area <= 0 ? 0.0 : a.rho / (2 * std::pow(kCd * s.area * 1e-6, 2)); };  // dp = k Q^2
-  const double K = k(in) + k(out);
-  auto flow_at_dp = [&](double dp) {
+  struct Group {
+    double a, b;
+    int n;
+  };
+  auto groups = [&](const std::vector<size_t>& holes, double scale) {  // scale: a share of each hole's area (the "half each" split)
+    std::map<std::tuple<long, long, long>, Group> by;
+    for (size_t i : holes) {
+      const Hole& h = vents[i];
+      const double A = h.area * 1e-6 * scale, D = h.width * 1e-3, L = h.thickness * 1e-3;
+      const auto key = std::make_tuple(std::lround(h.area * 1e3), std::lround(h.width * 1e3), std::lround(h.thickness * 1e2));
+      auto [it, made] = by.try_emplace(key, Group{a.rho / (2 * std::pow(kCd * A, 2)), 32 * a.mu * L / (A * D * D), 0});
+      ++it->second.n;
+    }
+    std::vector<Group> out;
+    for (const auto& [k, g] : by) out.push_back(g);
+    return out;
+  };
+  auto flow_of = [](const std::vector<Group>& gs, double dp) {  // m3/s through them all at that pressure
     double q = 0;
-    for (const auto& f : list) q += air::flow_at(f.fan, dp);
+    for (const auto& g : gs) q += g.n * (-g.b + std::sqrt(g.b * g.b + 4 * g.a * dp)) / (2 * g.a);
     return q;
   };
-  double dp = 0;
-  if (K > 0) {
-    double lo = 0, hi = 0;
-    for (const auto& f : list) hi = std::max(hi, f.fan.pressure(0));
-    for (int i = 0; i < 100; ++i) {
+  auto drop_of = [&](const std::vector<Group>& gs, double Q) {  // the pressure that drives Q through them
+    if (Q <= 0 || gs.empty()) return gs.empty() && Q > 0 ? 1e12 : 0.0;
+    double lo = 0, hi = 1;
+    while (flow_of(gs, hi) < Q && hi < 1e12) hi *= 4;
+    for (int i = 0; i < 60; ++i) {
       const double m = 0.5 * (lo + hi);
-      (flow_at_dp(m) > std::sqrt(m / K) ? lo : hi) = m;
+      (flow_of(gs, m) < Q ? lo : hi) = m;
     }
-    dp = 0.5 * (lo + hi);
+    return 0.5 * (lo + hi);
+  };
+  // No general vent on one side of the fans that need it: the air comes in and goes out through the same vents, half each.
+  double inScale = 1, outScale = 1;
+  if (fromBox && intoBox && (intakes.empty() != exhausts.empty())) {
+    notes.push_back(std::string("no ") + (intakes.empty() ? "intake" : "exhaust") +
+                    " vents found on that side of the fans: the air comes in and goes out through the same vents, half each");
+    if (intakes.empty()) intakes = exhausts;
+    else exhausts = intakes;
+    inScale = outScale = 0.5;
   }
-  const double Q = sealed ? 0.0 : flow_at_dp(dp);
-  if (sealed) notes.push_back("no vents found: no air goes through the box, the fans only stir the air inside");
-  auto side = [&](const Side& s) {
-    json j = {{"area_mm2", s.area}, {"openings", s.openings}, {"pressure_Pa", k(s) * Q * Q}};
-    if (s.fan) j["fan"] = true;
-    return j;
+  const std::vector<Group> gin = groups(intakes, inScale), gout = groups(exhausts, outScale);
+  std::vector<std::vector<Group>> fin, fout;
+  for (const F& f : list) fin.push_back(f.in.mount ? std::vector<Group>{} : groups(f.in.holes, 1)), fout.push_back(f.out.mount ? std::vector<Group>{} : groups(f.out.holes, 1));
+  // The network: the box's air in two parts, before the fans (pU, fed by the intakes) and after them (pD, let out by the
+  // exhausts); each fan between where it draws (pU, or the room through its own path) and where it blows (pD, or the room
+  // through its own). For given pU and pD each fan's flow is where its curve meets that; pU and pD are where the box's air
+  // balances (in = out), found in turns.
+  double Pmax = 0;
+  for (const F& f : list) Pmax = std::max(Pmax, f.fan.pressure(0));
+  auto fan_flow = [&](size_t i, double pU, double pD, double* dp) {
+    const F& f = list[i];
+    auto rise = [&](double Q) {  // what the fan must make at Q
+      const double pin = f.in.direct ? (f.in.room ? 0.0 : pU) - (f.in.mount ? 0.0 : drop_of(fin[i], Q)) : pU;
+      const double pout = f.out.direct ? (f.out.room ? 0.0 : pD) + (f.out.mount ? 0.0 : drop_of(fout[i], Q)) : pD;
+      return pout - pin;
+    };
+    double lo = 0, hi = f.fan.Qmax;
+    if (f.fan.pressure(0) <= rise(0)) {
+      if (dp) *dp = rise(0);
+      return 0.0;
+    }
+    for (int k = 0; k < 50; ++k) {
+      const double m = 0.5 * (lo + hi);
+      (f.fan.pressure(m) > rise(m) ? lo : hi) = m;
+    }
+    if (dp) *dp = rise(0.5 * (lo + hi));
+    return 0.5 * (lo + hi);
+  };
+  double pU = 0, pD = 0;
+  for (int turn = 0; turn < 16; ++turn) {
+    if (fromBox) {  // in through the intakes = what the fans drawing from the box take
+      double lo = -Pmax, hi = 0;
+      for (int k = 0; k < 40; ++k) {
+        const double m = 0.5 * (lo + hi);
+        double drawn = 0;
+        for (size_t i = 0; i < list.size(); ++i)
+          if (!list[i].in.direct || !list[i].in.room) drawn += fan_flow(i, m, pD, nullptr);
+        (flow_of(gin, -m) > drawn ? lo : hi) = m;
+      }
+      pU = 0.5 * (lo + hi);
+    }
+    if (intoBox) {  // out through the exhausts = what the fans blowing into the box give
+      double lo = 0, hi = Pmax;
+      for (int k = 0; k < 40; ++k) {
+        const double m = 0.5 * (lo + hi);
+        double blown = 0;
+        for (size_t i = 0; i < list.size(); ++i)
+          if (!list[i].out.direct || !list[i].out.room) blown += fan_flow(i, pU, m, nullptr);
+        (blown > flow_of(gout, m) ? lo : hi) = m;
+      }
+      pD = 0.5 * (lo + hi);
+    }
+  }
+  double Q = 0;
+  for (size_t i = 0; i < list.size(); ++i) list[i].Q = fan_flow(i, pU, pD, &list[i].dp), Q += list[i].Q;
+  const bool sealed = intakes.empty() && exhausts.empty() &&
+                      std::none_of(list.begin(), list.end(), [](const F& f) { return (f.in.direct && f.in.room) || (f.out.direct && f.out.room); });
+  if (sealed) {
+    Q = 0;
+    for (auto& f : list) f.Q = 0;
+    notes.push_back("no vents found: no air goes through the box, the fans only stir the air inside");
+  }
+  // What holds them back most: the largest pressure drop on their way.
+  std::string by = sealed ? "vents" : Q >= 0.9 * free_flow ? "fans" : "";
+  json limiting;
+  if (by.empty()) {
+    double worst = -1;
+    auto consider = [&](double drop, const std::string& what, const json& detail) {
+      if (drop > worst) worst = drop, by = what, limiting = detail;
+    };
+    if (fromBox) consider(-pU, "intake", json());
+    if (intoBox) consider(pD, "exhaust", json());
+    for (size_t i = 0; i < list.size(); ++i) {
+      if (list[i].in.direct && !list[i].in.mount) consider(drop_of(fin[i], list[i].Q), "fan_intake", {{"fan", list[i].name}, {"side", "intake"}});
+      if (list[i].out.direct && !list[i].out.mount) consider(drop_of(fout[i], list[i].Q), "fan_outlet", {{"fan", list[i].name}, {"side", "outlet"}});
+    }
+  }
+  auto area_of = [&](const std::vector<size_t>& holes) {
+    double s = 0;
+    for (size_t i : holes) s += vents[i].area;
+    return s;
+  };
+  auto side = [&](const std::vector<size_t>& holes, double scale, double drop) {
+    return json{{"area_mm2", area_of(holes) * scale}, {"openings", int(holes.size())}, {"pressure_Pa", drop}};
+  };
+  auto name_of = [&](const std::string& id) {
+    const opad::Node* n = scene.node(id);
+    return n ? n->name : id;
   };
   constexpr double kCfmM3s = 4.719474e-4;
-  json out_j = {{"intake", side(in)},
-                {"exhaust", side(out)},
+  json per_fan = json::array();
+  for (size_t i = 0; i < list.size(); ++i) {
+    const F& f = list[i];
+    auto path = [&](const Path& p, const std::vector<Group>& gs, bool exit) {
+      if (!p.direct) return json{{"through", exit ? "box" : "box"}};
+      json j = {{"through", p.mount ? "mount" : "holes"}, {"openings", int(p.holes.size())}, {"area_mm2", area_of(p.holes)},
+                {"pressure_Pa", p.mount ? 0.0 : drop_of(gs, f.Q)}, {"body", name_of(vents[p.holes.front()].body)}};
+      if (!p.part.empty()) j["part"] = name_of(p.part);
+      return j;
+    };
+    per_fan.push_back({{"name", f.name}, {"flow_m3h", f.Q * 3600}, {"flow_cfm", f.Q / kCfmM3s}, {"free_flow_cfm", f.fan.Qmax / kCfmM3s},
+                       {"pressure_Pa", f.dp}, {"intake", path(f.in, fin[i], false)}, {"outlet", path(f.out, fout[i], true)}});
+  }
+  json out_j = {{"intake", side(intakes, inScale, fromBox ? -pU : 0.0)},
+                {"exhaust", side(exhausts, outScale, intoBox ? pD : 0.0)},
+                {"fans", per_fan},
                 {"free_flow_m3h", free_flow * 3600},
                 {"free_flow_cfm", free_flow / kCfmM3s},
                 {"flow_m3h", Q * 3600},
                 {"flow_cfm", Q / kCfmM3s},
                 {"fraction", free_flow > 0 ? Q / free_flow : 0.0},
-                {"pressure_Pa", dp},
-                {"limited_by", sealed ? "vents" : K <= 0 || Q >= 0.9 * free_flow ? "fans" : k(in) >= k(out) ? "intake" : "exhaust"}};
+                {"pressure_Pa", pD - pU},
+                {"limited_by", by}};
+  if (!limiting.is_null()) out_j["limiting"] = limiting;
+  // Compatibility with the one-path summary: a side all of whose fans go through their own cut-outs is the fans'.
+  if (std::all_of(list.begin(), list.end(), [](const F& f) { return f.in.mount; })) out_j["intake"]["fan"] = true;
+  if (std::all_of(list.begin(), list.end(), [](const F& f) { return f.out.mount; })) out_j["exhaust"]["fan"] = true;
   json listed = json::array();  // the openings found, largest first (what the counts are made of)
-  std::vector<const Vent*> order;
+  std::vector<const Hole*> order;
   for (const auto& v : vents) order.push_back(&v);
-  std::sort(order.begin(), order.end(), [](const Vent* a, const Vent* b) { return a->area > b->area; });
-  for (const Vent* v : order)
-    listed.push_back({{"centre", v->centre}, {"normal", v->normal}, {"area_mm2", v->area}, {"side", v->fan >= 0 ? "fan" : v->out ? "exhaust" : "intake"}});
+  std::sort(order.begin(), order.end(), [](const Hole* a, const Hole* b) { return a->area > b->area; });
+  for (const Hole* v : order) {
+    json o = {{"centre", v->centre}, {"normal", v->normal}, {"area_mm2", v->area}, {"width_mm", v->width}, {"thickness_mm", v->thickness}, {"body", name_of(v->body)}};
+    if (v->fan >= 0) {
+      const F& f = list[size_t(v->fan)];
+      const Path& p = v->exit ? f.out : f.in;
+      o["side"] = p.mount ? "fan" : v->exit ? "fan_outlet" : "fan_intake";
+      o["fan"] = f.name;
+    } else {
+      o["side"] = v->exit ? "exhaust" : "intake";
+    }
+    listed.push_back(o);
+  }
   out_j["openings"] = listed;
   out_j["left_out"] = {{"blind", blind}, {"filled", filled}};
   if (watts > 0) {
@@ -1115,7 +1371,10 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
   json vents_est;
   if (!enclosure.empty() && !fan_loads.empty()) {
     std::vector<json> defs;
-    for (const Load* l : fan_loads) defs.push_back(l->def);
+    for (const Load* l : fan_loads) {
+      defs.push_back(l->def);
+      defs.back()["name"] = l->name;
+    }
     double watts = 0;
     for (const Load* l : heats) watts += l->def.value("value", 0.0);
     try {
@@ -1295,6 +1554,32 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
       }
   }
   fine = coarse / std::pow(2.0, deepest);  // the finest cell
+  // Vents narrower than two of the finest cells are closed in the mesh, or nearly: the run lets little or no air through them
+  // where the estimate counted them. Said, with the quality that would hold them (its cells scale with its divisions).
+  if (vents_est.is_object() && given <= 0) {
+    int closed = 0, narrow = 0;
+    double smallest = 1e300;
+    for (const auto& o : vents_est.value("openings", json::array())) {
+      const double w = o.value("width_mm", 1e300);
+      if (w >= 2 * fine) continue;
+      ++(w < fine ? closed : narrow);
+      smallest = std::min(smallest, w);
+    }
+    if (closed + narrow > 0) {
+      const double divisions = cfd.value("divisions", 30.0);
+      std::string better;
+      for (const auto& [q, d] : {std::pair<const char*, double>{"normal", 30}, {"fine", 45}})
+        if (d > divisions && smallest >= 2 * fine * divisions / d) {
+          better = std::string(" (") + q + " holds them)";
+          break;
+        }
+      run.warnings.push_back(std::to_string(closed + narrow) + " vent(s) narrower than two of the mesh's finest cells (" + num(fine) + " mm here, the smallest vent " +
+                             num(smallest) + " mm wide): " + (closed ? std::to_string(closed) + " closed in the run, " : std::string()) +
+                             "little or no air goes through them, so the run may come out hotter than the vents' estimate" +
+                             (better.empty() ? std::string(" (give cfd.cell_size to resolve them)") : better));
+      vents_est["unresolved"] = closed + narrow;
+    }
+  }
   // Fans in an enclosure: each a disk of air whose two sides the fan's curve sets apart in pressure. On a body that makes
   // heat or has fins (a heatsink), the disk lies against the side the air comes from, the fan's size across; on any other
   // body (one that stands for the fan), the disk is its middle across the air's way, as wide as it, and the body is air.
@@ -1410,7 +1695,19 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
             BRepPrimAPI_MakePrism cap(*face, gp_Vec((*normal)[0], (*normal)[1], (*normal)[2]) * -slab);
             if (cap.IsDone()) b.caps.push_back({on, cap.Shape()});
           }
-          // What is inside the housing (its impeller, its motor) is shut in by the plugs: left out of the parts.
+          // What is inside the housing (its impeller, its motor) is shut in by the plugs: left out of the parts. Shut in, not
+          // merely within the housing's box (a heatsink in the curve of a scroll housing, a grille recessed into its intake are
+          // not): rays from the body's middle every way meet the housing or a plug.
+          std::vector<IntCurvesFace_ShapeIntersector> shell;
+          for (size_t on : {b.in_body, b.out_body}) {
+            shell.emplace_back();
+            shell.back().Load(world[on], 1e-6);
+          }
+          for (const auto& [on, cap] : b.caps) {
+            shell.emplace_back();
+            shell.back().Load(cap, 1e-6);
+          }
+          const double far = std::sqrt(hb.SquareExtent()) + 1;
           for (size_t i = 0; i < bodies.size(); ++i) {
             if (i == b.in_body || i == b.out_body || is_wall(bodies[i]) || is_air[i] || heated.count(bodies[i])) continue;
             Bnd_Box ib;
@@ -1420,6 +1717,24 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
             bool in = true;
             for (int k = 0; k < 3; ++k) in = in && i0[k] >= h0[k] - 0.5 && i1[k] <= h1[k] + 0.5;
             if (!in) continue;
+            const gp_Pnt from(0.5 * (i0[0] + i1[0]), 0.5 * (i0[1] + i1[1]), 0.5 * (i0[2] + i1[2]));
+            for (int dx = -1; dx <= 1 && in; ++dx)
+              for (int dy = -1; dy <= 1 && in; ++dy)
+                for (int dz = -1; dz <= 1 && in; ++dz) {
+                  if (dx == 0 && dy == 0 && dz == 0) continue;
+                  const gp_Lin ray(from, gp_Dir(dx, dy, dz));
+                  bool met = false;
+                  for (auto& x : shell) {
+                    x.Perform(ray, 0, far);
+                    met = met || (x.IsDone() && x.NbPnt() > 0);
+                  }
+                  in = met;
+                }
+            if (!in) {
+              run.warnings.push_back("\"" + scene.node(bodies[i])->name + "\" lies within blower \"" + l->name +
+                                     "\"'s outline but outside its housing: kept in the run");
+              continue;
+            }
             is_air[i] = true, level[i] = 0;
             run.warnings.push_back("\"" + scene.node(bodies[i])->name + "\" is inside blower \"" + l->name + "\": left out (its housing is solid)");
           }
@@ -1886,6 +2201,10 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         count[size_t(side)] = picked.size();
       }
       blower_faces.push_back(count);
+      for (int side = 0; side < 2; ++side)  // a handful of faces: the opening barely there in the mesh (a thin gap before it closed)
+        if (count[size_t(side)] < 8)
+          run.warnings.push_back("blower \"" + b.load->name + "\": its " + (side == 0 ? "inlet" : "outlet") + " covers only " + std::to_string(count[size_t(side)]) +
+                                 " mesh face(s): the run resolves it poorly (a finer quality, or a smaller cfd.cell_size)");
     }
     cp << ");\n";
     put(cas / "system" / "createPatchDict", "dictionary", "createPatchDict", cp.str());

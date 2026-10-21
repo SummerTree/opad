@@ -203,5 +203,20 @@
  "Estimating the vents…": "جارٍ تقدير الفتحات…",
  "The vents' estimate was stopped.": "أُوقف تقدير الفتحات.",
  "Finding the sketches' profiles": "إيجاد مقاطع الرسوم",
- "No vents found: no air goes through the box, the fans only stir the air inside. Cut vents through its walls (an intake and an exhaust), or choose natural convection if it is sealed on purpose.": "لم توجد فتحات: لا يمر هواء عبر الصندوق، والمراوح تحرّك الهواء داخله فقط. اقطع فتحات في جدرانه (سحبًا وطردًا)، أو اختر الحمل الحراري الطبيعي إن كان مغلقًا عن قصد."
+ "No vents found: no air goes through the box, the fans only stir the air inside. Cut vents through its walls (an intake and an exhaust), or choose natural convection if it is sealed on purpose.": "لم توجد فتحات: لا يمر هواء عبر الصندوق، والمراوح تحرّك الهواء داخله فقط. اقطع فتحات في جدرانه (سحبًا وطردًا)، أو اختر الحمل الحراري الطبيعي إن كان مغلقًا عن قصد.",
+ "the fans' own cut-outs": "فتحات تركيب المراوح نفسها",
+ "none (the fans' own holes, below)": "لا شيء (ثقوب المراوح الخاصة، أدناه)",
+ "%1 draws straight through its cut-out in %2.": "%1 يسحب مباشرة عبر فتحة تركيبه في %2.",
+ "%1 blows straight out through its cut-out in %2.": "%1 ينفخ مباشرة إلى الخارج عبر فتحة تركيبه في %2.",
+ "%1 draws through %n hole(s) in %2 in front of its intake (%3 mm², %4 Pa across them).": "%1 يسحب عبر %n من الثقوب في %2 أمام مدخله (%3 مم²، و%4 باسكال عبرها).",
+ "%1 blows through %n hole(s) in %2 in front of its outlet (%3 mm², %4 Pa across them).": "%1 ينفخ عبر %n من الثقوب في %2 أمام مخرجه (%3 مم²، و%4 باسكال عبرها).",
+ ", held back most by the holes in front of %1's intake.": "، وأكثر ما يعيقها الثقوب أمام مدخل %1.",
+ ", held back most by the holes in front of %1's outlet.": "، وأكثر ما يعيقها الثقوب أمام مخرج %1.",
+ "With %1 W the air barely moves through the box: it would warm by far more than 100 K.": "مع %1 واط لا يكاد الهواء يتحرك عبر الصندوق: سيسخن بأكثر بكثير من 100 كلفن.",
+ "more or larger holes in front of %1's intake, or a stronger fan.": "ثقوب أكثر أو أكبر أمام مدخل %1، أو مروحة أقوى.",
+ "more or larger holes in front of %1's outlet, or a stronger fan.": "ثقوب أكثر أو أكبر أمام مخرج %1، أو مروحة أقوى.",
+ "in front of %1's intake": "أمام مدخل %1",
+ "in front of %1's outlet": "أمام مخرج %1",
+ "no intake vents found on that side of the fans: the air comes in and goes out through the same vents, half each": "لم توجد فتحات سحب في تلك الجهة من المراوح: يدخل الهواء ويخرج من الفتحات نفسها، نصفها لكل منهما",
+ "no exhaust vents found on that side of the fans: the air comes in and goes out through the same vents, half each": "لم توجد فتحات طرد في تلك الجهة من المراوح: يدخل الهواء ويخرج من الفتحات نفسها، نصفها لكل منهما"
 }

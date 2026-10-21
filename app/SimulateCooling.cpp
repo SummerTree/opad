@@ -777,7 +777,8 @@ void CoolingAssistant::lightChosen() {
       const opad::Vec3 c = o.value("centre", opad::Vec3{0, 0, 0});
       opad::Vec3 n = o.value("normal", opad::Vec3{0, 0, 1});
       const double r = std::sqrt(std::max(0.0, o.value("area_mm2", 0.0)) / M_PI);
-      const bool in = o.value("side", std::string()) == "intake";
+      const std::string side = o.value("side", std::string());
+      const bool in = side == "intake" || side == "fan_intake";  // the air going in: the arrow comes to it
       opad::Vec3 u = std::fabs(n[0]) < 0.9 ? opad::Vec3{0, n[2], -n[1]} : opad::Vec3{-n[2], 0, n[0]};
       const double ul = std::hypot(u[0], u[1], u[2]);
       u = {u[0] / ul, u[1] / ul, u[2] / ul};
@@ -1525,12 +1526,15 @@ void CoolingAssistant::estimateVents() {
   JobRunner* jobs = m_hooks.jobs ? m_hooks.jobs() : nullptr;
   const int run = ++m_ventRun;
   std::vector<json> defs;
-  for (const FanSpec& f : m_fanSpecs) {
+  for (size_t i = 0; i < m_fanSpecs.size(); ++i) {
+    const FanSpec& f = m_fanSpecs[i];
     if (!f.drawn() && (f.on.empty() || !f.outlet.is_null())) continue;
-    json def = {{"fan", f.spec()}, {"type", f.type.toStdString()}, {"vector", f.vector()}};
+    json def = {{"fan", f.spec()}, {"type", f.type.toStdString()}, {"vector", f.vector()},
+                {"name", ((f.type == "blower" ? tr("Blower") : tr("Fan")) + QString(" %1").arg(i + 1)).toStdString()}};  // as its load is named
     if (!f.outlet.is_null()) def["outlet"] = f.outlet;
     if (!f.inlet.is_null()) def["inlet"] = f.inlet;
     if (f.flipOut) def["flip_outlet"] = true;
+    if (f.flipIn) def["flip_inlet"] = true;
     if (f.outlet.is_null()) def["refs"] = f.on;
     defs.push_back(def);
   }
@@ -1590,10 +1594,25 @@ void CoolingAssistant::estimateVents() {
     auto flow = [&](const char* key) { return QString::number(e.value(key, 0.0) * k, 'g', 3) + " " + u; };
     auto side = [&](const char* key) {
       const json& v = e[key];
-      return v.value("fan", false) && v.value("openings", 0) == 0 ? tr("the fan's own opening")
-                                                                    : tr("%1 mm² in %n opening(s)", "", v.value("openings", 0)).arg(std::lround(v.value("area_mm2", 0.0)));
+      if (v.value("openings", 0) == 0) return v.value("fan", false) ? tr("the fans' own cut-outs") : tr("none (the fans' own holes, below)");
+      return tr("%1 mm² in %n opening(s)", "", v.value("openings", 0)).arg(std::lround(v.value("area_mm2", 0.0)));
     };
     const std::string by = e.value("limited_by", std::string());
+    const json limiting = e.value("limiting", json::object());
+    const QString limitingFan = QString::fromStdString(limiting.value("fan", std::string()));
+    // Each fan whose intake or outlet goes through holes of its own (a perforated panel or a grille right in front of it).
+    QStringList own;
+    for (const auto& f : e.value("fans", json::array()))
+      for (const char* which : {"intake", "outlet"}) {
+        const json p = f.value(which, json::object());
+        const QString fan = QString::fromStdString(f.value("name", std::string())), body = QString::fromStdString(p.value("body", std::string()));
+        if (p.value("through", std::string()) == "mount")
+          own << (std::string(which) == "intake" ? tr("%1 draws straight through its cut-out in %2.") : tr("%1 blows straight out through its cut-out in %2.")).arg(fan, body);
+        else if (p.value("through", std::string()) == "holes")
+          own << (std::string(which) == "intake" ? tr("%1 draws through %n hole(s) in %2 in front of its intake (%3 mm², %4 Pa across them).", "", p.value("openings", 0))
+                                                 : tr("%1 blows through %n hole(s) in %2 in front of its outlet (%3 mm², %4 Pa across them).", "", p.value("openings", 0)))
+                     .arg(fan, body).arg(std::lround(p.value("area_mm2", 0.0))).arg(p.value("pressure_Pa", 0.0), 0, 'f', 1);
+      }
     QString text;
     if (by == "vents") {  // sealed: said first and plainly, not as a flow
       text = tr("No vents found: no air goes through the box, the fans only stir the air inside. Cut vents through its walls (an "
@@ -1601,17 +1620,25 @@ void CoolingAssistant::estimateVents() {
     } else {
       text = tr("Vents (holes through the box's walls, listed in the tip): intake %1, exhaust %2.").arg(side("intake"), side("exhaust")) + " ";
       text += tr("Through them the fans give about %1 of their %2 free flow (%3%)").arg(flow("flow_m3h"), flow("free_flow_m3h")).arg(std::lround(100 * e.value("fraction", 0.0)));
-      text += by == "intake" ? tr(", held back most by the intakes.") : by == "exhaust" ? tr(", held back most by the exhausts.")
-                                                                         : tr(": the vents hardly hold them back.");
+      text += by == "intake"       ? tr(", held back most by the intakes.")
+              : by == "exhaust"    ? tr(", held back most by the exhausts.")
+              : by == "fan_intake" ? tr(", held back most by the holes in front of %1's intake.").arg(limitingFan)
+              : by == "fan_outlet" ? tr(", held back most by the holes in front of %1's outlet.").arg(limitingFan)
+                                   : tr(": the vents hardly hold them back.");
+      if (!own.isEmpty()) text += " " + own.join(" ");
     }
     if (by != "vents" && watts > 0 && e.contains("rise_K")) {
       // What the heat does to that air (it leaves warmer by the heat over its mass flow times its specific heat), and the
       // flow that keeps the rise to 10 K, a usual limit for electronics.
       const double rise = e.value("rise_K", 0.0);
-      text += " " + tr("With %1 W the air leaves about %2 K warmer than the room.").arg(watts, 0, 'g', 3).arg(rise, 0, 'f', 1);
+      text += " " + (rise > 100 ? tr("With %1 W the air barely moves through the box: it would warm by far more than 100 K.").arg(watts, 0, 'g', 3)
+                                : tr("With %1 W the air leaves about %2 K warmer than the room.").arg(watts, 0, 'g', 3).arg(rise, 0, 'f', 1));
       if (rise > 10)
         text += " " + tr("Keeping that to 10 K needs about %1: %2").arg(flow("needed_m3h"))
-                          .arg(by == "fans" ? tr("a stronger fan, or another.") : tr("more %1 area, or a stronger fan.").arg(by == "intake" ? tr("intake") : tr("exhaust")));
+                          .arg(by == "fans"         ? tr("a stronger fan, or another.")
+                               : by == "fan_intake" ? tr("more or larger holes in front of %1's intake, or a stronger fan.").arg(limitingFan)
+                               : by == "fan_outlet" ? tr("more or larger holes in front of %1's outlet, or a stronger fan.").arg(limitingFan)
+                                                    : tr("more %1 area, or a stronger fan.").arg(by == "intake" ? tr("intake") : tr("exhaust")));
     }
     const json left = e.value("left_out", json::object());
     if (left.value("blind", 0) + left.value("filled", 0) > 0)
@@ -1632,7 +1659,11 @@ void CoolingAssistant::estimateVents() {
       const opad::Vec3 c = o.value("centre", opad::Vec3{0, 0, 0});
       const std::string side = o.value("side", std::string());
       rows << tr("%1: %2 mm² at (%3, %4, %5) mm")
-                  .arg(side == "intake" ? tr("intake") : side == "exhaust" ? tr("exhaust") : tr("the fan's own opening"))
+                  .arg(side == "intake"       ? tr("intake")
+                       : side == "exhaust"    ? tr("exhaust")
+                       : side == "fan_intake" ? tr("in front of %1's intake").arg(QString::fromStdString(o.value("fan", std::string())))
+                       : side == "fan_outlet" ? tr("in front of %1's outlet").arg(QString::fromStdString(o.value("fan", std::string())))
+                                              : tr("the fan's own opening"))
                   .arg(std::lround(o.value("area_mm2", 0.0)))
                   .arg(c[0], 0, 'f', 1).arg(c[1], 0, 'f', 1).arg(c[2], 0, 'f', 1);
     }
