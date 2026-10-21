@@ -234,6 +234,10 @@ QProcessEnvironment Context::environment(bool optionalLocks) const {
   for (const char* k : {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
                         "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_QUARANTINE_PATH"})
     e.remove(QString::fromLatin1(k));
+  // An askpass the terminal that started OPAD set up (VS Code's, an ssh one): git would ask there (VS Code popped up a
+  // "Username for https://…" box from OPAD's own git); git asks OPAD (below) or nobody.
+  for (const QString& k : e.keys())
+    if (k == "GIT_ASKPASS" || k == "SSH_ASKPASS" || k == "SSH_ASKPASS_REQUIRE" || k.startsWith("VSCODE_GIT_")) e.remove(k);
   e.insert("GIT_TERMINAL_PROMPT", "0");
   e.insert("LC_ALL", "C");
   if (!optionalLocks) e.insert("GIT_OPTIONAL_LOCKS", "0");

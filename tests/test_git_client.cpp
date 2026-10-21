@@ -544,6 +544,13 @@ TEST(environment_and_ssh_batch_mode) {
   qputenv("GIT_DIR", "C:/elsewhere/.git");  // a hook that started OPAD
   CHECK(!c.environment().contains("GIT_DIR"));
   qunsetenv("GIT_DIR");
+  // Started from VS Code's terminal: its askpass is not git's (it asked "Username for https://example.com" in VS Code).
+  qputenv("GIT_ASKPASS", "/vscode/askpass.sh");
+  qputenv("VSCODE_GIT_IPC_HANDLE", "/tmp/vscode-git.sock");
+  qputenv("SSH_ASKPASS", "/usr/bin/ssh-askpass");
+  e = c.environment();
+  CHECK(!e.contains("GIT_ASKPASS") && !e.contains("VSCODE_GIT_IPC_HANDLE") && !e.contains("SSH_ASKPASS"));
+  for (const char* k : {"GIT_ASKPASS", "VSCODE_GIT_IPC_HANDLE", "SSH_ASKPASS"}) qunsetenv(k);
   qputenv("GIT_SSH_COMMAND", "ssh -i mykey");
   CHECK(c.environment().value("GIT_SSH_COMMAND") == "ssh -i mykey");  // the user's own
   qunsetenv("GIT_SSH_COMMAND");
@@ -917,9 +924,15 @@ int main(int argc, char** argv) {
   QCoreApplication::setApplicationName("git-client");
   QSettings::setDefaultFormat(QSettings::IniFormat);  // Locate git's setting in the temporary home, not the registry
   QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, home.path());
-  // Nothing from this machine's git config (identity, default branch, credential helper, a driver of its own).
+  // Nothing from this machine's git config (identity, default branch, credential helper, a driver of its own), and no one
+  // to ask for a sign-in but OPAD where a test sets it: an IDE's terminal (VS Code) hands git its own askpass, which
+  // popped up "Username for https://example.com" there in the tests that sign in with nobody to answer.
   qputenv("GIT_CONFIG_GLOBAL", QFile::encodeName(home.filePath("gitconfig")));
   qputenv("GIT_CONFIG_NOSYSTEM", "1");
+  for (const QString& k : QProcessEnvironment::systemEnvironment().keys())
+    if (k == "GIT_ASKPASS" || k == "SSH_ASKPASS" || k == "SSH_ASKPASS_REQUIRE" || k.startsWith("VSCODE_GIT_")) qunsetenv(k.toLatin1().constData());
+  qputenv("GIT_TERMINAL_PROMPT", "0");  // the tests' own git (setting up repositories) never waits on the terminal
+  qputenv("GCM_INTERACTIVE", "never");
   for (const char* k : {"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"}) qputenv(k, "OPAD Test");
   for (const char* k : {"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"}) qputenv(k, "test@example.com");
   if (git::findProgram().isEmpty()) {
