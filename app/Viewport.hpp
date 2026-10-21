@@ -320,11 +320,16 @@ class Viewport : public QWidget, protected AIS_ViewController {
   void selectNodes(const std::vector<std::string>& ids);
   void clearSelection();  // emits selectionChanged() once the un-highlight has settled
   // Isolate mode: exactly these nodes' bodies are shown, whatever their visibility flags say, until
-  // isolate({}) or until none of them exists any more (all deleted). isolationChanged() reports both.
+  // isolate({}) or until none of them exists any more (all deleted). isolationChanged() reports both. What is made while
+  // isolated joins it; setIsolated adds a node to it or takes one out (the browser's eye in the mode).
   void isolate(const std::vector<std::string>& ids, bool fit = true);  // empty = exit the mode; fit: frame them (a layer walk keeps the camera)
   bool isIsolated() const { return !m_isolated.empty(); }
   std::vector<std::string> isolatedNodes() const {return {m_isolated.begin(),m_isolated.end()};}
   int isolatedCount() const { return static_cast<int>(m_isolated.size()); }
+  bool inIsolation(const std::string& id) const;  // a body, a sketch, or a component with a body in it
+  bool drawsBody(const std::string& id) const { return m_items.count(id) > 0; }        // benches: displayed (or being)
+  bool drawsSketch(const std::string& id) const { return m_sketchWires.count(id) > 0; }
+  void setIsolated(const std::string& id, bool in);  // in or out of the isolation (its bodies; the last out ends the mode)
   int displayedCount() const { return static_cast<int>(m_items.size()); }
   // What the view did with bodies since the document opened (benches: a sync re-meshes only the shapes that changed, a
   // moved part is relocated, never displayed again): bodies meshed (one per key), displayed, relocated in place.
@@ -1111,6 +1116,10 @@ class Viewport : public QWidget, protected AIS_ViewController {
   bool m_flushingViewEvents = false, m_repaintAfterFlush = false;
   opad::Vec3 m_sectionOrigin{0, 0, 0}, m_sectionNormal{0, 0, 1};
   std::set<std::string> m_isolated;
+  // While isolated: the bodies and sketches there were (at isolate, then each sync). One made since (a sketch projected from
+  // an isolated body, a feature's new body) joins the isolation, or it would be made and never seen.
+  std::unordered_set<std::string> m_isolationSeen;
+  bool adoptIntoIsolation();  // true when some joined
 
   std::mutex m_meshMu;
   const void* m_activeCache = nullptr;  // the document's shape cache the mesh bookkeeping refers to

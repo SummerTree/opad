@@ -752,7 +752,7 @@
    "id": "view.isolate",
    "title": "Isolate",
    "summary": "Shows only the selection until you exit isolation.",
-   "details": "Everything else is hidden from view, not from the document, and the view frames what is isolated. Exit isolate ({key:view.unisolate}) or the × on the Isolated card in the view brings it back.",
+   "details": "Everything else is hidden from view, not from the document, and the view frames what is isolated; what you make meanwhile (a sketch, a feature's new body) joins it. While it is on, a row's eye in the browser is the isolate mark: click it to add that row to the isolation or take it out. Exit isolate ({key:view.unisolate}) or the × on the Isolated card in the view brings everything back.",
    "keywords": ["focus", "show only", "solo"],
    "requires": "Open or create a document first."
   },

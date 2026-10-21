@@ -243,6 +243,16 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         auto* fans = c->findChild<QRadioButton*>("coolingFans");
         auto* natural = c->findChild<QRadioButton*>("coolingNatural");
         require(fans && natural && fans->isChecked() && !natural->isChecked(), "how the air moves: Fans or Natural convection, Fans chosen");
+        // The choice stays what it was made, panel closed and opened again (it once came back as natural convection: the study
+        // keeps only whether the air rises, and with no fan written yet that is natural convection too).
+        c->findChild<QRadioButton*>("coolingMixed")->setChecked(true);
+        c->sync();
+        c->dismiss();
+        c->open(2);
+        require(c->findChild<QRadioButton*>("coolingMixed")->isChecked() && !c->findChild<QLabel*>("coolingAirNote")->text().contains("outside this panel"),
+                "Fans and warm air rising, no fan yet: still chosen when the panel is opened again");
+        fans->setChecked(true);
+        c->sync();
         require(!c->apply() && c->step() == 2, "Apply with fans but none added: refused, on the Air page");
         for (auto* b : c->findChildren<QPushButton*>())
           if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();
@@ -304,7 +314,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         // A blower: its outlet a sketch's profile clicked in the view (a circle sketched above the cover), its inlet missing.
         opad::design::Sketch slot;
         slot.add_circle(slot.add_point(0, 0), 12);
-        st->sketch = doc->run("sketch", {{"plane", {{"origin", {80, 40, 45}}, {"normal", {0, 0, 1}}, {"x", {1, 0, 0}}}}, {"geometry", slot.to_json()}, {"name", "Blower outlet"}})
+        st->sketch = doc->run("sketch", {{"plane", {{"origin", {80, 40, 40}}, {"normal", {0, 0, 1}}, {"x", {1, 0, 0}}}}, {"geometry", slot.to_json()}, {"name", "Blower outlet"}})
                          .value("sketch_id", std::string());
         for (auto* b : c->findChildren<QPushButton*>())
           if (b->text() == CoolingAssistant::tr("Add a fan")) b->click();

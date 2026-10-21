@@ -42,6 +42,7 @@
 #include "Jobs.hpp"
 #include "SearchCombo.hpp"
 #include "Theme.hpp"
+#include "Tracking.hpp"
 #include "opad/design/sketch_geom.hpp"
 #include "opad/geometry.hpp"
 #include "opad/materials.hpp"
@@ -285,12 +286,13 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     m_airNote->setObjectName("coolingAirNote");
     v->addWidget(m_airNote);
     auto airNote = [this] {
-      m_airNote->setText(m_natural->isChecked() ? tr("No fans: the air rises where the parts warm it and leaves through the vents, so put vents low and high.")
+      m_airNote->setText((m_airChanged.isEmpty() ? QString() : m_airChanged + "\n") + (m_natural->isChecked() ? tr("No fans: the air rises where the parts warm it and leaves through the vents, so put vents low and high.")
                          : m_mixed->isChecked() ? tr("The fans' flow and the warm air rising, solved together: closer where the fans move the air slowly "
                                                      "and on the box's outside walls, but the run takes several times longer.")
                                                 : tr("Only the fans move the air (quickest). Warm air rising is left out, so the temperatures come out "
-                                                     "a little high where the air is slow and on the box's outside walls: on the safe side."));
+                                                     "a little high where the air is slow and on the box's outside walls: on the safe side.")));
     };
+    m_showAirNote = airNote;
     airNote();
     auto* columns = new QVBoxLayout();  // the fans, then the one chosen's form under them (a panel is narrow)
     auto* left = new QVBoxLayout();
@@ -404,6 +406,11 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     m_ventText = text(QString(), this);
     m_ventText->setObjectName("coolingVents");
     v->addWidget(m_ventText);
+    m_ventsShown = new QCheckBox(tr("Show the vents found in the view"), this);
+    m_ventsShown->setObjectName("coolingVentsShown");
+    m_ventsShown->setVisible(false);
+    v->addWidget(m_ventsShown);
+    connect(m_ventsShown, &QCheckBox::toggled, this, [this] { lightChosen(); });
     auto fanPick = [this] { return m_picking == Pick::Outlet || m_picking == Pick::Inlet || m_picking == Pick::Sink; };
     connect(m_natural, &QRadioButton::toggled, this, [this, add, remove, fanPick](bool natural) {
       const bool on = !natural;  // the fans, with or without the warm air rising
@@ -412,11 +419,13 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       add->setEnabled(on);
       remove->setEnabled(on);
       m_ventText->setVisible(on);
+      m_ventsShown->setVisible(on && !m_ventOpenings.empty());
       if (!on && fanPick()) stopPicking();
     });
     for (QRadioButton* r : {m_fansOn, m_mixed, m_natural})
       connect(r, &QRadioButton::toggled, this, [this, airNote](bool on) {
         if (!on) return;
+        if (!m_reloading) m_airChanged.clear();  // the user's own choice
         airNote();
         scheduleSync();
         showEstimate();
@@ -644,7 +653,9 @@ void CoolingAssistant::reload() {
     ~Done() { flag = false; }
   } done{m_reloading};
   AppDocument* d = m_hooks.document();
-  if (!d || m_loaded.first != d->generation) m_fanSpecs.clear(), m_fan = -1;  // another document: no fan of the last one kept
+  const bool sameDocument = d && m_loaded.first == d->generation && m_loaded.first != ~0ull;
+  if (!sameDocument) m_fanSpecs.clear(), m_fan = -1;  // another document: no fan of the last one kept
+  m_sameDocument = sameDocument;
   m_loaded = d ? std::make_pair(d->generation, d->revision) : std::make_pair(0ull, 0ull);
   const bool foam = opad::sim::openfoam().found();
   m_engine->setText(foam ? QString()
@@ -753,6 +764,24 @@ void CoolingAssistant::lightChosen() {
     }
     if (f.outlet.is_null() && !f.on.empty()) fans.push_back({{"refs", f.on}, {"vector", way}});  // an older setup's
   }
+  if (step() == 2 && !naturalConvection() && m_ventsShown->isChecked())  // the vents found: a disk of each one's area, the air's way
+    for (const auto& o : m_ventOpenings) {
+      const opad::Vec3 c = o.value("centre", opad::Vec3{0, 0, 0});
+      opad::Vec3 n = o.value("normal", opad::Vec3{0, 0, 1});
+      const double r = std::sqrt(std::max(0.0, o.value("area_mm2", 0.0)) / M_PI);
+      const bool in = o.value("side", std::string()) == "intake";
+      opad::Vec3 u = std::fabs(n[0]) < 0.9 ? opad::Vec3{0, n[2], -n[1]} : opad::Vec3{-n[2], 0, n[0]};
+      const double ul = std::hypot(u[0], u[1], u[2]);
+      u = {u[0] / ul, u[1] / ul, u[2] / ul};
+      const opad::Vec3 w{n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]};
+      std::vector<opad::Vec3> loop;
+      for (int k = 0; k < 24; ++k) {
+        const double a = 2 * M_PI * k / 24;
+        loop.push_back({c[0] + r * (std::cos(a) * u[0] + std::sin(a) * w[0]), c[1] + r * (std::cos(a) * u[1] + std::sin(a) * w[1]),
+                        c[2] + r * (std::cos(a) * u[2] + std::sin(a) * w[2])});
+      }
+      fans.push_back({{"loops", {loop}}, {"centre", c}, {"vector", in ? opad::Vec3{-n[0], -n[1], -n[2]} : n}, {"inward", in}});
+    }
   m_hooks.light(lit);
   if (m_hooks.fanGlyphs) m_hooks.fanGlyphs(fans);
 }
@@ -803,7 +832,13 @@ void CoolingAssistant::startPicking(Pick what) {
   }
   if (was == Pick::None && m_hooks.accumulate) m_hooks.accumulate(true);  // clicks gather, as a feature's picks
   m_picking = what;
-  m_awaiting = before != filter && m_hooks.onFilterApplied;  // the view's picks taken once its targets are built (filterApplied)
+  // The view's picks taken once its targets are built (filterApplied); a filter that did not switch (its command refused)
+  // waits for nothing, and a switch never reported waits 3 s at most: clicks were ignored for good otherwise.
+  m_awaiting = before != filter && m_hooks.onFilterApplied && m_hooks.filter(QString()) == filter;
+  if (m_awaiting)
+    QTimer::singleShot(3000, this, [this, what] {
+      if (m_awaiting && m_picking == what) m_awaiting = false, reselect();
+    });
   const bool profiles = what == Pick::Outlet || what == Pick::Inlet;
   if (m_hooks.profiles && profiles != (was == Pick::Outlet || was == Pick::Inlet)) m_hooks.profiles(profiles);  // the sketches' regions offered
   if (!m_awaiting) reselect();
@@ -878,11 +913,16 @@ void CoolingAssistant::reselect() {
 
 void CoolingAssistant::selectionChanged(const std::vector<std::string>& ids, const std::vector<opad::Ref>& refs, const std::vector<std::string>& candidates) {
   // A filter switched (by the page, by hand) clears the selection, not the lists: shown again once applied (filterApplied).
-  if (m_picking == Pick::None || m_awaiting || (m_hooks.filterSwitching && m_hooks.filterSwitching())) return;
+  // A sketch's profile clicked for a fan's opening is one whatever the filter.
+  const bool profile = (m_picking == Pick::Outlet || m_picking == Pick::Inlet) &&
+                       std::any_of(candidates.begin(), candidates.end(), [](const std::string& c) { return c.find("\"sketch\"") != std::string::npos; });
+  if (trace::enabled() && (m_picking == Pick::Outlet || m_picking == Pick::Inlet))
+    trace::log(QString("cooling: opening pick: %1 profile(s), %2 face(s)%3").arg(candidates.size()).arg(refs.size()).arg(m_awaiting ? ", waiting for the filter" : ""));
+  if (m_picking == Pick::None || (!profile && (m_awaiting || (m_hooks.filterSwitching && m_hooks.filterSwitching())))) return;
   const AppDocument* d = m_hooks.document();
   if (!d) return;
   // Another filter switched to while picking (the ribbon, a key): its picks are something else, the page's are kept.
-  if (m_hooks.filter && m_hooks.filter(QString()) != pickFilter()) return;
+  if (!profile && m_hooks.filter && m_hooks.filter(QString()) != pickFilter()) return;
   struct Written {  // whatever was added, written a moment later
     CoolingAssistant* self;
     ~Written() { self->scheduleSync(); }
@@ -1118,10 +1158,21 @@ void CoolingAssistant::loadFans(const opad::Scene& s) {
     if (f.outlet.is_null() && f.on.empty()) continue;
     m_fanSpecs.push_back(f);
   }
-  // Natural convection when the study says the air rises and no fan is set; with fans, the air rising too or not (a new study:
-  // fans alone, none added yet).
+  // How the air moves: the study keeps whether the air rises (cfd.buoyancy), the case its fans. The choice made here stays as
+  // long as the study agrees with it (Fans and warm air rising with no fan written yet is the air rising and no fan, as
+  // natural convection is): opening the panel again never changes it. Otherwise it is read from the study (the air rising
+  // and fans: both; the air rising alone: natural convection; else fans), and a choice that had to change says why.
   const bool rising = st && settings.value("cfd", json::object()).value("buoyancy", false);
-  (rising ? (m_fanSpecs.empty() ? m_natural : m_mixed) : m_fansOn)->setChecked(true);
+  const int written = int(m_fanSpecs.size());  // the case's fan loads
+  QRadioButton* was = m_fansOn->isChecked() ? m_fansOn : m_mixed->isChecked() ? m_mixed : m_natural;
+  const bool agrees = m_sameDocument && (was == m_fansOn ? !rising : rising) && !(was == m_natural && written > 0);
+  QRadioButton* now = agrees ? was : rising ? (written == 0 && pending.empty() ? m_natural : m_mixed) : m_fansOn;
+  m_airChanged = m_sameDocument && now != was
+                     ? tr("Shown as “%1”: the study was changed outside this panel (%2).")
+                           .arg(now->text(), rising ? tr("the air rising, %n fan load(s)", "", written) : tr("the air not rising, %n fan load(s)", "", written))
+                     : QString();
+  now->setChecked(true);
+  if (m_showAirNote) m_showAirNote();
   m_fan = m_fanSpecs.empty() ? -1 : 0;
   for (size_t i = 0; i < pending.size(); ++i) {
     if (current && (i == 0 || pending[i].drawing)) m_fan = int(m_fanSpecs.size());
@@ -1489,19 +1540,46 @@ void CoolingAssistant::estimateVents() {
       return v.value("fan", false) && v.value("openings", 0) == 0 ? tr("the fan's own opening")
                                                                     : tr("%1 mm² in %n opening(s)", "", v.value("openings", 0)).arg(std::lround(v.value("area_mm2", 0.0)));
     };
-    QString text = tr("Vents: intake %1, exhaust %2.").arg(side("intake"), side("exhaust")) + " ";
+    QString text = tr("Vents (holes through the box's walls, listed in the tip): intake %1, exhaust %2.").arg(side("intake"), side("exhaust")) + " ";
     const std::string by = e.value("limited_by", std::string());
     text += tr("Through them the fans give about %1 of their %2 free flow (%3%)").arg(flow("flow_m3h"), flow("free_flow_m3h")).arg(std::lround(100 * e.value("fraction", 0.0)));
-    text += by == "intake" ? tr(", held back most by the intakes.") : by == "exhaust" ? tr(", held back most by the exhausts.") : QString(".");
-    if (watts > 0 && e.contains("needed_m3h")) {
-      const bool enough = e.value("flow_m3h", 0.0) >= e.value("needed_m3h", 0.0);
-      text += " " + tr("%1 W needs about %2 for the air to warm 10 K: %3").arg(watts, 0, 'g', 3).arg(flow("needed_m3h"))
-                        .arg(enough ? tr("enough (the air warms about %1 K).").arg(e.value("rise_K", 0.0), 0, 'f', 1)
-                                    : by == "fans" ? tr("not enough: a stronger fan, or another.")
-                                                   : tr("not enough: more %1 area, or a stronger fan.").arg(by == "intake" ? tr("intake") : tr("exhaust")));
+    text += by == "intake" ? tr(", held back most by the intakes.") : by == "exhaust" ? tr(", held back most by the exhausts.")
+                                                                       : tr(": the vents hardly hold them back.");
+    if (watts > 0 && e.contains("rise_K")) {
+      // What the heat does to that air (it leaves warmer by the heat over its mass flow times its specific heat), and the
+      // flow that keeps the rise to 10 K, a usual limit for electronics.
+      const double rise = e.value("rise_K", 0.0);
+      text += " " + tr("With %1 W the air leaves about %2 K warmer than the room.").arg(watts, 0, 'g', 3).arg(rise, 0, 'f', 1);
+      if (rise > 10)
+        text += " " + tr("Keeping that to 10 K needs about %1: %2").arg(flow("needed_m3h"))
+                          .arg(by == "fans" ? tr("a stronger fan, or another.") : tr("more %1 area, or a stronger fan.").arg(by == "intake" ? tr("intake") : tr("exhaust")));
     }
+    const json left = e.value("left_out", json::object());
+    if (left.value("blind", 0) + left.value("filled", 0) > 0)
+      text += " " + tr("Not counted: %1 outline(s) on the walls that are no hole (a boss, a foot, a pocket), %2 hole(s) a part fills (a connector, a screw).")
+                        .arg(left.value("blind", 0)).arg(left.value("filled", 0));
     for (const auto& n : e.value("notes", json::array())) text += " (" + i18n::t(QString::fromStdString(n.get<std::string>())) + ")";
     m_ventText->setText(text);
+    // Which they are: the list in its tip, and drawn in the view on request.
+    m_ventOpenings = e.value("openings", json::array());
+    QStringList rows;
+    int shown = 0;
+    for (const auto& o : m_ventOpenings) {
+      if (++shown > 15) {
+        rows << tr("… and %n more", "", int(m_ventOpenings.size()) - 15);
+        break;
+      }
+      const opad::Vec3 c = o.value("centre", opad::Vec3{0, 0, 0});
+      const std::string side = o.value("side", std::string());
+      rows << tr("%1: %2 mm² at (%3, %4, %5) mm")
+                  .arg(side == "intake" ? tr("intake") : side == "exhaust" ? tr("exhaust") : tr("the fan's own opening"))
+                  .arg(std::lround(o.value("area_mm2", 0.0)))
+                  .arg(c[0], 0, 'f', 1).arg(c[1], 0, 'f', 1).arg(c[2], 0, 'f', 1);
+    }
+    m_ventText->setToolTip(tr("The vents are the holes through the box's flat walls (an outline that is no hole, or a hole a part fills, is not "
+                              "counted); those ahead of the fans' air are exhausts, the others intakes. Largest first:") + "\n" + rows.join("\n"));
+    m_ventsShown->setVisible(!m_ventOpenings.empty());
+    if (m_ventsShown->isChecked()) lightChosen();
   });
 }
 

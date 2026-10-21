@@ -8,6 +8,7 @@
 #include <BRepTools_WireExplorer.hxx>
 #include <BRepTools.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <TopoDS_Wire.hxx>
 #include <BRepBndLib.hxx>
 #include <BRep_Builder.hxx>
@@ -566,6 +567,38 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
   double x0, y0, z0, x1, y1, z1;
   all.Get(x0, y0, z0, x1, y1, z1);
   const P mid{0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)};
+  // What may fill a hole or stand behind it: the walls, and the bodies in the box (a connector in its cut-out, a screw in its
+  // hole), their shapes read only where a probe falls in their box.
+  struct Blocker {
+    std::string id;
+    Bnd_Box box;
+    TopoDS_Shape shape;
+  };
+  std::vector<Blocker> blockers;
+  for (size_t k = 0; k < shapes.size(); ++k) {
+    Bnd_Box b;
+    BRepBndLib::Add(shapes[k], b);
+    blockers.push_back({walls[k], b, shapes[k]});
+  }
+  for (const auto& id : scene.all_bodies()) {
+    if (std::find(walls.begin(), walls.end(), id) != walls.end() || !scene.effectively_visible(id)) continue;
+    const Bnd_Box b = node_world_bbox(doc, scene, id);
+    if (!b.IsVoid() && !b.IsOut(all)) blockers.push_back({id, b, TopoDS_Shape()});
+  }
+  auto solid_at = [&](const gp_Pnt& p, bool walls_only) {
+    for (auto& b : blockers) {
+      if (walls_only && std::find(walls.begin(), walls.end(), b.id) == walls.end()) continue;
+      if (b.box.IsOut(p)) continue;
+      if (b.shape.IsNull()) b.shape = node_world_shape(doc, scene, b.id);
+      if (BRepClass3d_SolidClassifier(b.shape, p, 1e-6).State() == TopAbs_IN) return true;
+    }
+    return false;
+  };
+  // A hole goes through when, from its middle, the way in stays clear of every solid through the wall's own thickness there
+  // (measured from the face beside it): an inner loop that is a boss, a foot or a blind pocket on the outside goes into
+  // solid at once or before that depth; one a part sits in (a connector, a screw) is filled. A part behind the hole (a fan
+  // drawing through it) does not close it.
+  int blind = 0, filled = 0;
   for (const auto& shape : shapes)
     for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next()) {
       const TopoDS_Face face = TopoDS::Face(e.Current());
@@ -579,11 +612,52 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
         if (w.Current().IsSame(outer)) continue;
         BRepBuilderAPI_MakeFace hole(surface.Plane(), TopoDS::Wire(w.Current()));
         if (!hole.IsDone()) continue;
+        TopoDS_Face hf = hole.Face();
         GProp_GProps g;
-        BRepGProp::SurfaceProperties(hole.Face(), g);
-        const P c{g.CentreOfMass().X(), g.CentreOfMass().Y(), g.CentreOfMass().Z()};
-        if (dot3({n.X(), n.Y(), n.Z()}, minus(c, mid)) <= 0) continue;  // the inside of a through hole
-        vents.push_back({c, {n.X(), n.Y(), n.Z()}, std::fabs(g.Mass())});
+        BRepGProp::SurfaceProperties(hf, g);
+        const double area = std::fabs(g.Mass());
+        if (area < 1e-6) continue;
+        gp_Pnt c = g.CentreOfMass();
+        if (dot3({n.X(), n.Y(), n.Z()}, minus({c.X(), c.Y(), c.Z()}, mid)) <= 0) continue;  // the inside of a through hole
+        // A point in the hole itself (an L-shaped slot's middle may not be): one of its triangles' middles.
+        if (BRepClass_FaceClassifier(TopoDS::Face(hf.Oriented(TopAbs_FORWARD)), c, 1e-6).State() != TopAbs_IN) {
+          BRepMesh_IncrementalMesh(hf, 0.1, false, 0.5, false);
+          TopLoc_Location loc;
+          const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(hf, loc);
+          if (!tri.IsNull() && tri->NbTriangles() > 0) {
+            int a, b, cc;
+            tri->Triangle(1).Get(a, b, cc);
+            c = gp_Pnt((tri->Node(a).XYZ() + tri->Node(b).XYZ() + tri->Node(cc).XYZ()) / 3).Transformed(loc.Transformation());
+          }
+        }
+        // The wall's thickness beside the hole: from a point of the face just past the hole's rim, inwards until out of
+        // the wall.
+        double thickness = 0;
+        {
+          BRepAdaptor_Curve rim(TopoDS::Edge(TopExp_Explorer(w.Current(), TopAbs_EDGE).Current()));
+          const gp_Pnt r = rim.Value(0.5 * (rim.FirstParameter() + rim.LastParameter()));
+          gp_Vec away(c, r);
+          away -= gp_Vec(n) * away.Dot(gp_Vec(n));
+          if (away.Magnitude() > 1e-9) {
+            const gp_Pnt beside = r.Translated(away.Normalized() * 0.3);
+            for (double d = 0.1; d < 30; d += std::max(0.1, 0.1 * d)) {
+              if (!solid_at(beside.Translated(gp_Vec(n) * -d), true)) break;
+              thickness = d;
+            }
+          }
+        }
+        if (thickness <= 0) thickness = 1;  // not measured: a millimetre
+        bool clear = !solid_at(c.Translated(gp_Vec(n) * 0.05), false);
+        bool wallsOnly = clear || solid_at(c.Translated(gp_Vec(n) * 0.05), true);  // what stopped it: the walls (blind) or another part (filled)
+        for (double d = 0.1; clear && d < thickness - 0.05; d += std::max(0.1, thickness / 12)) {  // within the wall: what sits behind it is no lid
+          const gp_Pnt q = c.Translated(gp_Vec(n) * -d);
+          if (solid_at(q, false)) clear = false, wallsOnly = solid_at(q, true);
+        }
+        if (!clear) {
+          ++(wallsOnly ? blind : filled);
+          continue;
+        }
+        vents.push_back({{c.X(), c.Y(), c.Z()}, {n.X(), n.Y(), n.Z()}, area});
       }
     }
   // The fans: their curves, where their air goes, their openings.
@@ -626,9 +700,11 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
     // A vent its opening sits in is its own: it blows (or draws) straight through it.
     for (const auto& [o, out] : openings)
       for (auto& v : vents) {
-        const double reach = std::max(std::sqrt(o.area), std::sqrt(v.area));
+        // In the hole's own plane (within a wall's thickness) and inside its span: a fan drawing from deep in the box does not.
         const P d3 = minus(v.centre, o.centre);
-        if (v.fan < 0 && std::sqrt(dot3(d3, d3)) < reach) {
+        const double across = std::fabs(dot3(d3, v.normal));
+        const P along{d3[0] - across * v.normal[0], d3[1] - across * v.normal[1], d3[2] - across * v.normal[2]};
+        if (v.fan < 0 && std::fabs(dot3(unit(o.normal), v.normal)) > 0.9 && across < 5 && std::sqrt(dot3(along, along)) < 0.5 * std::sqrt(std::max(o.area, v.area))) {
           v.fan = int(list.size());
           v.out = blower ? out : dot3(f.way, v.normal) > 0;
         }
@@ -696,7 +772,15 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
                 {"flow_cfm", Q / kCfmM3s},
                 {"fraction", free_flow > 0 ? Q / free_flow : 0.0},
                 {"pressure_Pa", dp},
-                {"limited_by", K <= 0 ? "fans" : k(in) >= k(out) ? "intake" : "exhaust"}};
+                {"limited_by", K <= 0 || Q >= 0.9 * free_flow ? "fans" : k(in) >= k(out) ? "intake" : "exhaust"}};
+  json listed = json::array();  // the openings found, largest first (what the counts are made of)
+  std::vector<const Vent*> order;
+  for (const auto& v : vents) order.push_back(&v);
+  std::sort(order.begin(), order.end(), [](const Vent* a, const Vent* b) { return a->area > b->area; });
+  for (const Vent* v : order)
+    listed.push_back({{"centre", v->centre}, {"normal", v->normal}, {"area_mm2", v->area}, {"side", v->fan >= 0 ? "fan" : v->out ? "exhaust" : "intake"}});
+  out_j["openings"] = listed;
+  out_j["left_out"] = {{"blind", blind}, {"filled", filled}};
   if (watts > 0) {
     const double need = watts / (a.rho * a.cp * 10);  // a 10 K rise of the air
     out_j["needed_m3h"] = need * 3600;
@@ -1206,9 +1290,14 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     double in_area = 0, out_area = 0;  // mm2
     double Q = 0;   // m3/s
     double dp = 0;  // Pa: the outlet's pressure over the inlet's, the last round
+    size_t in_body = 0, out_body = 0;  // the bodies the openings are drawn on (a housing in two shells: either)
+    std::vector<std::pair<size_t, TopoDS_Shape>> caps;  // each opening plugged (a thin slab behind it, part of its body's surface)
   };
   std::vector<Blower> blowers;
   std::vector<bool> is_air(bodies.size(), false);
+  std::set<std::string> heated;  // the bodies heat sources name (never left out)
+  for (const Load* h : heats)
+    for (const auto& r : h->refs) heated.insert(r.body);
   // A profile's face as triangles (the jump's surface; the faces a blower's opening covers), points in mm.
   auto triangles = [&](const TopoDS_Face& f) {
     std::vector<V> out;
@@ -1248,25 +1337,56 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
           json on = json::array();
           for (const auto& r : l->refs) on.push_back(r.body);
           std::vector<size_t> parts = parts_of(on);
-          if (parts.empty()) {
+          // The body each opening is drawn on: the nearest to the opening itself (an opening that is a hole in the housing has
+          // its middle in the air, its rim on the housing), among what it is on when that is given.
+          auto drawn_on = [&](const TopoDS_Face& f, const char* what) {
             double best = 1e300;
-            const TopoDS_Vertex c = BRepBuilderAPI_MakeVertex(gp_Pnt(out_centre[0], out_centre[1], out_centre[2])).Vertex();
+            size_t at = 0;
             for (size_t i = 0; i < bodies.size(); ++i) {
-              if (is_wall(bodies[i])) continue;
-              const double d = BRepExtrema_DistShapeShape(world[i], c).Value();
-              if (d < best) best = d, parts = {i};
+              if (is_wall(bodies[i]) || (!parts.empty() && std::find(parts.begin(), parts.end(), i) == parts.end())) continue;
+              const double d = BRepExtrema_DistShapeShape(world[i], f).Value();
+              if (d < best) best = d, at = i;
             }
-            if (best > 0.5) throw Error("blower \"" + l->name + "\": its outlet is not on a body's surface: draw it on the blower's face");
-          }
-          b.housing = parts.front();
-          // Out of the housing: the opening's normal turned so that a step along it leaves the housing.
+            if (best > 0.5)
+              throw Error("blower \"" + l->name + "\": its " + what + " touches no body (the nearest is " + (best < 1e299 ? num(best) + " mm" : "none") +
+                          " away): draw it on the blower's own face, its edges projected");
+            return at;
+          };
+          b.out_body = drawn_on(b.out, "outlet");
+          b.in_body = drawn_on(b.in, "inlet");
+          b.housing = b.out_body;
+          Bnd_Box hb;
+          BRepBndLib::Add(world[b.out_body], hb);
+          BRepBndLib::Add(world[b.in_body], hb);
+          double h0[3], h1[3];
+          hb.Get(h0[0], h0[1], h0[2], h1[0], h1[1], h1[2]);
+          const V hc{0.5 * (h0[0] + h1[0]), 0.5 * (h0[1] + h1[1]), 0.5 * (h0[2] + h1[2])};
+          // Out of the housing: each opening's normal turned away from the housing's middle; and each opening plugged by a
+          // slab behind it (a cell or two thick) put in its body's surface, so that a hole in the housing is closed there too
+          // and the opening is wall the air goes in or out of (what is inside the housing is never reached).
           for (auto [face, normal] : {std::pair<const TopoDS_Face*, V*>{&b.out, &b.out_n}, {&b.in, &b.in_n}}) {
+            const size_t on = face == &b.out ? b.out_body : b.in_body;
+            const double slab = std::max(0.3, 2 * coarse / std::pow(2.0, level[on]));
             GProp_GProps p;
             BRepGProp::SurfaceProperties(*face, p);
             const gp_Pnt c = p.CentreOfMass();
-            const double step = std::max(0.05, 0.25 * fine);
-            if (inside(b.housing, c.Translated(gp_Vec((*normal)[0], (*normal)[1], (*normal)[2]) * step))) *normal = mul(*normal, -1.0);
+            if (dot(*normal, sub(V{c.X(), c.Y(), c.Z()}, hc)) < 0) *normal = mul(*normal, -1.0);
             (face == &b.out ? b.out_area : b.in_area) = p.Mass();
+            BRepPrimAPI_MakePrism cap(*face, gp_Vec((*normal)[0], (*normal)[1], (*normal)[2]) * -slab);
+            if (cap.IsDone()) b.caps.push_back({on, cap.Shape()});
+          }
+          // What is inside the housing (its impeller, its motor) is shut in by the plugs: left out of the parts.
+          for (size_t i = 0; i < bodies.size(); ++i) {
+            if (i == b.in_body || i == b.out_body || is_wall(bodies[i]) || is_air[i] || heated.count(bodies[i])) continue;
+            Bnd_Box ib;
+            BRepBndLib::Add(world[i], ib);
+            double i0[3], i1[3];
+            ib.Get(i0[0], i0[1], i0[2], i1[0], i1[1], i1[2]);
+            bool in = true;
+            for (int k = 0; k < 3; ++k) in = in && i0[k] >= h0[k] - 0.5 && i1[k] <= h1[k] + 0.5;
+            if (!in) continue;
+            is_air[i] = true, level[i] = 0;
+            run.warnings.push_back("\"" + scene.node(bodies[i])->name + "\" is inside blower \"" + l->name + "\": left out (its housing is solid)");
           }
           b.Q = 0.5 * fan.Qmax;  // a first guess: the rounds find where its curve meets the box
           blowers.push_back(b);
@@ -1489,6 +1609,32 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
         stl << "  endloop\n endfacet\n";
       }
     }
+    for (const Blower& b : blowers)  // a blower's openings plugged: part of its housing's surface (not of its results)
+      for (const auto& [on, cap] : b.caps) {
+          if (on != i) continue;
+          BRepMesh_IncrementalMesh(cap, std::max(0.02, coarse / std::pow(2.0, level[i]) / 4), false, 0.3, true);
+          for (TopExp_Explorer e(cap, TopAbs_FACE); e.More(); e.Next()) {
+            const TopoDS_Face face = TopoDS::Face(e.Current());
+            TopLoc_Location loc;
+            const Handle(Poly_Triangulation) tri = BRep_Tool::Triangulation(face, loc);
+            if (tri.IsNull()) continue;
+            const bool rev = face.Orientation() == TopAbs_REVERSED;
+            for (int t = 1; t <= tri->NbTriangles(); ++t) {
+              int n[3];
+              tri->Triangle(t).Get(n[0], n[1], n[2]);
+              if (rev) std::swap(n[1], n[2]);
+              V p[3];
+              for (int k = 0; k < 3; ++k) {
+                const gp_Pnt q = tri->Node(n[k]).Transformed(loc.Transformation());
+                p[k] = {q.X(), q.Y(), q.Z()};
+              }
+              const V nn = unit(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+              stl << " facet normal " << nn[0] << " " << nn[1] << " " << nn[2] << "\n  outer loop\n";
+              for (const auto& q : p) stl << "   vertex " << q[0] * 1e-3 << " " << q[1] * 1e-3 << " " << q[2] * 1e-3 << "\n";
+              stl << "  endloop\n endfacet\n";
+            }
+          }
+        }
     stl << "endsolid " << region[i] << "\n";
     fs::create_directories(cas / "constant" / "triSurface");
     write_text_file(cas / "constant" / "triSurface" / (region[i] + ".stl"), stl.str());
@@ -1670,10 +1816,10 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
     fs::create_directories(air_mesh / "sets");
     for (size_t k = 0; k < blowers.size(); ++k) {
       const Blower& b = blowers[k];
-      const std::string wall = region[b.housing];
-      const double cell = coarse / std::pow(2.0, level[b.housing]);
       std::array<size_t, 2> count{0, 0};
       for (int side = 0; side < 2; ++side) {
+        const std::string wall = region[side == 0 ? b.in_body : b.out_body];
+        const double cell = coarse / std::pow(2.0, level[side == 0 ? b.in_body : b.out_body]);
         const TopoDS_Face& face = side == 0 ? b.in : b.out;
         const V n = side == 0 ? b.in_n : b.out_n;
         GProp_GProps g;

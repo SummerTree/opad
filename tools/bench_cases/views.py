@@ -51,6 +51,8 @@ CASES = [
     # a view turns the camera and hides what it kept hidden, shows the rest, in one step undo takes back; a camera-only view
     # leaves what is shown; the list shows each key (remapped too); read back, the view keeps what it hid.
     ("named-views", three_boxes, {"OPAD_BENCH_NAMEDVIEWS": "{prefix}"}),
+    # Isolate mode: what is made while isolated joins it; the browser's eye adds to it and takes out (app/IsolationBench.cpp).
+    ("isolation", three_boxes, {"OPAD_BENCH_ISOLATION": "1"}),
     # P7 on a drawing in 2D mode: Turn 90° left twists it in an animation, the direction and the grid's plane stay.
     # <prefix>.roll-partway.png, <prefix>.roll.png.
     ("views-2d", plan, {"OPAD_BENCH_VIEWS": "{prefix}"}, GRID),

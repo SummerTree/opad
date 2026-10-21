@@ -183,5 +183,19 @@
  "the sketch of a fan's opening has no closed profile": "رسم فتحة المروحة بلا مقطع مغلق",
  "a fan's opening names a sketch that is not there": "فتحة المروحة تشير إلى رسم غير موجود",
  "a fan's opening must be flat: a sketch's closed region or a flat face": "يجب أن تكون فتحة المروحة مستوية: منطقة مغلقة في رسم أو وجهًا مستويًا",
- "a fan's opening is a sketch's closed region or a flat face": "فتحة المروحة منطقة مغلقة في رسم أو وجه مستوٍ"
+ "a fan's opening is a sketch's closed region or a flat face": "فتحة المروحة منطقة مغلقة في رسم أو وجه مستوٍ",
+ "Show the vents found in the view": "أظهر الفتحات الموجودة في العرض",
+ "Shown as “%1”: the study was changed outside this panel (%2).": "معروض على أنه «%1»: غُيّرت الدراسة خارج هذه اللوحة (%2).",
+ "the air rising, %n fan load(s)": "الهواء يرتفع، %n من أحمال المراوح",
+ "the air not rising, %n fan load(s)": "الهواء لا يرتفع، %n من أحمال المراوح",
+ "Vents (holes through the box's walls, listed in the tip): intake %1, exhaust %2.": "الفتحات (الثقوب النافذة في جدران الصندوق، مسرودة في التلميح): سحب %1، وطرد %2.",
+ ": the vents hardly hold them back.": ": والفتحات لا تكاد تعيقها.",
+ "With %1 W the air leaves about %2 K warmer than the room.": "مع %1 واط يخرج الهواء أدفأ من الغرفة بنحو %2 كلفن.",
+ "Keeping that to 10 K needs about %1: %2": "إبقاء ذلك عند 10 كلفن يحتاج نحو %1: %2",
+ "a stronger fan, or another.": "مروحة أقوى، أو مروحة أخرى.",
+ "more %1 area, or a stronger fan.": "مساحة %1 أكبر، أو مروحة أقوى.",
+ "Not counted: %1 outline(s) on the walls that are no hole (a boss, a foot, a pocket), %2 hole(s) a part fills (a connector, a screw).": "لم يُحتسب: %1 من الحدود على الجدران ليست ثقوبًا (نتوء، أو قدم، أو تجويف)، و%2 من الثقوب يملؤها جزء (موصل، أو برغي).",
+ "… and %n more": "… و%n غيرها",
+ "%1: %2 mm² at (%3, %4, %5) mm": "%1: %2 مم² عند (%3، %4، %5) مم",
+ "The vents are the holes through the box's flat walls (an outline that is no hole, or a hole a part fills, is not counted); those ahead of the fans' air are exhausts, the others intakes. Largest first:": "الفتحات هي الثقوب النافذة في جدران الصندوق المستوية (لا يُحتسب حدٌّ ليس ثقبًا ولا ثقب يملؤه جزء)؛ ما أمام هواء المراوح فتحات طرد، والباقي فتحات سحب. الأكبر أولًا:"
 }

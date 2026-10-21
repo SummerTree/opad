@@ -5,6 +5,7 @@
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -80,6 +81,14 @@ struct Folder {
 // They have no eye, colour or drag; F2 and Del reach them through the folder's rename and remove; the view, the other
 // edit commands and the tools never see them (the window keeps them out of the node selection), and Properties shows
 // only the areas' sections for one (subject: a ref to its id). A row that is new since the last rebuild starts open.
+// Isolate mode (the view's): while it is on, a row's eye is the isolation's: drawn as the isolate mark, full when the row is
+// in the isolation, faint when not, and a click adds it or takes it out (its visibility flag stays as it was).
+struct Isolation {
+  std::function<bool()> active;
+  std::function<bool(const std::string&)> contains;
+  std::function<void(const std::string&, bool)> set;
+  bool on() const { return active && active(); }
+};
 }  // namespace browser
 
 class BrowserDelegate : public QStyledItemDelegate {
@@ -96,6 +105,7 @@ class BrowserDelegate : public QStyledItemDelegate {
   // A decorator's badge on the row (visual rect `row`) at `pos`, its rect in `rect`: null if there is none there.
   const browser::Badge* badgeAt(const browser::Decoration& d, const QModelIndex& index, const QRect& row, const QPoint& pos, QRect* rect = nullptr) const;
   bool spinning() const { return m_spin.isActive(); }  // a turning badge was painted and is painted again shortly (benches)
+  void setIsolation(std::shared_ptr<const browser::Isolation> isolation) { m_isolation = std::move(isolation); }
  private:
   static QRect leadRect(const QRect& row) { return QRect(row.left() + browser::kSwatchX - 3, row.center().y() - 7, 16, 16); }
   void paintLead(QPainter* p, const browser::Decoration& d, const QRect& row) const;
@@ -104,6 +114,7 @@ class BrowserDelegate : public QStyledItemDelegate {
   void paintBadges(QPainter* p, const browser::Decoration& d, const std::vector<QRect>& rects, const QWidget* view) const;
   AppDocument* m_doc;
   std::vector<browser::Decorator> m_decorators;
+  std::shared_ptr<const browser::Isolation> m_isolation;
   // Turning badges: the rects painted since the last frame, repainted 80 ms later (a row scrolled away is not painted, so
   // nothing asks again: the animation stops by itself).
   mutable QTimer m_spin;

@@ -66,6 +66,9 @@ class BrowserPanel : public QWidget {
   void setViewerMode(bool on);  // no rename or drag-to-reparent (colours stay: a view setting)
   void setEditedSketch(const std::string& id,const QString& name,bool visible);
   void toggleVisibility(const std::vector<std::string>& ids);  // one step: hidden when any of them is shown, else shown
+  // In isolate mode the eyes add rows to the isolation or take them out (browser::Isolation); repaint when it changes.
+  void setIsolation(browser::Isolation isolation);
+  void isolationChanged();
   // Feature areas (BrowserDelegate.hpp): badges, icons and name styles per row, and top-level folders of their own.
   void addDecorator(browser::Decorator decorator);  // repaints
   void addFolder(browser::Folder folder);           // after the ones added before; rebuilds
@@ -125,4 +128,5 @@ class BrowserPanel : public QWidget {
   QString m_editedName;
   bool m_editedVisible=true;
   std::vector<browser::Folder> m_folders;  // provided (addFolder)
+  std::shared_ptr<browser::Isolation> m_isolation = std::make_shared<browser::Isolation>();
 };
