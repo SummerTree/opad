@@ -319,19 +319,24 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
     m_fanRows->addRow(tr("Type:"), m_fanType);
     // Its openings: a closed region of a sketch drawn on the fan's face (Draw…: a sketch on the face, its outline projected,
     // the opening drawn in it), or a flat face; picked among the sketches' regions in the view.
-    auto opening = [this](PickBox*& pick, QPushButton*& draw, const char* name) {
+    auto opening = [this](PickBox*& pick, QPushButton*& draw, QPushButton*& flip, const char* name) {
       auto* row = new QHBoxLayout();
       pick = new PickBox(m_fanForm);
       pick->setObjectName(QString("cooling%1Pick").arg(name));
       draw = new QPushButton(tr("Draw…"), m_fanForm);
       draw->setObjectName(QString("cooling%1Draw").arg(name));
       draw->setToolTip(tr("A sketch on the fan's face: project its edges, draw the opening in it, Finish; it becomes this opening"));
+      flip = new QPushButton(tr("Flip"), m_fanForm);
+      flip->setObjectName(QString("cooling%1Flip").arg(name));
+      flip->setToolTip(tr("Turns this opening's way round, when the arrow in the view points the wrong way (out of the housing for an "
+                          "outlet, into it for an inlet)"));
       row->addWidget(pick, 1);
       row->addWidget(draw);
+      row->addWidget(flip);
       return row;
     };
-    m_fanRows->addRow(tr("Outlet:"), opening(m_outletPick, m_outletDraw, "Outlet"));
-    m_fanRows->addRow(tr("Inlet:"), opening(m_inletPick, m_inletDraw, "Inlet"));
+    m_fanRows->addRow(tr("Outlet:"), opening(m_outletPick, m_outletDraw, m_outletFlip, "Outlet"));
+    m_fanRows->addRow(tr("Inlet:"), opening(m_inletPick, m_inletDraw, m_inletFlip, "Inlet"));
     m_flip = new QPushButton(tr("Flip"), m_fanForm);
     m_flip->setObjectName("coolingWayFlip");
     m_wayText = text(QString(), m_fanForm);
@@ -484,6 +489,8 @@ CoolingAssistant::CoolingAssistant(Hooks hooks, QWidget* parent) : QWidget(paren
       if (m_picking == Pick::Sink) m_hooks.select({});
     }));
     connect(m_flip, &QPushButton::clicked, this, edit([](FanSpec& f) { f.flip = !f.flip; }));
+    connect(m_outletFlip, &QPushButton::clicked, this, edit([](FanSpec& f) { f.flipOut = !f.flipOut; }));
+    connect(m_inletFlip, &QPushButton::clicked, this, edit([](FanSpec& f) { f.flipIn = !f.flipIn; }));
     connect(m_model, &QComboBox::currentIndexChanged, this, edit([this](FanSpec& f) {
       f.model = m_model->currentData().toString();
       if (f.model.isEmpty()) return;
@@ -760,6 +767,7 @@ void CoolingAssistant::lightChosen() {
       opad::Vec3 n = f.inletNormal;
       if ((n[0] * (f.inletCentre[0] - f.centre[0]) + n[1] * (f.inletCentre[1] - f.centre[1]) + n[2] * (f.inletCentre[2] - f.centre[2])) < 0)
         n = {-n[0], -n[1], -n[2]};
+      if (f.flipIn) n = {-n[0], -n[1], -n[2]};
       fans.push_back({{"loops", f.inletLoops}, {"centre", f.inletCentre}, {"vector", opad::Vec3{-n[0], -n[1], -n[2]}}, {"inward", true}});
     }
     if (f.outlet.is_null() && !f.on.empty()) fans.push_back({{"refs", f.on}, {"vector", way}});  // an older setup's
@@ -947,8 +955,12 @@ void CoolingAssistant::selectionChanged(const std::vector<std::string>& ids, con
     if (!fan) return;
     json& field = m_picking == Pick::Outlet ? fan->outlet : fan->inlet;
     json next;
-    for (const auto& c : candidates)
-      if (c.find("\"sketch\"") != std::string::npos && c != field.dump()) next = json::parse(c, nullptr, false);
+    for (const auto& c : candidates) {
+      if (c.find("\"sketch\"") == std::string::npos) continue;
+      json picked = json::parse(c, nullptr, false);
+      if (picked.is_object() && picked.contains("region")) picked = picked["region"];  // a curve: the closed loop it bounds
+      if (picked.is_object() && picked != field) next = picked;
+    }
     for (const auto& r : refs)
       if (next.is_null() && r.kind == opad::Ref::Kind::Face && pickable(r.body) && r.to_json() != field) next = r.to_json();
     if (next.is_null() || next.is_discarded()) {
@@ -1078,9 +1090,9 @@ opad::Vec3 CoolingAssistant::FanSpec::vector() const {
   opad::Vec3 v = written;
   if (std::hypot(normal[0], normal[1], normal[2]) > 0.5) {
     v = normal;
-    if (type == "blower") {  // out of its side: away from its inlet
+    if (type == "blower") {  // out of its side: away from its inlet (or turned by Flip)
       if (v[0] * (centre[0] - inletCentre[0]) + v[1] * (centre[1] - inletCentre[1]) + v[2] * (centre[2] - inletCentre[2]) < 0) v = {-v[0], -v[1], -v[2]};
-      return v;
+      return flipOut ? opad::Vec3{-v[0], -v[1], -v[2]} : v;
     }
   }
   return flip ? opad::Vec3{-v[0], -v[1], -v[2]} : v;
@@ -1149,6 +1161,8 @@ void CoolingAssistant::loadFans(const opad::Scene& s) {
     f.written = l.def.value("vector", opad::Vec3{1, 0, 0});
     if (const json o = l.def.value("outlet", json()); o.is_string() || (o.is_object() && !o.contains("centre"))) f.outlet = o;
     if (const json o = l.def.value("inlet", json()); o.is_string() || o.is_object()) f.inlet = o;
+    f.flipOut = l.def.value("flip_outlet", false), f.flipIn = l.def.value("flip_inlet", false);
+    f.loaded = true;
     for (const auto& h : l.def.value("heatsink", json::array()))
       if (h.is_string()) f.sink.push_back(h.get<std::string>());
     // The heatsink's material, when the study set one for it (each of its bodies has it).
@@ -1260,7 +1274,9 @@ void CoolingAssistant::showFan() {
   if (auto* label = qobject_cast<QLabel*>(m_fanRows->itemAt(1, QFormLayout::LabelRole) ? m_fanRows->itemAt(1, QFormLayout::LabelRole)->widget() : nullptr))
     label->setText(blower ? tr("Outlet:") : tr("Opening:"));
   m_fanRows->setRowVisible(2, blower);  // a blower's inlet
-  m_flip->setVisible(!blower);  // a blower's way is out of its outlet, away from its inlet
+  m_flip->setVisible(!blower);  // a blower's way is out of its outlet, away from its inlet: each opening's own Flip
+  m_outletFlip->setVisible(blower && !f.outlet.is_null());
+  m_inletFlip->setVisible(blower && !f.inlet.is_null());
   const bool measured = std::hypot(f.normal[0], f.normal[1], f.normal[2]) > 0.5;
   m_wayText->setText(!f.outlet.is_null() && !measured ? tr("Reading its opening…")
                      : f.outlet.is_null() && f.on.empty() ? tr("Draw or pick its opening first.")
@@ -1323,7 +1339,12 @@ void CoolingAssistant::measureOutlet(int fan) {
       for (const auto& l : p.loops) out.push_back(std::vector<opad::Vec3>(l.begin(), l.end()));
       return out;
     };
-    if (m->hasOut) f.normal = m->out.normal, f.centre = m->out.centre, f.outletLoops = loops(m->out);
+    if (m->hasOut) {
+      f.normal = m->out.normal, f.centre = m->out.centre, f.outletLoops = loops(m->out);
+      if (f.loaded && f.type != "blower")  // an axial fan's Flip is its written way against the opening's normal
+        f.flip = f.written[0] * f.normal[0] + f.written[1] * f.normal[1] + f.written[2] * f.normal[2] < 0;
+      f.loaded = false;
+    }
     if (m->hasIn && f.inlet == inlet) f.inletNormal = m->in.normal, f.inletCentre = m->in.centre, f.inletLoops = loops(m->in);
     if (!m->error.empty()) m_status->setText(i18n::t(QString::fromStdString(m->error)));
     showFans();  // its way known: the fan load written, its openings drawn
@@ -1422,6 +1443,8 @@ void CoolingAssistant::sync() {
       if (!f.outlet.is_null()) {
         args["outlet"] = f.outlet;
         if (f.type == "blower" && !f.inlet.is_null()) args["inlet"] = f.inlet;
+        if (f.type == "blower" && f.flipOut) args["flip_outlet"] = true;
+        if (f.type == "blower" && f.flipIn) args["flip_inlet"] = true;
         if (f.type != "blower" && std::hypot(f.normal[0], f.normal[1], f.normal[2]) > 0.5) args["vector"] = f.vector();
         w.args = args;
         w.keep = f.type == "blower" ? f.inlet.is_null() : std::hypot(f.normal[0], f.normal[1], f.normal[2]) < 0.5;  // not all there yet
@@ -1436,7 +1459,6 @@ void CoolingAssistant::sync() {
         for (const auto& b : s.node(id) && s.node(id)->kind != opad::Node::Kind::Body ? s.bodies_under(id) : std::vector<std::string>{id})
           materials[b] = {{"material", f.material.toStdString()}};
   }
-  estimateVents();
   // The writes, decided before any is made (without a batch each write resolves the scene again).
   std::vector<std::pair<std::string, json>> writes;
   for (const auto& l : s.loads) {
@@ -1450,7 +1472,7 @@ void CoolingAssistant::sync() {
     auto w = std::find_if(want.begin(), want.end(), [&](const Want& x) { return !x.used && x.kind == l.kind && same(x); });
     if (w != want.end() && !w->keep) {
       bool unset = false;  // a key that cannot be unset in place (a blower's inlet as an axial fan): made again
-      for (const char* k : {"across", "inlet", "vector", "heatsink"}) unset = unset || (l.def.contains(k) && !w->args.contains(k) && !(std::string(k) == "heatsink" && l.def[k].empty()));
+      for (const char* k : {"across", "inlet", "vector", "heatsink", "flip_outlet", "flip_inlet"}) unset = unset || (l.def.contains(k) && !w->args.contains(k) && !(std::string(k) == "heatsink" && l.def[k].empty()));
       if (unset) w = want.end();
     }
     if (w == want.end()) {
@@ -1484,7 +1506,7 @@ void CoolingAssistant::sync() {
   if (st && st->def.value("settings", json()) != settings) writes.push_back({"study", {{"id", id}, {"settings", settings}, {"run", false}}});
   else if (!st && (!box.empty() || !want.empty() || !materials.empty()))
     writes.push_back({"study", {{"kind", "thermal"}, {"name", studyName().toStdString()}, {"settings", settings}, {"run", false}}});
-  if (writes.empty()) return;
+  if (writes.empty()) return estimateVents();  // asked of the document as written (its revision is part of the question)
   m_writing = true;
   auto all = [&] {
     for (const auto& [command, args] : writes) m_hooks.write(command, args, tr("Thermal setup"));
@@ -1493,6 +1515,7 @@ void CoolingAssistant::sync() {
   else all();
   m_writing = false;
   m_loaded = {d->generation, d->revision};
+  estimateVents();
 }
 
 // Whether the box's vents let the fans blow what they can (sim::vent_estimate, on a worker): said under the fans, in the
@@ -1507,29 +1530,59 @@ void CoolingAssistant::estimateVents() {
     json def = {{"fan", f.spec()}, {"type", f.type.toStdString()}, {"vector", f.vector()}};
     if (!f.outlet.is_null()) def["outlet"] = f.outlet;
     if (!f.inlet.is_null()) def["inlet"] = f.inlet;
+    if (f.flipOut) def["flip_outlet"] = true;
     if (f.outlet.is_null()) def["refs"] = f.on;
     defs.push_back(def);
   }
   const std::vector<std::string> box = walls();
   if (!d || !jobs || naturalConvection() || box.empty() || defs.empty()) {
+    m_ventKey.clear();
+    if (m_ventJob) m_ventJob->cancel();
     m_ventText->setText(box.empty() || naturalConvection() ? QString() : tr("Once a fan's openings are set, this says whether the box's vents let it blow what it can."));
     return;
   }
   double watts = 0;
   for (int r = 0; r < m_heat->rowCount(); ++r) watts += std::max(0.0, m_heat->item(r, 1)->data(Qt::EditRole).toDouble());
   const QString unit = m_fan >= 0 && m_fan < int(m_fanSpecs.size()) ? m_fanSpecs[size_t(m_fan)].flowUnit : QString("cfm");
+  // The same question again (the Air tab shown again, a change that touches none of it) asks nothing: one estimate at a time.
+  // What it depends on: the bodies (their shapes' keys, where they are, shown or not) and the sketches, not the document's
+  // revision (any write, a rename, moves that).
+  json shapes = json::array();
+  for (const auto& id : d->scene.all_bodies())
+    if (const opad::Node* n = d->scene.node(id)) shapes.push_back({id, n->body_key, d->scene.world(id).m, d->scene.effectively_visible(id)});
+  json sketches = json::array();
+  for (const auto& k : d->scene.sketches) sketches.push_back({k.id, std::hash<std::string>{}(k.geometry.dump()), k.frame.to_json()});
+  const std::string key = json{{"walls", box}, {"fans", defs}, {"watts", watts}, {"ambient", m_ambient->value()}, {"unit", unit.toStdString()},
+                               {"shapes", shapes}, {"sketches", sketches}, {"generation", d->generation}}.dump();
+  if (key == m_ventKey) {
+    --m_ventRun;  // the answer coming (or come) is still this one's
+    return;
+  }
+  m_ventKey = key;
+  if (m_ventJob) m_ventJob->cancel();  // its worker stops at its next hole
   auto doc = std::make_shared<const opad::Document>(d->doc);
   auto scene = std::make_shared<const opad::Scene>(d->scene);
   auto out = std::make_shared<json>();
   const double ambient = m_ambient->value();
-  jobs->async(tr("Estimating the vents"), [doc, scene, box, defs, watts, ambient, out](Progress) {
+  const QString phase = tr("Estimating the vents: hole %1 of %2");
+  m_ventText->setText(tr("Estimating the vents…"));
+  m_ventJob = jobs->async(tr("Estimating the vents"), [doc, scene, box, defs, watts, ambient, out, phase](Progress p) {
     try {
-      *out = opad::sim::vent_estimate(*doc, *scene, box, defs, watts, ambient);
+      *out = opad::sim::vent_estimate(*doc, *scene, box, defs, watts, ambient, [&p, &phase](int done, int of) {
+        if (done % 8 == 0 || done == of) p.setPhase(phase.arg(done).arg(of), of > 0 ? 100 * done / of : -1);
+        return !p.cancelled();
+      });
     } catch (const std::exception& e) {
       *out = {{"error", e.what()}};
     }
   }, [this, self = QPointer<CoolingAssistant>(this), run, out, unit, watts](bool ok, const QString&) {
-    if (!self || run != m_ventRun || !ok) return;
+    if (!self || run != m_ventRun) return;  // a later one asked meanwhile: its answer is the one shown
+    m_ventJob = nullptr;
+    if (!ok) {  // cancelled from the status bar: asked again next time
+      m_ventKey.clear();
+      m_ventText->setText(tr("The vents' estimate was stopped."));
+      return;
+    }
     const json& e = *out;
     if (e.contains("error")) return m_ventText->setText(i18n::t(QString::fromStdString(e["error"].get<std::string>())));
     const double k = 1 / (3600 * air::flow_unit(unit.toStdString()));  // m3/h -> the unit
@@ -1540,12 +1593,18 @@ void CoolingAssistant::estimateVents() {
       return v.value("fan", false) && v.value("openings", 0) == 0 ? tr("the fan's own opening")
                                                                     : tr("%1 mm² in %n opening(s)", "", v.value("openings", 0)).arg(std::lround(v.value("area_mm2", 0.0)));
     };
-    QString text = tr("Vents (holes through the box's walls, listed in the tip): intake %1, exhaust %2.").arg(side("intake"), side("exhaust")) + " ";
     const std::string by = e.value("limited_by", std::string());
-    text += tr("Through them the fans give about %1 of their %2 free flow (%3%)").arg(flow("flow_m3h"), flow("free_flow_m3h")).arg(std::lround(100 * e.value("fraction", 0.0)));
-    text += by == "intake" ? tr(", held back most by the intakes.") : by == "exhaust" ? tr(", held back most by the exhausts.")
-                                                                       : tr(": the vents hardly hold them back.");
-    if (watts > 0 && e.contains("rise_K")) {
+    QString text;
+    if (by == "vents") {  // sealed: said first and plainly, not as a flow
+      text = tr("No vents found: no air goes through the box, the fans only stir the air inside. Cut vents through its walls (an "
+                "intake and an exhaust), or choose natural convection if it is sealed on purpose.");
+    } else {
+      text = tr("Vents (holes through the box's walls, listed in the tip): intake %1, exhaust %2.").arg(side("intake"), side("exhaust")) + " ";
+      text += tr("Through them the fans give about %1 of their %2 free flow (%3%)").arg(flow("flow_m3h"), flow("free_flow_m3h")).arg(std::lround(100 * e.value("fraction", 0.0)));
+      text += by == "intake" ? tr(", held back most by the intakes.") : by == "exhaust" ? tr(", held back most by the exhausts.")
+                                                                         : tr(": the vents hardly hold them back.");
+    }
+    if (by != "vents" && watts > 0 && e.contains("rise_K")) {
       // What the heat does to that air (it leaves warmer by the heat over its mass flow times its specific heat), and the
       // flow that keeps the rise to 10 K, a usual limit for electronics.
       const double rise = e.value("rise_K", 0.0);
@@ -1558,7 +1617,8 @@ void CoolingAssistant::estimateVents() {
     if (left.value("blind", 0) + left.value("filled", 0) > 0)
       text += " " + tr("Not counted: %1 outline(s) on the walls that are no hole (a boss, a foot, a pocket), %2 hole(s) a part fills (a connector, a screw).")
                         .arg(left.value("blind", 0)).arg(left.value("filled", 0));
-    for (const auto& n : e.value("notes", json::array())) text += " (" + i18n::t(QString::fromStdString(n.get<std::string>())) + ")";
+    for (const auto& n : e.value("notes", json::array()))
+      if (by != "vents") text += " (" + i18n::t(QString::fromStdString(n.get<std::string>())) + ")";
     m_ventText->setText(text);
     // Which they are: the list in its tip, and drawn in the view on request.
     m_ventOpenings = e.value("openings", json::array());

@@ -9,6 +9,8 @@
 #include <BRepTools.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
+#include <gp_Lin.hxx>
 #include <TopoDS_Wire.hxx>
 #include <BRepBndLib.hxx>
 #include <BRep_Builder.hxx>
@@ -32,6 +34,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -539,7 +542,7 @@ FanProfile fan_profile(const Document& doc, const Scene& scene, const json& ref)
 }
 
 json vent_estimate(const Document& doc, const Scene& scene, const std::vector<std::string>& walls, const std::vector<json>& fans, double watts,
-                   double ambient_C) {
+                   double ambient_C, const std::function<bool(int, int)>& progress) {
   using P = std::array<double, 3>;
   auto dot3 = [](const P& a, const P& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
   auto minus = [](const P& a, const P& b) { return P{a[0] - b[0], a[1] - b[1], a[2] - b[2]}; };
@@ -569,31 +572,46 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
   const P mid{0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1)};
   // What may fill a hole or stand behind it: the walls, and the bodies in the box (a connector in its cut-out, a screw in its
   // hole), their shapes read only where a probe falls in their box.
+  // Each one's classifier is made once (made per probe, it walked a detailed box's every face each time: minutes).
   struct Blocker {
     std::string id;
     Bnd_Box box;
     TopoDS_Shape shape;
+    bool wall = false;
+    std::unique_ptr<BRepClass3d_SolidClassifier> classifier;
   };
   std::vector<Blocker> blockers;
   for (size_t k = 0; k < shapes.size(); ++k) {
     Bnd_Box b;
     BRepBndLib::Add(shapes[k], b);
-    blockers.push_back({walls[k], b, shapes[k]});
+    blockers.push_back({walls[k], b, shapes[k], true, nullptr});
   }
   for (const auto& id : scene.all_bodies()) {
     if (std::find(walls.begin(), walls.end(), id) != walls.end() || !scene.effectively_visible(id)) continue;
     const Bnd_Box b = node_world_bbox(doc, scene, id);
-    if (!b.IsVoid() && !b.IsOut(all)) blockers.push_back({id, b, TopoDS_Shape()});
+    if (!b.IsVoid() && !b.IsOut(all)) blockers.push_back({id, b, TopoDS_Shape(), false, nullptr});
   }
   auto solid_at = [&](const gp_Pnt& p, bool walls_only) {
     for (auto& b : blockers) {
-      if (walls_only && std::find(walls.begin(), walls.end(), b.id) == walls.end()) continue;
-      if (b.box.IsOut(p)) continue;
-      if (b.shape.IsNull()) b.shape = node_world_shape(doc, scene, b.id);
-      if (BRepClass3d_SolidClassifier(b.shape, p, 1e-6).State() == TopAbs_IN) return true;
+      if ((walls_only && !b.wall) || b.box.IsOut(p)) continue;
+      if (!b.classifier) {
+        if (b.shape.IsNull()) b.shape = node_world_shape(doc, scene, b.id);
+        b.classifier = std::make_unique<BRepClass3d_SolidClassifier>(b.shape);
+      }
+      b.classifier->Perform(p, 1e-6);
+      if (b.classifier->State() == TopAbs_IN) return true;
     }
     return false;
   };
+  // The walls loaded once for rays out of the box.
+  std::vector<IntCurvesFace_ShapeIntersector> outward(shapes.size());
+  for (size_t k = 0; k < shapes.size(); ++k) outward[k].Load(shapes[k], 1e-6);
+  const double reach = std::sqrt(all.SquareExtent());
+  int holes = 0, examined = 0;  // for progress: every inner loop of the outward flat faces
+  for (const auto& shape : shapes)
+    for (TopExp_Explorer e(shape, TopAbs_FACE); e.More(); e.Next())
+      if (BRepAdaptor_Surface(TopoDS::Face(e.Current())).GetType() == GeomAbs_Plane)
+        for (TopExp_Explorer w(e.Current(), TopAbs_WIRE); w.More(); w.Next()) ++holes;
   // A hole goes through when, from its middle, the way in stays clear of every solid through the wall's own thickness there
   // (measured from the face beside it): an inner loop that is a boss, a foot or a blind pocket on the outside goes into
   // solid at once or before that depth; one a part sits in (a connector, a screw) is filled. A part behind the hole (a fan
@@ -609,6 +627,7 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
       if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
       const TopoDS_Wire outer = BRepTools::OuterWire(face);
       for (TopExp_Explorer w(face, TopAbs_WIRE); w.More(); w.Next()) {
+        if (progress && !progress(++examined, holes)) throw Error("cancelled");
         if (w.Current().IsSame(outer)) continue;
         BRepBuilderAPI_MakeFace hole(surface.Plane(), TopoDS::Wire(w.Current()));
         if (!hole.IsDone()) continue;
@@ -647,6 +666,17 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
           }
         }
         if (thickness <= 0) thickness = 1;  // not measured: a millimetre
+        // Out to the room first: straight out of the box nothing of its walls in the way (a tray's open top under its lid is
+        // an inner loop of the tray's rim, but leads into the lid, not out): no opening.
+        bool covered = false;
+        for (auto& x : outward) {
+          x.Perform(gp_Lin(c.Translated(gp_Vec(n) * 0.05), n), 0, reach);
+          if (x.IsDone() && x.NbPnt() > 0) covered = true;
+        }
+        if (covered) {
+          ++blind;
+          continue;
+        }
         bool clear = !solid_at(c.Translated(gp_Vec(n) * 0.05), false);
         bool wallsOnly = clear || solid_at(c.Translated(gp_Vec(n) * 0.05), true);  // what stopped it: the walls (blind) or another part (filled)
         for (double d = 0.1; clear && d < thickness - 0.05; d += std::max(0.1, thickness / 12)) {  // within the wall: what sits behind it is no lid
@@ -684,6 +714,7 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
       if (blower && openings.size() == 2) {  // out of the side, away from the inlet
         f.way = unit(openings[0].first.normal);
         if (dot3(f.way, minus(openings[0].first.centre, openings[1].first.centre)) < 0) f.way = {-f.way[0], -f.way[1], -f.way[2]};
+        if (d.value("flip_outlet", false)) f.way = {-f.way[0], -f.way[1], -f.way[2]};
       } else {
         f.way = unit(d.contains("vector") ? d["vector"].get<P>() : openings.front().first.normal);
       }
@@ -730,10 +761,12 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
     else s.area += v.area, ++s.openings;
   }
   json notes = json::array();
-  if ((!in.fan && in.area <= 0) || (!out.fan && out.area <= 0)) {
-    if (in.area + out.area <= 0 && !in.fan && !out.fan) notes.push_back("no vents found: holes cut through the box's flat walls");
-    else notes.push_back(std::string("no ") + (in.area <= 0 && !in.fan ? "intake" : "exhaust") +
-                         " vents found on that side of the fans: the air comes in and goes out through the same vents, half each");
+  // No vent but the fans' own holes (or none at all): the air has no way through the box (a fan in its hole draws in and
+  // blows out through the same hole); the fans only stir it.
+  const bool sealed = in.area + out.area <= 0;
+  if (!sealed && ((!in.fan && in.area <= 0) || (!out.fan && out.area <= 0))) {
+    notes.push_back(std::string("no ") + (in.area <= 0 && !in.fan ? "intake" : "exhaust") +
+                    " vents found on that side of the fans: the air comes in and goes out through the same vents, half each");
     const double half = 0.5 * (in.area + out.area);
     if (!in.fan) in.area = half;
     if (!out.fan) out.area = half;
@@ -757,7 +790,8 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
     }
     dp = 0.5 * (lo + hi);
   }
-  const double Q = flow_at_dp(dp);
+  const double Q = sealed ? 0.0 : flow_at_dp(dp);
+  if (sealed) notes.push_back("no vents found: no air goes through the box, the fans only stir the air inside");
   auto side = [&](const Side& s) {
     json j = {{"area_mm2", s.area}, {"openings", s.openings}, {"pressure_Pa", k(s) * Q * Q}};
     if (s.fan) j["fan"] = true;
@@ -772,7 +806,7 @@ json vent_estimate(const Document& doc, const Scene& scene, const std::vector<st
                 {"flow_cfm", Q / kCfmM3s},
                 {"fraction", free_flow > 0 ? Q / free_flow : 0.0},
                 {"pressure_Pa", dp},
-                {"limited_by", K <= 0 || Q >= 0.9 * free_flow ? "fans" : k(in) >= k(out) ? "intake" : "exhaust"}};
+                {"limited_by", sealed ? "vents" : K <= 0 || Q >= 0.9 * free_flow ? "fans" : k(in) >= k(out) ? "intake" : "exhaust"}};
   json listed = json::array();  // the openings found, largest first (what the counts are made of)
   std::vector<const Vent*> order;
   for (const auto& v : vents) order.push_back(&v);
@@ -1371,6 +1405,7 @@ StudyRun run_cfd(const Document& doc, const Scene& scene, const json& st, const 
             BRepGProp::SurfaceProperties(*face, p);
             const gp_Pnt c = p.CentreOfMass();
             if (dot(*normal, sub(V{c.X(), c.Y(), c.Z()}, hc)) < 0) *normal = mul(*normal, -1.0);
+            if (l->def.value(face == &b.out ? "flip_outlet" : "flip_inlet", false)) *normal = mul(*normal, -1.0);  // the user's way
             (face == &b.out ? b.out_area : b.in_area) = p.Mass();
             BRepPrimAPI_MakePrism cap(*face, gp_Vec((*normal)[0], (*normal)[1], (*normal)[2]) * -slab);
             if (cap.IsDone()) b.caps.push_back({on, cap.Shape()});

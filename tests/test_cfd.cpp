@@ -4,6 +4,7 @@
 // as much air out of the box as into it, the heat leaving with it. Skipped when OpenFOAM (or CalculiX, for the comparison)
 // is missing.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -333,4 +334,35 @@ TEST(fan_profile_of_a_sketch_takes_its_smallest_region) {
   CHECK_EQ(p.loops.size(), size_t(1));
   const sim::FanProfile ring = sim::fan_profile(doc, scene, {{"sketch", id}, {"at", {15, 15}}});
   CHECK_NEAR(ring.area, 1600 - M_PI * 100, 0.5);
+}
+
+// A sealed box: no air goes through it, whatever the fans give (it once came out at their free flow). And a lid with a
+// grille of 100 holes is estimated in seconds, each hole counted (the classifiers were made per probe: minutes).
+TEST(vent_estimate_of_a_sealed_box_and_a_grille) {
+  Document doc = Document::create();
+  const std::string enclosure = box(doc, {0, 0, 0}, 90, 60, 40, "Enclosure");
+  cut(doc, enclosure, {3, 3, 3}, 84, 54, 34);
+  const std::string fan = box(doc, {10, 13, 3}, 10, 34, 34, "Fan");
+  const json load = {{"fan", {{"flow", 15}, {"pressure", 30}}}, {"vector", {1, 0, 0}}, {"refs", {fan}}};
+  json e = sim::vent_estimate(doc, resolve(doc), {enclosure}, {load}, 5);
+  CHECK_EQ(e["limited_by"].get<std::string>(), "vents");
+  CHECK_NEAR(e["flow_m3h"].get<double>(), 0, 1e-12);
+  for (int i = 0; i < 10; ++i)
+    for (int j = 0; j < 10; ++j) cut(doc, enclosure, {20 + 5 * i, 8 + 4.5 * j, 36}, 2, 2, 5);
+  const auto t0 = std::chrono::steady_clock::now();
+  int calls = 0;
+  e = sim::vent_estimate(doc, resolve(doc), {enclosure}, {load}, 5, 25, [&](int, int) { return ++calls > 0; });
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  if (std::getenv("OPAD_TEST_VERBOSE")) std::printf("grille: %.2f s, %d progress calls\n", seconds, calls);
+  CHECK_EQ(e["exhaust"]["openings"].get<int>() + e["intake"]["openings"].get<int>(), 100);
+  CHECK(calls >= 100);
+  CHECK(seconds < 30);
+  // Cancelled: stops with an error.
+  bool threw = false;
+  try {
+    sim::vent_estimate(doc, resolve(doc), {enclosure}, {load}, 5, 25, [](int done, int) { return done < 3; });
+  } catch (const Error&) {
+    threw = true;
+  }
+  CHECK(threw);
 }

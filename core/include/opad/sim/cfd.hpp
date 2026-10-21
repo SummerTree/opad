@@ -27,6 +27,7 @@
 // OpenFOAM: OPAD_OPENFOAM (its project directory), else its programs on the PATH with WM_PROJECT_DIR or a known install.
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -87,8 +88,9 @@ FanProfile fan_profile(const Document& doc, const Scene& scene, const json& ref)
 // dp = rho/2 (Q / (0.6 A))^2, both in series, met by the fans' curves together (their flows at that pressure added): the flow
 // they give, against the free flow, which side holds them back, and the flow the heat needs for a 10 K rise of the air.
 // fans: fan loads' definitions (fan, type, outlet, inlet, vector, refs); watts: the heat all told.
+// progress(done, of): the holes examined so far; false stops it (Error "cancelled").
 json vent_estimate(const Document& doc, const Scene& scene, const std::vector<std::string>& walls, const std::vector<json>& fans, double watts,
-                   double ambient_C = 25);
+                   double ambient_C = 25, const std::function<bool(int, int)>& progress = {});
 
 StudyRun run_cfd(const Document& doc, const Scene& scene, const json& settings, const Progress& progress);
 
