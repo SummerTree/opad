@@ -209,6 +209,10 @@ Handle(AIS_Shape) Viewport::displayCandidate(const Candidate& c) {
   m_ctx->Display(ais, surface ? AIS_Shaded : AIS_WireFrame, -1, Standard_False);
   m_ctx->Load(ais, -1);
   m_ctx->Activate(ais, 0);
+  if (c.priority != 0)
+    if (const Handle(SelectMgr_Selection)& sel = ais->Selection(0); !sel.IsNull())
+      for (const auto& e : sel->Entities())
+        if (!e->BaseSensitive().IsNull() && !e->BaseSensitive()->OwnerId().IsNull()) e->BaseSensitive()->OwnerId()->SetPriority(c.priority);
   // A sketch line or point is a hair to aim at: the context's 4 px missed a path clicked a few pixels off. 12 px each
   // side is the 24 px target of UI-124.
   if (!surface) m_ctx->SetSelectionSensitivity(ais, 0, static_cast<int>(std::lround(12 * displayScale())));

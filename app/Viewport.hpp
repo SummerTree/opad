@@ -515,6 +515,7 @@ class Viewport : public QWidget, protected AIS_ViewController {
     TopoDS_Shape shape;
     bool strong = false;
     std::shared_ptr<BodyPrs> presentation;  // drawn more solid (construction planes among faint origin planes)
+    int priority = 0;  // over coplanar candidates with less (a sketch curve over the region it bounds)
   };
   void showCandidates(const std::vector<Candidate>& candidates);  // these and no others (those shown already stay as they are)
   void addCandidates(const std::vector<Candidate>& more);          // these too (a sliced job's slice)

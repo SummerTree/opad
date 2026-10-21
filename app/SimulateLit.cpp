@@ -2,6 +2,9 @@
 // and what a picked row stands for lit in the view in the colour of its nature, with its badge (a heat source red with a
 // flame, a fan blue, a heatsink steel, a board green, the box sand, a support purple, a force orange). A hidden part is not lit.
 #include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <TopoDS_Edge.hxx>
 
 #include <QBitmap>
 #include <QFrame>
@@ -14,6 +17,7 @@
 #include <set>
 
 #include "AppDocument.hpp"
+#include "BodyShape.hpp"
 #include "DesignController.hpp"
 #include "SimulateCooling.hpp"
 #include "I18n.hpp"
@@ -25,6 +29,8 @@
 #include "opad/geometry.hpp"
 #include "opad/materials.hpp"
 #include "opad/sim/cfd.hpp"
+#include "opad/design/sketch.hpp"
+#include "opad/design/sketch_geom.hpp"
 
 namespace {
 using opad::json;
@@ -242,6 +248,8 @@ void Simulate::showFanGlyphs(const std::vector<json>& fans) {
       way = on;
       if (way[0] * (oc[0] - ic[0]) + way[1] * (oc[1] - ic[1]) + way[2] * (oc[2] - ic[2]) < 0) way = {-way[0], -way[1], -way[2]};
       if (in_n[0] * (ic[0] - oc[0]) + in_n[1] * (ic[1] - oc[1]) + in_n[2] * (ic[2] - oc[2]) < 0) in_n = {-in_n[0], -in_n[1], -in_n[2]};
+      if (f.value("flip_outlet", false)) way = {-way[0], -way[1], -way[2]};  // turned by Flip
+      if (f.value("flip_inlet", false)) in_n = {-in_n[0], -in_n[1], -in_n[2]};
       expanded.push_back({{"loops", i["loops"]}, {"centre", ic}, {"vector", opad::Vec3{-in_n[0], -in_n[1], -in_n[2]}}, {"inward", true}});
     }
     expanded.push_back({{"loops", o["loops"]}, {"centre", oc}, {"vector", way}});
@@ -304,17 +312,55 @@ void Simulate::showFanGlyphs(const std::vector<json>& fans) {
 // them) or the faces under them.
 void Simulate::showProfiles(bool on) {
   Viewport* view = services().viewport();
-  DesignController* design = services().design();
   if (Job* j = std::exchange(m_profileJob, nullptr)) j->cancel();
   if (!view) return;
-  if (!on || !design) return view->clearCandidates();
+  if (!on || !services().jobs() || !services().document()) return view->clearCandidates();
+  // Each closed region of a shown sketch, and each of its curves standing for the smallest region it bounds: a click on a
+  // curve takes that closed loop (a slot drawn inside a face's projected outline is picked by its own edge, not the ring
+  // around it). Kernel work: on a worker, from copies of the sketches.
+  struct Source {
+    std::string id;
+    opad::json geometry;
+    opad::Frame frame;
+  };
+  auto sources = std::make_shared<std::vector<Source>>();
+  for (const auto& s : services().document()->scene.sketches)
+    if (s.visible || !s.consumed) sources->push_back({s.id, s.geometry, s.frame});
   auto found = std::make_shared<std::vector<Viewport::Candidate>>();
-  m_profileJob = design->sketchCandidates("profiles", found, [this, found](bool ok) {
+  m_profileJob = services().jobs()->async(tr("Finding the sketches' profiles"), [sources, found](Progress p) {
+    using namespace opad::design;
+    for (const auto& src : *sources) {
+      if (p.cancelled()) return;
+      const Sketch sk = Sketch::from_json(src.geometry);
+      const std::vector<Region> regions = sketch_regions(sk, src.frame);
+      std::vector<std::string> ids;
+      for (const auto& r : regions) {
+        BRepMesh_IncrementalMesh(r.face, 0.05, Standard_False, 0.3, Standard_False);
+        Bnd_Box box;
+        BRepBndLib::Add(r.face, box);
+        ids.push_back(opad::json{{"sketch", src.id}, {"at", {r.u, r.v}}, {"boundary", r.boundary}}.dump());
+        found->push_back({ids.back(), r.face, true, BodyPrs::build(r.face, box, true)});
+      }
+      for (const auto& e : sk.entities) {
+        if (e.construction || e.type == SkEntity::Type::Point) continue;
+        int best = -1;  // the smallest region this curve bounds
+        for (size_t k = 0; k < regions.size(); ++k)
+          if (std::any_of(regions[k].boundary.begin(), regions[k].boundary.end(), [&](int b) { return std::abs(b) == e.id; }) &&
+              (best < 0 || regions[k].area < regions[size_t(best)].area))
+            best = int(k);
+        if (best < 0) continue;  // an open curve: no loop to take
+        const TopoDS_Edge edge = entity_edge(sk, e, src.frame);
+        if (edge.IsNull()) continue;
+        Viewport::Candidate c{opad::json{{"sketch", src.id}, {"entity", e.id}, {"region", opad::json::parse(ids[size_t(best)])}}.dump(), edge, true};
+        c.priority = 6;  // over the region faces it lies on
+        found->push_back(c);
+      }
+    }
+  }, [this, found](bool ok, const QString&) {
     m_profileJob = nullptr;
-    trace::log(QString("simulate: fan openings: %1 sketch profile(s) offered").arg(found->size()));
+    trace::log(QString("simulate: fan openings: %1 sketch profile(s) and curve(s) offered").arg(found->size()));
     auto* setup = services().window()->findChild<CoolingAssistant*>();
     if (!ok || !setup || !setup->picking()) return;
-    for (auto& c : *found) c.strong = true;  // drawn plainly: the openings to pick, not a faint hint
     if (Viewport* v = services().viewport()) v->showCandidates(*found);
     setup->reselect();  // the opening already picked shown selected among them
   });

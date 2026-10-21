@@ -106,7 +106,8 @@ class CoolingAssistant : public QWidget {
     opad::Vec3 normal{0, 0, 0};       // the outlet's normal (fan_profile), read on a worker; 0: not yet
     opad::Vec3 centre{0, 0, 0}, inletCentre{0, 0, 0}, inletNormal{0, 0, 0};
     std::vector<std::vector<opad::Vec3>> outletLoops, inletLoops;  // their outlines, drawn in the view
-    bool flip = false;
+    bool flip = false;                // an axial fan's air the other way
+    bool flipOut = false, flipIn = false;  // a blower's openings turned from the way found (out of its housing)
     QString model;                    // a library fan's id; empty: from its datasheet (below)
     double flow = 1, pressure = 0.5;  // max airflow, max static pressure, in the units below
     QString flowUnit = "cfm", pressureUnit = "inH2O";
@@ -119,6 +120,7 @@ class CoolingAssistant : public QWidget {
     opad::Vec3 vector() const;        // the way an axial fan's air goes (a blower's out of its outlet)
     opad::json spec() const;          // the load's "fan"
     bool drawing = false;             // Draw… is making one of its openings (setProfile takes it there)
+    bool loaded = false;              // read from its load: Flip is found again from the way written once the opening is read
     bool drawn() const { return !outlet.is_null() && (type != "blower" || !inlet.is_null()); }
     bool held() const { return drawn() || (outlet.is_null() && !on.empty()); }  // a load holds it
   };
@@ -198,6 +200,8 @@ class CoolingAssistant : public QWidget {
   class PickBox* m_inletPick = nullptr;
   QPushButton* m_outletDraw = nullptr;
   QPushButton* m_inletDraw = nullptr;
+  QPushButton* m_outletFlip = nullptr;  // a blower's: its outlet's way, its inlet's way turned round
+  QPushButton* m_inletFlip = nullptr;
   class PickBox* m_sinkPick = nullptr;
   QPushButton* m_flip = nullptr;
   QLabel* m_wayText = nullptr;
@@ -211,6 +215,8 @@ class CoolingAssistant : public QWidget {
   QCheckBox* m_ventsShown = nullptr;   // the vents it found drawn in the view (intakes in, exhausts out)
   opad::json m_ventOpenings;           // their openings, as the estimate lists them
   int m_ventRun = 0;                   // the estimate asked last (an older one's answer is dropped)
+  QPointer<Job> m_ventJob;             // the one running (a new one cancels it: never several at once)
+  std::string m_ventKey;               // what the last one was asked with: the same again (the Air tab shown again) runs nothing
   void estimateVents();
   QDoubleSpinBox* m_speed = nullptr;
   class ClipView* m_fanClip = nullptr;  // how its openings are drawn

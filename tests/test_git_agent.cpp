@@ -498,9 +498,14 @@ int main(int argc, char** argv) {
     std::printf("git not found: skipped\n");
     return 0;
   }
-  // git's own settings stay out of it: no global or system config, a fixed identity.
+  // git's own settings stay out of it: no global or system config, a fixed identity, and no IDE's askpass (VS Code's
+  // terminal hands git its own, which asks for sign-ins in VS Code).
   qputenv("GIT_CONFIG_GLOBAL", QFile::encodeName(dir.filePath("gitconfig")));
   qputenv("GIT_CONFIG_NOSYSTEM", "1");
+  for (const QString& k : QProcessEnvironment::systemEnvironment().keys())
+    if (k == "GIT_ASKPASS" || k == "SSH_ASKPASS" || k == "SSH_ASKPASS_REQUIRE" || k.startsWith("VSCODE_GIT_")) qunsetenv(k.toLatin1().constData());
+  qputenv("GIT_TERMINAL_PROMPT", "0");
+  qputenv("GCM_INTERACTIVE", "never");
   for (const char* k : {"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"}) qputenv(k, "OPAD Test");
   for (const char* k : {"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"}) qputenv(k, "test@example.com");
   qputenv("OPAD_CACHE_DIR", QFile::encodeName(dir.filePath("cache")));

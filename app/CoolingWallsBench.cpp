@@ -314,6 +314,10 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         // A blower: its outlet a sketch's profile clicked in the view (a circle sketched above the cover), its inlet missing.
         opad::design::Sketch slot;
         slot.add_circle(slot.add_point(0, 0), 12);
+        {  // the face's outline projected around it: two regions, the ring and the disc
+          const int a = slot.add_point(-20, -20), b = slot.add_point(20, -20), cc = slot.add_point(20, 20), d = slot.add_point(-20, 20);
+          slot.add_line(a, b), slot.add_line(b, cc), slot.add_line(cc, d), slot.add_line(d, a);
+        }
         st->sketch = doc->run("sketch", {{"plane", {{"origin", {80, 40, 40}}, {"normal", {0, 0, 1}}, {"x", {1, 0, 0}}}}, {"geometry", slot.to_json()}, {"name", "Blower outlet"}})
                          .value("sketch_id", std::string());
         for (auto* b : c->findChildren<QPushButton*>())
@@ -327,14 +331,24 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         st->phase = 13;
         return;
       }
-      case 13: {  // the sketch's region offered among the candidates, clicked in the view
+      case 13: {  // the circle's curve clicked in the view (offered with the regions): its closed loop, the disc, not the ring
         if (c->fans()[1].outlet.is_null()) {
           int x = 0, y = 0;
-          if (w.m_viewport->benchPickPoint([](const std::string& cand, const opad::Ref&) { return cand.find("\"sketch\"") != std::string::npos; }, x, y, false))
+          if (w.m_viewport->benchPickPoint([](const std::string& cand, const opad::Ref&) { return cand.find("\"entity\"") != std::string::npos; }, x, y, false))
             w.m_viewport->benchClickAt(x, y);
           return;
         }
-        require(c->fans()[1].outlet.value("sketch", std::string()) == st->sketch, "the blower's outlet: the sketch's profile clicked");
+        const opad::json out = c->fans()[1].outlet;
+        const opad::json at = out.value("at", opad::json::array());
+        require(out.value("sketch", std::string()) == st->sketch && at.size() == 2 && std::hypot(at[0].get<double>(), at[1].get<double>()) < 12,
+                "the circle's curve clicked: the blower's outlet is the disc it closes, not the ring around it: " + QString::fromStdString(out.dump()));
+        if (std::hypot(c->fans()[1].normal[0], c->fans()[1].normal[1], c->fans()[1].normal[2]) < 0.5) return;  // read on a worker
+        const opad::Vec3 v = c->fans()[1].vector();
+        require(button("coolingOutletFlip")->isVisibleTo(c) && !button("coolingWayFlip")->isVisibleTo(c), "a blower: a Flip by each opening");
+        button("coolingOutletFlip")->click();
+        const opad::Vec3 f = c->fans()[1].vector();
+        require(f[0] == -v[0] && f[1] == -v[1] && f[2] == -v[2] && c->fans()[1].flipOut, "the outlet's Flip turns its way round");
+        button("coolingOutletFlip")->click();
         require(!c->apply() && c->step() == 2 && c->currentFan() == 1, "Apply with a blower without its inlet: refused, on that fan");
         // Draw… starts New sketch (its plane picked first); Esc there comes back here.
         c->findChild<QPushButton*>("coolingInletDraw")->click();
@@ -346,7 +360,17 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
         button("coolingFanRemove")->click();
         require(c->fans().size() == 1, "the blower removed");
         c->grab().save(prefix + ".air.png");
-        require(!c->findChild<QLabel*>("coolingVents")->text().isEmpty(), "the vents' estimate said: " + c->findChild<QLabel*>("coolingVents")->text());
+        st->phase = 131;
+        return;
+      }
+      case 131: {  // the vents' estimate finishes (one at a time: the Air tab shown again asks nothing new)
+        const QString vents = c->findChild<QLabel*>("coolingVents")->text();
+        if ((vents.isEmpty() || vents.startsWith(CoolingAssistant::tr("Estimating the vents"))) && st->ticks < 850) return;
+        require(!vents.isEmpty() && !vents.startsWith(CoolingAssistant::tr("Estimating the vents")) && vents != CoolingAssistant::tr("The vents' estimate was stopped."),
+                "the vents' estimate said: " + vents);
+        c->open(1);
+        c->open(2);
+        require(c->findChild<QLabel*>("coolingVents")->text() == vents, "the Air tab shown again: the same estimate, none started: " + c->findChild<QLabel*>("coolingVents")->text());
         c->open(3);
         require(!c->picking() && w.action("select.bodies")->isChecked() && !c->findChild<QPushButton*>("coolingNext")->isVisible(),
                 "the Run page picks nothing, the view's filter as it was; no Next on the last page");
@@ -382,7 +406,7 @@ OPAD_BENCH(OPAD_BENCH_COOLING_WALLS, coolingWalls) {
                     fan->def.value("heatsink", opad::json()) == opad::json::array({st->sinkUnit}) &&
                     fan->def.value("vector", opad::Vec3{}) == opad::Vec3{-st->way[0], -st->way[1], -st->way[2]} &&
                     !settings.value("cfd", opad::json::object()).value("buoyancy", true),
-                "the fan load: by its opening, through the heatsink, the way flipped; no buoyancy");
+                "the fan load: by its opening, through the heatsink, the way flipped; no buoyancy: " + QString::fromStdString(fan ? fan->def.dump() : std::string()));
         require(spec.value("cfm", 0.0) == 5 && std::fabs(spec.value("pressure", 0.0) - 0.2 * 249.08891) < 1e-6 && spec.value("speed", 0.0) == 80 &&
                     spec.value("curve", opad::json::array()).size() == 4,
                 "its datasheet: 5 CFM, 0.2 inH2O as Pa, its chart's two points between the ends, at 80 %: " + QString::fromStdString(spec.dump()));
